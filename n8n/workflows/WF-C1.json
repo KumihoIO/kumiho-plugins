@@ -1,0 +1,672 @@
+{
+  "name": "WF-C1 Chat with Memory",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const input = $json || {};\nconst msg = input.message || {};\nconst chat = msg.chat || {};\nconst from = msg.from || {};\nconst text = input.chatInput || msg.text || msg.caption || '';\n\nif (!text) {\n  throw new Error('No message text found in input');\n}\n\nconst chatId = chat.id || input.sessionId || input.chatId || 'local';\nconst messageId = msg.message_id || input.messageId || `${Date.now()}`;\nconst timestamp = msg.date ? new Date(msg.date * 1000).toISOString() : new Date().toISOString();\n\nconst schemaItemKref = 'kref://CognitiveMemory/Schema/AgentMemory.memory_schema';\n\nreturn [\n  {\n    json: {\n      message_text: text,\n      chat_id: chatId,\n      user_id: from.id || input.userId || 'local',\n      message_id: messageId,\n      timestamp,\n      schema_item_kref: schemaItemKref\n    }\n  }\n];\n"
+      },
+      "id": "fa67eb0e-0def-4f2b-a53b-841dd11b164f",
+      "name": "Normalize Telegram Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "revision",
+        "readModeRevision": "revisionGetByTag",
+        "itemKrefRevisionGetByTag": "={{ $json.schema_item_kref }}",
+        "tagRead": "published"
+      },
+      "id": "c48f8756-1982-4bf6-a65f-5bd92c95eb45",
+      "name": "Read Schema Revision",
+      "type": "CUSTOM.kumihoAction",
+      "typeVersion": 1,
+      "position": [
+        2192,
+        -288
+      ],
+      "alwaysOutputData": false,
+      "credentials": {
+        "kumihoApi": {
+          "id": "jU7CYSCnxmSPcxSi",
+          "name": "Kumiho account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Analyze this message and decide if memory retrieval is needed.\n\nMessage: \"{{ $node['Normalize Telegram Input'].json.message_text }}\"\n\nDecision rules:\n1. need_retrieval = TRUE if the message:\n   - Asks about past conversations, events, or information\n   - References something previously discussed (\"remember when\", \"last time\", \"you said\")\n   - Asks questions that might have been answered before\n   - Requests information about people, topics, or entities we might know about\n   - Uses words like: remember, recall, first, earliest, previous, before, history, told, mentioned\n\n2. need_retrieval = FALSE if the message:\n   - Is a simple greeting (hi, hello, how are you)\n   - Is a new question with no reference to past context\n   - Is a command or action request with no memory context\n\n3. For the query field: Rephrase the message as a search query (keywords, not a question)\n\n4. For keywords/topics: Extract 1-3 key terms that would help find relevant memories\n\nReturn ONLY valid JSON (no markdown, no explanation):\n{\n  \"need_retrieval\": true or false,\n  \"need_facts\": true or false,\n  \"query\": \"search query terms\",\n  \"keywords\": [\"keyword1\", \"keyword2\"],\n  \"topics\": [\"topic-slug\"]\n}",
+        "options": {
+          "systemMessage": "You are a routing planner that decides if memory retrieval is needed. Be LIBERAL with retrieval - when in doubt, retrieve. It's better to search memory and find nothing than to miss relevant context.\n\nOutput ONLY valid JSON. No markdown code blocks. No explanation."
+        }
+      },
+      "id": "6b4f5383-a4d3-4bec-9909-92372e41fe1c",
+      "name": "AI Agent - Planner",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        2160,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "options": {}
+      },
+      "id": "6d07e867-ef3d-41b1-a17c-7d5b96e68c9b",
+      "name": "OpenAI Planner Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        2160,
+        240
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "FeUUXy7um08FiyTl",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const output = $json.output || $json.text || $json.response || '';\nlet data = {};\n\n// Strip markdown code blocks if present\nlet cleanOutput = output.replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/i, '').trim();\n\n// Extract JSON from mixed content\nconst jsonMatch = cleanOutput.match(/\\{[\\s\\S]*\\}/);\nif (jsonMatch) {\n  cleanOutput = jsonMatch[0];\n}\n\ntry {\n  data = JSON.parse(cleanOutput);\n} catch (err) {\n  // Default to retrieval if parsing fails (safer to search than miss)\n  data = { need_retrieval: true };\n}\n\nconst toArray = (value) => {\n  if (Array.isArray(value)) return value;\n  if (typeof value === 'string') {\n    return value.split(',').map((s) => s.trim()).filter(Boolean);\n  }\n  return [];\n};\n\n// Default to true if not explicitly false (be liberal with retrieval)\nconst needRetrieval = data.need_retrieval !== false;\nconst needFacts = Boolean(data.need_facts);\nconst query = data.query || $node['Normalize Telegram Input'].json.message_text;\nconst keywords = toArray(data.keywords);\nconst topics = toArray(data.topics);\n\nreturn [{\n  json: {\n    need_retrieval: needRetrieval,\n    need_facts: needFacts,\n    query,\n    keywords,\n    topics\n  }\n}];\n"
+      },
+      "id": "fd76dbda-fecd-494c-800e-4a31efec6a48",
+      "name": "Parse Planner Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2512,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d5d72b7c-c136-4d98-851a-e2d388084711",
+              "leftValue": "={{ $json.need_retrieval }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "36b96867-7545-4d6a-8fb9-2b5d2108ee1b",
+      "name": "Need Retrieval?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2736,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// WF-C3-R now returns pre-fetched memory content\nconst retrieval = $json || {};\nconst userText = $node['Normalize Telegram Input'].json.message_text;\n\n// Build context from pre-fetched memories\nlet memoryContext = retrieval.memory_context || '';\nconst memories = retrieval.memories || [];\nconst resultCount = retrieval.result_count || 0;\n\n// If no pre-formatted context but we have memories, format them\nif (!memoryContext && memories.length > 0) {\n  memoryContext = memories.map((m, idx) => {\n    const parts = [];\n    if (m.title) parts.push(`[${idx + 1}] ${m.title}`);\n    if (m.summary) parts.push(m.summary);\n    if (m.type) parts.push(`(type: ${m.type})`);\n    return parts.join(' - ');\n  }).filter(Boolean).join('\\n');\n}\n\nreturn [{\n  json: {\n    user_text: userText,\n    has_memory: resultCount > 0,\n    memory_context: memoryContext,\n    memory_count: resultCount,\n    // Keep krefs for potential follow-up or storage\n    item_krefs: retrieval.item_krefs || [],\n    revision_krefs: retrieval.revision_krefs || []\n  }\n}];\n"
+      },
+      "id": "000eb52c-94de-4945-94b2-7b98b3dfae49",
+      "name": "Build Responder Input (With Retrieval)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3200,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    user_text: $node['Normalize Telegram Input'].json.message_text,\n    has_memory: false,\n    memory_context: '',\n    memory_count: 0,\n    item_krefs: [],\n    revision_krefs: []\n  }\n}];\n"
+      },
+      "id": "b2adce28-2f72-4962-a25f-13a33e06ff0a",
+      "name": "Build Responder Input (No Retrieval)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3072,
+        -64
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=User message: {{ $json.user_text }}\n\n{{ $json.has_memory ? 'RELEVANT MEMORIES (' + $json.memory_count + ' found):\\n' + $json.memory_context : 'No relevant memories found.' }}\n\nInstructions:\n1. If memories are provided, use them to inform your response. Reference the memory content naturally.\n2. If no memories found, respond based on your general knowledge.\n3. Decide if this exchange is worth remembering (store=true for meaningful conversations, false for trivial ones).\n\nReturn ONLY valid JSON (no markdown):\n{\n  \"reply\": \"Your response to the user\",\n  \"summary\": \"1-2 sentence summary of what was discussed\",\n  \"store\": true or false\n}",
+        "options": {
+          "systemMessage": "You are a helpful assistant with access to memory. When memories are provided, use them naturally in your response without explicitly saying \"according to my memory\" unless relevant.\n\nIMPORTANT: Output ONLY valid JSON. No markdown code blocks. No explanation outside the JSON."
+        }
+      },
+      "id": "1a042e5f-b18c-4556-8a42-b5ca6bfd76be",
+      "name": "AI Agent - Responder",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        3440,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "options": {}
+      },
+      "id": "376a20f0-9f46-4af3-81c5-3a76dde89298",
+      "name": "OpenAI Responder Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        3424,
+        288
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "FeUUXy7um08FiyTl",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "endpointUrl": "https://api.kumiho.cloud/api/v1/mcp/tools",
+        "authentication": "bearerAuth",
+        "options": {}
+      },
+      "id": "be678776-3943-4cd3-80da-0e3d3df972c3",
+      "name": "Kumiho MCP Client",
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.2,
+      "position": [
+        3584,
+        288
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "C2evd7Q7O4Vt3mdj",
+          "name": "Bearer Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const output = $json.output || $json.text || $json.response || '';\nlet reply = output;\nlet summary = '';\nlet store = false;\n\n// Strip markdown code blocks if present\nlet cleanOutput = output.replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/i, '').trim();\n\n// Extract JSON from mixed content\nconst jsonMatch = cleanOutput.match(/\\{[\\s\\S]*\\}/);\nif (jsonMatch) {\n  cleanOutput = jsonMatch[0];\n}\n\nconst parseStore = (value) => {\n  if (typeof value === 'boolean') return value;\n  if (typeof value === 'string') return value.toLowerCase() === 'true';\n  return false;\n};\n\ntry {\n  const parsed = JSON.parse(cleanOutput);\n  reply = parsed.reply || reply;\n  summary = parsed.summary || summary;\n  store = parseStore(parsed.store);\n} catch (err) {\n  const inputText = $node['Normalize Telegram Input'].json.message_text || '';\n  reply = output || '';\n  summary = `Asked: ${inputText.slice(0, 120)} | Answered: ${reply.slice(0, 120)}`;\n  // Default to store if we couldn't parse (safer to remember)\n  store = true;\n}\n\nreturn [{ json: { reply, summary, store } }];\n"
+      },
+      "id": "0bc7cb64-34a4-4ba7-9595-4c3aebaea4d0",
+      "name": "Parse Responder Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3760,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    chat_id: $node['Normalize Telegram Input'].json.chat_id,\n    message_id: $node['Normalize Telegram Input'].json.message_id,\n    user_text: $node['Normalize Telegram Input'].json.message_text,\n    assistant_text: $node['Parse Responder Output'].json.reply,\n    timestamp: $node['Normalize Telegram Input'].json.timestamp,\n    schema_item_kref: $node['Normalize Telegram Input'].json.schema_item_kref\n  }\n}];\n"
+      },
+      "id": "41035f9d-7bc8-4081-8df7-2265e471ee8e",
+      "name": "Build WF-C2 Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4144,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $node['Normalize Telegram Input'].json.chat_id }}",
+        "text": "={{ $node['Parse Responder Output'].json.reply }}",
+        "additionalFields": {}
+      },
+      "id": "8c094f60-2f6a-4342-9a1f-70432a280d9c",
+      "name": "Telegram Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        4384,
+        192
+      ],
+      "webhookId": "0f8ef6ca-bff8-4dd4-88ff-941e734a95c5",
+      "credentials": {
+        "telegramApi": {
+          "id": "3mTh4CP3y9GxJopB",
+          "name": "Telegram account"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "pAKDyC1IBKlLNG4k",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/pAKDyC1IBKlLNG4k",
+          "cachedResultName": "WF-C3-R Retrieval (Subworkflow)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "query": "={{ $node['Parse Planner Output'].json.query }}",
+            "keywords": "={{ $node['Parse Planner Output'].json.keywords }}",
+            "topics": "={{ $node['Parse Planner Output'].json.topics }}",
+            "need_facts": "={{ $node['Parse Planner Output'].json.need_facts }}",
+            "limit": 5,
+            "project": "={{ $node['Parse Schema Policy'].json.metadata?.policy?.project || 'CognitiveMemory' }}",
+            "space_root": "={{ $node['Parse Schema Policy'].json.metadata?.policy?.space_root || '/' }}",
+            "memory_item_kind": "={{ $node['Parse Schema Policy'].json.metadata?.policy?.memory_item_kind || 'conversation' }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        2976,
+        192
+      ],
+      "id": "a2a9ba60-0123-4be6-a159-567328a748f8",
+      "name": "Call 'WF-C3-R'"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "iWfEpXMFsIBKvNWz",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/iWfEpXMFsIBKvNWz",
+          "cachedResultName": "WF-C2 Summarize + Store (Subworkflow)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "chat_id": "={{ $node['Build WF-C2 Payload'].json.chat_id }}",
+            "message_id": "={{ $node['Build WF-C2 Payload'].json.message_id }}",
+            "user_text": "={{ $node['Build WF-C2 Payload'].json.user_text }}",
+            "assistant_text": "={{ $node['Build WF-C2 Payload'].json.assistant_text }}",
+            "timestamp": "={{ $node['Build WF-C2 Payload'].json.timestamp }}",
+            "schema_item_kref": "={{ $node['Build WF-C2 Payload'].json.schema_item_kref }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        4400,
+        -144
+      ],
+      "id": "e4b2890b-6b3d-4742-bb3c-f76f151f00ed",
+      "name": "Call WF-02: Summarize & Record"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        1504,
+        48
+      ],
+      "id": "75c9091e-83f2-43e9-bbf5-39d239ad01d0",
+      "name": "When chat message received",
+      "webhookId": "4d153e15-bf97-4c9e-9e2a-ea9fd6380ad1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "f4a95fac-b7c5-463b-9072-1ce05646f688",
+              "leftValue": "={{ $json.kref }}",
+              "rightValue": "",
+              "operator": {
+                "type": "dateTime",
+                "operation": "notExists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2384,
+        -288
+      ],
+      "id": "9ec6d204-5efd-4677-ac40-9ed9a5a21c0f",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "n5W2SyEMKrIlJJRn",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/n5W2SyEMKrIlJJRn",
+          "cachedResultName": "WF-C0-Setup"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        2608,
+        -304
+      ],
+      "id": "42a762b6-85fe-42d8-a818-fae801898e86",
+      "name": "Execute initial setup"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "store-check",
+              "leftValue": "={{ $json.store }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "eb79f2e7-aa49-4cda-accd-8ee4f1eba07c",
+      "name": "Store Memory?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3960,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const schema = $json || {};\nconst metadata = (schema && schema.metadata && typeof schema.metadata === 'object') ? schema.metadata : {};\n\nconst parseMaybe = (value) => {\n  if (!value) return {};\n  if (typeof value === 'string') {\n    try {\n      const parsed = JSON.parse(value);\n      return parsed && typeof parsed === 'object' ? parsed : {};\n    } catch (err) {\n      return {};\n    }\n  }\n  return value;\n};\n\nconst policy = parseMaybe(metadata.policy);\nconst governance = parseMaybe(metadata.governance);\n\nreturn [{\n  json: {\n    ...schema,\n    metadata: {\n      ...metadata,\n      policy,\n      governance\n    }\n  }\n}];\n"
+      },
+      "id": "0fad636a-e223-4aa4-a251-4d482e7b6cf9",
+      "name": "Parse Schema Policy",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2448,
+        -288
+      ]
+    }
+  ],
+  "connections": {
+    "Normalize Telegram Input": {
+      "main": [
+        [
+          {
+            "node": "AI Agent - Planner",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read Schema Revision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Schema Revision": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Parse Schema Policy",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "AI Agent - Planner": {
+      "main": [
+        [
+          {
+            "node": "Parse Planner Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Planner Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent - Planner",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Planner Output": {
+      "main": [
+        [
+          {
+            "node": "Need Retrieval?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Need Retrieval?": {
+      "main": [
+        [
+          {
+            "node": "Call 'WF-C3-R'",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Responder Input (No Retrieval)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Responder Input (With Retrieval)": {
+      "main": [
+        [
+          {
+            "node": "AI Agent - Responder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Responder Input (No Retrieval)": {
+      "main": [
+        [
+          {
+            "node": "AI Agent - Responder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent - Responder": {
+      "main": [
+        [
+          {
+            "node": "Parse Responder Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Responder Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent - Responder",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kumiho MCP Client": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent - Responder",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Responder Output": {
+      "main": [
+        [
+          {
+            "node": "Store Memory?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Telegram Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call 'WF-C3-R'": {
+      "main": [
+        [
+          {
+            "node": "Build Responder Input (With Retrieval)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "Normalize Telegram Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Execute initial setup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Memory?": {
+      "main": [
+        [
+          {
+            "node": "Build WF-C2 Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Build WF-C2 Payload": {
+      "main": [
+        [
+          {
+            "node": "Call WF-02: Summarize & Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "f683e0bb6d2236623ffa165fec99251ec02b47eef2491ae316d16603ef2960a3"
+  }
+}

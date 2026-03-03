@@ -1,0 +1,41 @@
+{
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "d0b3c6a1-1e4b-4b1a-9b1a-1e4b4b1a9b1a",
+      "name": "When clicking \"Execute Workflow\"",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read"
+      },
+      "id": "d0b3c6a1-1e4b-4b1a-9b1a-1e4b4b1a9b1b",
+      "name": "Kumiho Item",
+      "type": "kumihoItem",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "When clicking \"Execute Workflow\"": {
+      "main": [
+        [
+          {
+            "node": "Kumiho Item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

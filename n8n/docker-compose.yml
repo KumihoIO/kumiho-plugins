@@ -1,0 +1,15 @@
+services:
+  n8n:
+    image: n8n-kumiho:2.1.4
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_CUSTOM_EXTENSIONS=/home/node/.n8n/custom
+      - N8N_LOG_LEVEL=debug
+      - N8N_LOG_OUTPUT=console
+    volumes:
+      - ./dist:/home/node/.n8n/custom/node_modules/n8n-nodes-kumiho
+      - ./n8n-data:/home/node/.n8n

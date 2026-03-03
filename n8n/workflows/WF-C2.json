@@ -1,0 +1,246 @@
+{
+  "name": "WF-C2 Summarize + Store (Subworkflow)",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "c055762a-8fe7-4141-a639-df2372f30060",
+      "typeVersion": 1.1,
+      "name": "From previous Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [
+        544,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    keys: Object.keys($json || {}),\n    payload: $json\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        752,
+        192
+      ],
+      "id": "8884f2d8-b1cd-4d62-9d6e-70f90da07cea",
+      "name": "Input"
+    },
+    {
+      "parameters": {
+        "resource": "revision",
+        "readModeRevision": "revisionGetByTag",
+        "itemKrefRevisionGetByTag": "={{ $json.payload?.schema_item_kref || $json.schema_item_kref || 'kref://CognitiveMemory/Schema/AgentMemory.memory_schema' }}",
+        "tagRead": "published"
+      },
+      "id": "92f8d4e4-9bc3-4ea5-a746-5f0ab1e76e19",
+      "name": "Read Schema Revision",
+      "type": "CUSTOM.kumihoAction",
+      "typeVersion": 1,
+      "position": [
+        992,
+        192
+      ],
+      "credentials": {
+        "kumihoApi": {
+          "id": "jU7CYSCnxmSPcxSi",
+          "name": "Kumiho account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const inputNode = $node['Input']?.json || {};\nconst input =\n  (inputNode.payload && typeof inputNode.payload === 'object')\n    ? inputNode.payload\n    : inputNode;\n\nconst fallbackInput = $node['From previous Workflow']?.json || {};\nconst data = Object.keys(input).length ? input : fallbackInput;\n\nconst schema = $node['Read Schema Revision'].json || {};\nconst metadata = (schema && schema.metadata && typeof schema.metadata === 'object') ? schema.metadata : {};\n\nconst parsePolicy = (value) => {\n  if (!value) return {};\n  if (typeof value === 'string') {\n    try {\n      const parsed = JSON.parse(value);\n      return parsed && typeof parsed === 'object' ? parsed : {};\n    } catch (err) {\n      return {};\n    }\n  }\n  return value;\n};\n\nconst policy = parsePolicy(metadata.policy);\n\nconst logRoot = '/Users/youngbin.park/n8n/kumiho-chat-logs';\nconst chatId = data.chat_id || data.chatId || 'local';\nconst messageId = data.message_id || data.messageId || `${Date.now()}`;\nconst timestamp = data.timestamp || new Date().toISOString();\n\nconst userText =\n  data.user_text ||\n  data.userText ||\n  data.message_text ||\n  data.messageText ||\n  data.text ||\n  '';\n\nconst assistantText =\n  data.assistant_text ||\n  data.assistantText ||\n  data.reply ||\n  data.output ||\n  data.response ||\n  '';\n\nconst fileName = `${chatId}-${messageId}.md`;\nconst filePath = `${logRoot.replace(/\\/+$/, '')}/${fileName}`;\n\nconst markdown = `# Conversation\\n\\n- chat_id: ${chatId}\\n- message_id: ${messageId}\\n- timestamp: ${timestamp}\\n\\n## User\\n${userText}\\n\\n## Assistant\\n${assistantText}\\n`;\n\nreturn [{\n  json: {\n    chat_id: chatId,\n    message_id: messageId,\n    timestamp,\n    user_text: userText,\n    assistant_text: assistantText,\n    schema_item_kref: data.schema_item_kref || 'kref://CognitiveMemory/Schema/AgentMemory.memory_schema',\n    artifact_name: 'chat_io',\n    artifact_location: filePath,\n    source_revision_krefs: data.source_revision_krefs || [],\n    space_hint: data.space_hint || data.topic || '',\n    memory_type: data.memory_type || 'summary'\n  },\n  binary: {\n    data: {\n      data: Buffer.from(markdown, 'utf8').toString('base64'),\n      mimeType: 'text/markdown',\n      fileName\n    }\n  }\n}];\n"
+      },
+      "id": "6a2af1a3-50af-41e3-ba83-15a5a5bbaa17",
+      "name": "Build Markdown Artifact",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "fileName": "={{ $json.artifact_location }}",
+        "options": {}
+      },
+      "id": "569119fa-38e5-4a93-9e9c-aba238c82b7b",
+      "name": "Write Markdown File",
+      "type": "n8n-nodes-base.writeBinaryFile",
+      "typeVersion": 1,
+      "position": [
+        1440,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Input:\n- user_text: {{ $json.user_text }}\n- assistant_text: {{ $json.assistant_text }}\n- artifact_location: {{ $json.artifact_location }}\n- source_revision_krefs: {{ $json.source_revision_krefs }}\n- space_hint: {{ $json.space_hint }}\n- memory_type: {{ $json.memory_type }}\n\nTask: Store this conversation as a memory entry using kumiho_memory_store.\n\nSteps:\n1) Analyze the conversation to determine:\n   - A short space_hint if not provided (e.g., \"travel\", \"work\", \"family\")\n   - A brief title (1 sentence)\n   - A summary (2-3 sentences capturing key points)\n   - The memory_type: summary (general), decision (choices made), fact (learned info), reflection (insights), error (mistakes/issues)\n\n2) Call kumiho_memory_store with:\n   - project: \"CognitiveMemory\"\n   - space_hint: determined or provided space hint\n   - user_text: the user's message\n   - assistant_text: the assistant's response\n   - artifact_location: the file path provided\n   - artifact_name: \"chat_io\"\n   - title: your determined title\n   - summary: your determined summary\n   - memory_type: determined type\n   - source_revision_krefs: provided array (may be empty)\n   - tags: [\"published\"]\n\nReturn ONLY JSON:\n{\n  \"space_path\": \"...\",\n  \"item_kref\": \"kref://...\",\n  \"revision_kref\": \"kref://...\",\n  \"bundle_kref\": \"kref://...\",\n  \"summary\": \"...\"\n}\n",
+        "options": {
+          "systemMessage": "You store conversation memories using the kumiho_memory_store MCP tool. This tool handles everything in ONE call: creates spaces, items, revisions, artifacts, bundles, and edges automatically.\n\nKey points:\n- kumiho_memory_store is the ONLY tool you need for storing memory\n- It creates taxonomy spaces automatically based on space_hint\n- It generates item names from the summary\n- It handles bundling related memories together\n- Always include artifact_location for the markdown file\n- Use tags: [\"published\"] to mark memories as complete"
+        }
+      },
+      "id": "69f78fc1-736b-4d25-9040-a68671a08feb",
+      "name": "AI Agent - Store",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1680,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-5.2-chat-latest",
+        "options": {}
+      },
+      "id": "73d5441d-0cbd-4b3e-840e-f9ec6601bd8e",
+      "name": "OpenAI Store Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        1680,
+        400
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "FeUUXy7um08FiyTl",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "endpointUrl": "https://api.kumiho.cloud/api/v1/mcp/tools",
+        "authentication": "bearerAuth",
+        "options": {}
+      },
+      "id": "07c859b8-ae6d-4811-a411-6af0efb014a1",
+      "name": "Kumiho MCP Client",
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.2,
+      "position": [
+        1840,
+        400
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "C2evd7Q7O4Vt3mdj",
+          "name": "Bearer Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let output = $json.output || $json.text || $json.response || '';\n\n// Strip markdown code blocks if present (```json ... ``` or ``` ... ```)\noutput = output.replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/i, '').trim();\n\n// Also try to extract JSON from mixed content\nconst jsonMatch = output.match(/\\{[\\s\\S]*\\}/);\nif (jsonMatch) {\n  output = jsonMatch[0];\n}\n\nlet data = {};\ntry {\n  data = JSON.parse(output);\n} catch (err) {\n  // Try to parse even with trailing content\n  try {\n    const cleanJson = output.replace(/[\\r\\n]+/g, ' ').match(/\\{.*\\}/);\n    if (cleanJson) {\n      data = JSON.parse(cleanJson[0]);\n    }\n  } catch (e) {\n    data = {};\n  }\n}\n\nreturn [{ json: data }];\n"
+      },
+      "id": "e2c0398a-7e7d-4388-9982-04f6e2eebe92",
+      "name": "Parse Store Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        192
+      ]
+    }
+  ],
+  "connections": {
+    "From previous Workflow": {
+      "main": [
+        [
+          {
+            "node": "Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input": {
+      "main": [
+        [
+          {
+            "node": "Read Schema Revision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Schema Revision": {
+      "main": [
+        [
+          {
+            "node": "Build Markdown Artifact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Markdown Artifact": {
+      "main": [
+        [
+          {
+            "node": "Write Markdown File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Markdown File": {
+      "main": [
+        [
+          {
+            "node": "AI Agent - Store",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent - Store": {
+      "main": [
+        [
+          {
+            "node": "Parse Store Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Store Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent - Store",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kumiho MCP Client": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent - Store",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "f683e0bb6d2236623ffa165fec99251ec02b47eef2491ae316d16603ef2960a3"
+  }
+}

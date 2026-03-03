@@ -1,0 +1,14 @@
+{
+  "node": "n8n-nodes-kumiho.kumihoEventStreamTrigger",
+  "nodeVersion": "1",
+  "codexVersion": "1.0",
+  "categories": ["Development"],
+  "resources": {
+    "primaryDocumentation": [
+      { "url": "https://kumiho.io/resources/n8n" }
+    ],
+    "credentialDocumentation": [
+      { "url": "https://kumiho.io/resources/n8n" }
+    ]
+  }
+}

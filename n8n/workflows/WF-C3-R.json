@@ -1,0 +1,344 @@
+{
+  "name": "WF-C3-R Retrieval (Subworkflow)",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "c055762a-8fe7-4141-a639-df2372f30060",
+      "typeVersion": 1.1,
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [
+        272,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json || {};\nconst toArray = (value) => {\n  if (Array.isArray(value)) return value;\n  if (typeof value === 'string') {\n    return value.split(',').map((s) => s.trim()).filter(Boolean);\n  }\n  return [];\n};\n\nreturn [{\n  json: {\n    project: input.project || 'CognitiveMemory',\n    space_root: input.space_root || '/',\n    query: input.query || '',\n    keywords: toArray(input.keywords),\n    topics: toArray(input.topics),\n    memory_item_kind: input.memory_item_kind || input.memory_kind || input.memory || 'conversation',\n    need_facts: Boolean(input.need_facts),\n    limit: Number(input.limit || 5)\n  }\n}];\n"
+      },
+      "id": "63babd30-84ae-40f1-9c3d-71232ab8183c",
+      "name": "Normalize Retrieval Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        496,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Retrieve memory for: \"{{ $json.query }}\"\n\nParameters:\n- project: {{ $json.project }}\n- keywords: {{ JSON.stringify($json.keywords) }}\n- topics: {{ JSON.stringify($json.topics) }}\n- memory_item_kind: {{ $json.memory_item_kind }}\n- limit: {{ $json.limit }}\n\nYou MUST call the kumiho_memory_retrieve tool with these exact parameters:\n{\n  \"project\": \"{{ $json.project }}\",\n  \"query\": \"{{ $json.query }}\",\n  \"keywords\": {{ JSON.stringify($json.keywords) }},\n  \"topics\": {{ JSON.stringify($json.topics) }},\n  \"memory_item_kind\": \"{{ $json.memory_item_kind }}\",\n  \"limit\": {{ $json.limit }},\n  \"include_revision_metadata\": true\n}\n\nAfter calling the tool, return ONLY the JSON result from the tool. Do not add any explanation.",
+        "options": {
+          "systemMessage": "You are a memory retrieval agent. Your ONLY job is to call the kumiho_memory_retrieve tool with the provided parameters and return its result.\n\nIMPORTANT RULES:\n1. ALWAYS call kumiho_memory_retrieve - never skip this step\n2. If the tool returns empty results, that is a valid result - return it as-is\n3. Do NOT say \"I don't have relevant memory\" - always call the tool first\n4. Return the tool's JSON output directly without modification\n5. The tool handles all search strategies internally (fuzzy search, bundle search, fallback to pattern search)\n\nThe tool will return:\n- item_krefs: array of item references\n- revision_krefs: array of revision references  \n- spaces_used: array of spaces searched\n- scores: relevance scores (higher is better)"
+        }
+      },
+      "id": "12b864b5-9d68-412e-bb5a-9bc31db6b54f",
+      "name": "AI Agent - Memory Retrieve",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        736,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "options": {}
+      },
+      "id": "ba6523ba-c7ac-4d68-86bf-545aba01e02c",
+      "name": "OpenAI Retrieval Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        736,
+        560
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "FeUUXy7um08FiyTl",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "endpointUrl": "https://api.kumiho.cloud/api/v1/mcp/tools",
+        "authentication": "bearerAuth",
+        "options": {}
+      },
+      "id": "d6e74612-fc75-435c-bd7a-08f79bbc3058",
+      "name": "Kumiho MCP Client",
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.2,
+      "position": [
+        896,
+        560
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "C2evd7Q7O4Vt3mdj",
+          "name": "Bearer Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let output = $json.output || $json.text || $json.response || '';\n\n// Strip markdown code blocks if present\noutput = output.replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/i, '').trim();\n\n// Extract JSON from mixed content\nconst jsonMatch = output.match(/\\{[\\s\\S]*\\}/);\nif (jsonMatch) {\n  output = jsonMatch[0];\n}\n\nlet data = {};\ntry {\n  data = JSON.parse(output);\n} catch (err) {\n  try {\n    const cleanJson = output.replace(/[\\r\\n]+/g, ' ').match(/\\{.*\\}/);\n    if (cleanJson) {\n      data = JSON.parse(cleanJson[0]);\n    }\n  } catch (e) {\n    data = {};\n  }\n}\n\nconst itemKrefs = data.item_krefs || [];\nconst revisionKrefs = data.revision_krefs || [];\nconst spacesUsed = data.spaces_used || [];\nconst scores = data.scores || [];\n\n// If we have revision krefs, split them for parallel fetching\nif (revisionKrefs.length > 0) {\n  return revisionKrefs.map((kref, idx) => ({\n    json: {\n      revision_kref: kref,\n      item_kref: itemKrefs[idx] || '',\n      score: scores[idx] || 0,\n      spaces_used: spacesUsed,\n      total_results: revisionKrefs.length,\n      index: idx\n    }\n  }));\n}\n\n// No results - return empty\nreturn [{\n  json: {\n    revision_kref: '',\n    item_kref: '',\n    score: 0,\n    spaces_used: spacesUsed,\n    total_results: 0,\n    index: 0,\n    no_results: true\n  }\n}];\n"
+      },
+      "id": "fd8f0112-8bbf-4e01-af76-547b080b91ec",
+      "name": "Parse and Split Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        976,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "has-revision-kref",
+              "leftValue": "={{ $json.revision_kref }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-has-results",
+      "name": "Has Results?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "revision",
+        "readModeRevision": "revisionGetByKref",
+        "revisionKrefReadGetByKref": "={{ $json.revision_kref }}"
+      },
+      "id": "fetch-revision-content",
+      "name": "Fetch Revision Content",
+      "type": "CUSTOM.kumihoAction",
+      "typeVersion": 1,
+      "position": [
+        1424,
+        288
+      ],
+      "credentials": {
+        "kumihoApi": {
+          "id": "jU7CYSCnxmSPcxSi",
+          "name": "Kumiho account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge revision content with retrieval metadata\nconst revisionData = $json || {};\nconst prevData = $node['Has Results?'].json || {};\n\n// Extract key fields from revision metadata\nconst metadata = revisionData.metadata || {};\n\nreturn [{\n  json: {\n    item_kref: prevData.item_kref || revisionData.item_kref || '',\n    revision_kref: prevData.revision_kref || revisionData.kref || '',\n    score: prevData.score || 0,\n    // Memory content for the responder\n    title: metadata.title || '',\n    summary: metadata.summary || '',\n    type: metadata.type || '',\n    knowledge: metadata.knowledge || {},\n    classification: metadata.classification || {},\n    // Full metadata available if needed\n    full_metadata: metadata,\n    // Tracking\n    index: prevData.index || 0,\n    total_results: prevData.total_results || 1\n  }\n}];\n"
+      },
+      "id": "enrich-with-content",
+      "name": "Enrich with Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1648,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Collect all enriched results from the split items\nconst items = $input.all();\n\nconst results = items.map(item => item.json);\n\n// Sort by score (highest first)\nresults.sort((a, b) => (b.score || 0) - (a.score || 0));\n\n// Build memory summaries for the responder\nconst memorySummaries = results.map((r, idx) => {\n  const parts = [];\n  if (r.title) parts.push(`[${idx + 1}] ${r.title}`);\n  if (r.summary) parts.push(r.summary);\n  if (r.type) parts.push(`(type: ${r.type})`);\n  return parts.join(' - ');\n}).filter(Boolean);\n\nreturn [{\n  json: {\n    item_krefs: results.map(r => r.item_kref).filter(Boolean),\n    revision_krefs: results.map(r => r.revision_kref).filter(Boolean),\n    scores: results.map(r => r.score),\n    // Pre-formatted memory content for the responder\n    memory_context: memorySummaries.join('\\n'),\n    memories: results,\n    result_count: results.length\n  }\n}];\n"
+      },
+      "id": "aggregate-results",
+      "name": "Aggregate Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1872,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// No results found - return empty structure\nreturn [{\n  json: {\n    item_krefs: [],\n    revision_krefs: [],\n    scores: [],\n    memory_context: '',\n    memories: [],\n    result_count: 0\n  }\n}];\n"
+      },
+      "id": "empty-results",
+      "name": "Empty Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1424,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge both paths (results or empty)\nconst items = $input.all();\n\n// Take the first non-empty result, or the empty one\nfor (const item of items) {\n  if (item.json.result_count > 0 || item.json.item_krefs) {\n    return [item];\n  }\n}\n\n// Fallback\nreturn [{\n  json: {\n    item_krefs: [],\n    revision_krefs: [],\n    scores: [],\n    memory_context: '',\n    memories: [],\n    result_count: 0\n  }\n}];\n"
+      },
+      "id": "merge-paths",
+      "name": "Merge Paths",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2096,
+        352
+      ]
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Normalize Retrieval Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Retrieval Request": {
+      "main": [
+        [
+          {
+            "node": "AI Agent - Memory Retrieve",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent - Memory Retrieve": {
+      "main": [
+        [
+          {
+            "node": "Parse and Split Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Retrieval Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent - Memory Retrieve",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kumiho MCP Client": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent - Memory Retrieve",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse and Split Results": {
+      "main": [
+        [
+          {
+            "node": "Has Results?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Results?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Revision Content",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Empty Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Revision Content": {
+      "main": [
+        [
+          {
+            "node": "Enrich with Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich with Content": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Results": {
+      "main": [
+        [
+          {
+            "node": "Merge Paths",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Empty Results": {
+      "main": [
+        [
+          {
+            "node": "Merge Paths",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "f683e0bb6d2236623ffa165fec99251ec02b47eef2491ae316d16603ef2960a3"
+  }
+}

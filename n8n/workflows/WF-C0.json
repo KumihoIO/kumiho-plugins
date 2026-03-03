@@ -1,0 +1,300 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "jsonExample"
+      },
+      "id": "c055762a-8fe7-4141-a639-df2372f30060",
+      "typeVersion": 1.1,
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [
+        272,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const defaults = {\n  project: 'CognitiveMemory',\n  schema_kref: '/CognitiveMemory/Schema/AgentMemory',\n  schema_version: 'kumiho.agent_memory.v1',\n  allowed_types: ['summary', 'fact', 'decision', 'action', 'reflection', 'error'],\n  allowed_kinds: ['conversation', 'memory_digest', 'execution_evidence'],\n  required_tags: ['published', 'latest', 'draft', 'summarized', 'invalidated'],\n  edge_types: ['DERIVED_FROM', 'DEPENDS_ON', 'REFERENCED'],\n  space_root: '/',\n  memory_item_kind: 'conversation',\n  bundle_kind: 'bundle',\n  local_log_root: '/var/lib/n8n/kumiho-chat-logs'\n};\n\nconst input = $json || {};\nconst toArray = (value, fallback) => {\n  if (Array.isArray(value)) return value;\n  if (typeof value === 'string') {\n    const parts = value.split(',').map((s) => s.trim()).filter(Boolean);\n    return parts.length ? parts : fallback;\n  }\n  return fallback;\n};\n\nconst project = input.project || defaults.project;\nconst schemaKref = input.schema_kref || defaults.schema_kref;\nconst schemaVersion = input.schema_version || defaults.schema_version;\nconst allowedTypes = toArray(input.allowed_types, defaults.allowed_types);\nconst allowedKinds = toArray(input.allowed_kinds, defaults.allowed_kinds);\nconst requiredTags = toArray(input.required_tags, defaults.required_tags);\nconst edgeTypes = toArray(input.edge_types, defaults.edge_types);\nconst spaceRoot = input.space_root || defaults.space_root;\nconst memoryItemKind = input.memory_item_kind || input.memory_kind || input.memory || defaults.memory_item_kind;\nconst bundleKind = input.bundle_kind || defaults.bundle_kind;\nconst localLogRoot = input.local_log_root || input.log_root || input.memory_log_root || defaults.local_log_root;\n\nconst parts = schemaKref.replace(/^\\/+/, '').split('/');\nif (parts.length < 3) {\n  throw new Error('schema_kref must look like /Project/Space/ItemName');\n}\n\nconst projectFromKref = parts[0];\nconst itemName = parts[parts.length - 1];\nconst spaceSegments = parts.slice(1, -1);\nconst spacePath = `/${projectFromKref}/${spaceSegments.join('/')}`;\nconst parentPath = spaceSegments.length > 1\n  ? `${projectFromKref}/${spaceSegments.slice(0, -1).join('/')}`\n  : projectFromKref;\nconst spaceName = spaceSegments[spaceSegments.length - 1];\nconst itemKind = input.schema_item_kind || 'memory_schema';\nconst itemKref = `kref://${projectFromKref}/${spaceSegments.join('/')}/${itemName}.${itemKind}`;\n\nconst policy = {\n  project: projectFromKref,\n  schema_kref: schemaKref,\n  space_root: spaceRoot,\n  allowed_types: allowedTypes,\n  allowed_kinds: allowedKinds,\n  memory_item_kind: memoryItemKind,\n  bundle_kind: bundleKind,\n  required_tags: requiredTags,\n  edge_types: edgeTypes,\n  local_log_root: localLogRoot,\n  item_name_strategy: {\n    type: 'summary_slug',\n    max_words: 8,\n    max_length: 64,\n    suffix: 'short_hash'\n  },\n  space_strategy: {\n    taxonomy: 'topics_and_entities',\n    create_if_missing: true,\n    search_recursive: true\n  },\n  bundle_strategy: {\n    location: 'same_space_as_memory',\n    name_source: 'primary_topic_or_entity_slug',\n    membership: 'add_memory_item'\n  },\n  retrieval_rules: [\n    'Use kumiho_get_spaces(recursive=true) to select topic spaces.',\n    'Search bundles first, then fallback to item_search in selected spaces.',\n    'Filter candidates by published revision metadata summary/title.'\n  ],\n  storage_rules: [\n    'Create topic space/sub-space if missing.',\n    'Store memory as item kind conversation with slugged name.',\n    'Store summary in revision metadata and full context in artifact.',\n    'Create DERIVED_FROM edges to source revisions used.'\n  ]\n};\n\nconst governance = {\n  status: 'published',\n  notes: input.notes || 'Initial schema setup via workflow'\n};\n\nconst metadata = {\n  schema: schemaVersion,\n  policy: JSON.stringify(policy),\n  governance: JSON.stringify(governance)\n};\n\nreturn [{\n  json: {\n    project: projectFromKref,\n    schema_kref: schemaKref,\n    space_path: spacePath,\n    parent_path: parentPath,\n    space_name: spaceName,\n    item_name: itemName,\n    item_kind: itemKind,\n    item_kref: itemKref,\n    metadata\n  }\n}];\n"
+      },
+      "id": "4599288b-3cc4-417a-aac3-b84bee59c985",
+      "name": "Build Schema Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        496,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "projectName": "={{ $json.project }}",
+        "projectDescription": "AI Cognitive Memory schema workspace"
+      },
+      "id": "4bf71b20-5443-4b9f-81c8-e480c8c245f8",
+      "name": "Create Project (If Missing)",
+      "type": "CUSTOM.kumihoAction",
+      "typeVersion": 1,
+      "position": [
+        736,
+        352
+      ],
+      "credentials": {
+        "kumihoApi": {
+          "id": "jU7CYSCnxmSPcxSi",
+          "name": "Kumiho account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "resource": "space",
+        "operation": "create",
+        "parentPath": "={{ $('Build Schema Payload').item.json.parent_path }}",
+        "spaceName": "={{ $('Build Schema Payload').item.json.space_name }}"
+      },
+      "id": "31450bd7-8efc-4e63-938f-9e12543ac2a2",
+      "name": "Create Space (If Missing)",
+      "type": "CUSTOM.kumihoAction",
+      "typeVersion": 1,
+      "position": [
+        976,
+        352
+      ],
+      "credentials": {
+        "kumihoApi": {
+          "id": "jU7CYSCnxmSPcxSi",
+          "name": "Kumiho account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "resource": "item",
+        "operation": "create",
+        "itemSpacePath": "={{ $('Build Schema Payload').item.json.space_path }}",
+        "itemName": "={{ $('Build Schema Payload').item.json.item_name }}",
+        "itemKind": "={{ $('Build Schema Payload').item.json.item_kind }}"
+      },
+      "id": "e2526fbc-bd72-42f1-bce3-d0ac6dd50fe6",
+      "name": "Create Item (If Missing)",
+      "type": "CUSTOM.kumihoAction",
+      "typeVersion": 1,
+      "position": [
+        1216,
+        352
+      ],
+      "credentials": {
+        "kumihoApi": {
+          "id": "jU7CYSCnxmSPcxSi",
+          "name": "Kumiho account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "resource": "revision",
+        "operation": "create",
+        "itemKrefRevisionCreate": "={{ $node['Build Schema Payload'].json.item_kref }}",
+        "metadata": "={{ $node['Build Schema Payload'].json.metadata }}"
+      },
+      "id": "32a4f65e-296e-4df5-bead-0345557080f9",
+      "name": "Create Schema Revision",
+      "type": "CUSTOM.kumihoAction",
+      "typeVersion": 1,
+      "position": [
+        1488,
+        352
+      ],
+      "credentials": {
+        "kumihoApi": {
+          "id": "jU7CYSCnxmSPcxSi",
+          "name": "Kumiho account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "revision",
+        "operation": "update",
+        "updateModeRevision": "revisionSetTag",
+        "revisionKrefTagUpdate": "={{ $json.kref }}",
+        "tagUpdate": "published"
+      },
+      "id": "31b9c431-6969-45aa-a9e5-2a0d7b9573df",
+      "name": "Tag Published",
+      "type": "CUSTOM.kumihoAction",
+      "typeVersion": 1,
+      "position": [
+        2128,
+        352
+      ],
+      "credentials": {
+        "kumihoApi": {
+          "id": "jU7CYSCnxmSPcxSi",
+          "name": "Kumiho account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'created', revision_kref: $json.kref } }}",
+        "options": {}
+      },
+      "id": "44fcec20-2ed9-4cda-89bf-d474e9fe3fa2",
+      "name": "Respond Created",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2368,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = $node['Build Schema Payload'].json.metadata || {};\n\nconst stringifyValue = (value) => {\n  if (value === undefined || value === null) return undefined;\n  if (typeof value === 'string') return value;\n  try {\n    return JSON.stringify(value);\n  } catch (err) {\n    return String(value);\n  }\n};\n\nconst metadata = {};\nfor (const [key, value] of Object.entries(source)) {\n  const normalized = stringifyValue(value);\n  if (normalized !== undefined) {\n    metadata[key] = normalized;\n  }\n}\n\nreturn [{\n  json: {\n    revision_kref: $json.kref,\n    metadata\n  }\n}];\n"
+      },
+      "id": "3554b1b2-6a23-44d2-8419-a766c34b4f9b",
+      "name": "Normalize Schema Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1712,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "revision",
+        "operation": "update",
+        "updateModeRevision": "revisionUpdateMetadata",
+        "revisionKrefUpdateMetadata": "={{ $json.revision_kref }}",
+        "revisionMetadataUpdate": "={{ $json.metadata }}"
+      },
+      "id": "341ebbdf-bfbd-4227-b788-d930c8bf21e4",
+      "name": "Update Schema Metadata",
+      "type": "CUSTOM.kumihoAction",
+      "typeVersion": 1,
+      "position": [
+        1920,
+        352
+      ],
+      "credentials": {
+        "kumihoApi": {
+          "id": "jU7CYSCnxmSPcxSi",
+          "name": "Kumiho account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Build Schema Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Schema Payload": {
+      "main": [
+        [
+          {
+            "node": "Create Project (If Missing)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Project (If Missing)": {
+      "main": [
+        [
+          {
+            "node": "Create Space (If Missing)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Space (If Missing)": {
+      "main": [
+        [
+          {
+            "node": "Create Item (If Missing)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Item (If Missing)": {
+      "main": [
+        [
+          {
+            "node": "Create Schema Revision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Schema Revision": {
+      "main": [
+        [
+          {
+            "node": "Normalize Schema Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag Published": {
+      "main": [
+        [
+          {
+            "node": "Respond Created",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Schema Metadata": {
+      "main": [
+        [
+          {
+            "node": "Update Schema Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Schema Metadata": {
+      "main": [
+        [
+          {
+            "node": "Tag Published",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "f683e0bb6d2236623ffa165fec99251ec02b47eef2491ae316d16603ef2960a3"
+  }
+}

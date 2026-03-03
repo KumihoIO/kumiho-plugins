@@ -1,0 +1,25 @@
+{
+  "name": "kumihoAction",
+  "displayName": "Kumiho Action",
+  "description": "Create, read, update, or delete Kumiho resources.",
+  "version": 1,
+  "defaults": {
+    "name": "Kumiho Action"
+  },
+  "group": [
+    "transform"
+  ],
+  "inputs": [
+    "main"
+  ],
+  "outputs": [
+    "main"
+  ],
+  "credentials": [
+    {
+      "name": "kumihoApi",
+      "required": true
+    }
+  ],
+  "properties": []
+}
