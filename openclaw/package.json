@@ -1,0 +1,64 @@
+{
+  "name": "@kumiho/openclaw-kumiho",
+  "version": "0.2.2",
+  "description": "Long-term cognitive memory for OpenClaw agents, powered by Kumiho Cloud. Privacy-first: raw chats stay local, only structured summaries go to the cloud.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "memory",
+    "kumiho",
+    "long-term-memory",
+    "cognitive-memory",
+    "graph-memory",
+    "privacy-first"
+  ],
+  "files": [
+    "dist",
+    "scripts",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "bin": {
+    "kumiho-setup": "scripts/setup.mjs"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --out-dir dist",
+    "dev": "tsup src/index.ts --format esm --dts --out-dir dist --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "setup": "node scripts/setup.mjs"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "eslint": "^9.0.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.1.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -1,0 +1,284 @@
+{
+  "id": "openclaw-kumiho",
+  "kind": "memory",
+  "uiHints": {
+    "mode": {
+      "label": "Mode",
+      "help": "\"local\" spawns kumiho-mcp Python process (default, uses Python SDK directly). \"cloud\" calls Kumiho Cloud HTTPS API."
+    },
+    "apiKey": {
+      "label": "Kumiho API Key",
+      "sensitive": true,
+      "placeholder": "kh_live_...",
+      "help": "API key from kumiho.io dashboard. Required for cloud mode. In local mode the Python SDK handles auth."
+    },
+    "endpoint": {
+      "label": "API Endpoint",
+      "placeholder": "https://api.kumiho.cloud",
+      "help": "Kumiho Cloud API endpoint (cloud mode only). Default: https://api.kumiho.cloud"
+    },
+    "project": {
+      "label": "Project",
+      "placeholder": "CognitiveMemory",
+      "help": "Kumiho project name for memory storage."
+    },
+    "userId": {
+      "label": "Default User ID",
+      "placeholder": "default",
+      "help": "Stable user identity for cross-channel session management."
+    },
+    "autoCapture": {
+      "label": "Auto-Capture",
+      "help": "Automatically extract and store facts from conversations after each agent turn."
+    },
+    "autoRecall": {
+      "label": "Auto-Recall",
+      "help": "Automatically inject relevant memories into context before each agent turn."
+    },
+    "localSummarization": {
+      "label": "Local Summarization",
+      "help": "Run LLM summarization locally before uploading. Only structured summaries reach Kumiho Cloud."
+    },
+    "consolidationThreshold": {
+      "label": "Consolidation Threshold",
+      "placeholder": "20",
+      "help": "Number of messages before triggering automatic consolidation into long-term memory."
+    },
+    "idleConsolidationTimeout": {
+      "label": "Idle Consolidation Timeout (seconds)",
+      "placeholder": "300",
+      "help": "Seconds of inactivity before automatically consolidating the session. Resets on each message. Set to 0 to disable. Default: 300 (5 min)."
+    },
+    "sessionTtl": {
+      "label": "Session TTL (seconds)",
+      "placeholder": "3600",
+      "help": "Working memory session expiry. Default: 3600 (1 hour)."
+    },
+    "topK": {
+      "label": "Top K Results",
+      "placeholder": "5",
+      "help": "Maximum number of memories to recall per query."
+    },
+    "searchThreshold": {
+      "label": "Search Threshold",
+      "placeholder": "0.3",
+      "help": "Minimum similarity score for memory recall (0-1). Default: 0.3"
+    },
+    "artifactDir": {
+      "label": "Local Artifact Directory",
+      "placeholder": "~/.kumiho/artifacts",
+      "advanced": true,
+      "help": "Local directory for raw chats, voice memos, and media. These files never leave your device."
+    },
+    "piiRedaction": {
+      "label": "PII Redaction",
+      "help": "Redact emails, phone numbers, SSNs, and credit cards before uploading summaries."
+    },
+    "dreamStateSchedule": {
+      "label": "Dream State Schedule",
+      "placeholder": "0 3 * * *",
+      "help": "Cron expression for automated Dream State runs (e.g. '0 3 * * *' = nightly 3 AM). Set to 'off' to disable. Auto-loaded from ~/.kumiho/preferences.json if omitted."
+    },
+    "dreamStateModel": {
+      "label": "Dream State LLM",
+      "advanced": true,
+      "help": "LLM for Dream State memory classification/enrichment. Lightweight model recommended (e.g. claude-haiku-4-5). Auto-loaded from ~/.kumiho/preferences.json if omitted."
+    },
+    "consolidationModel": {
+      "label": "Consolidation LLM",
+      "advanced": true,
+      "help": "LLM for session consolidation summarization. Smarter model recommended (e.g. claude-sonnet-4-6). Auto-loaded from ~/.kumiho/preferences.json if omitted."
+    },
+    "llm": {
+      "label": "Summarization LLM",
+      "advanced": true,
+      "help": "LLM configuration for local summarization. Uses agent's default model if not set."
+    },
+    "privacy": {
+      "label": "Privacy Settings",
+      "advanced": true,
+      "help": "Fine-grained control over what data reaches Kumiho Cloud."
+    },
+    "local": {
+      "label": "Local Mode Settings",
+      "advanced": true,
+      "help": "Configure the kumiho-mcp Python subprocess (local mode only)."
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "mode": {
+        "type": "string",
+        "enum": ["local", "cloud"],
+        "default": "local",
+        "description": "\"local\" = spawn kumiho-mcp Python process, \"cloud\" = HTTPS to Kumiho Cloud API"
+      },
+      "apiKey": {
+        "type": "string",
+        "description": "Kumiho Cloud API token. Required for cloud mode only."
+      },
+      "endpoint": {
+        "type": "string",
+        "default": "https://api.kumiho.cloud",
+        "description": "Kumiho Cloud API endpoint"
+      },
+      "project": {
+        "type": "string",
+        "default": "CognitiveMemory",
+        "description": "Kumiho project name"
+      },
+      "userId": {
+        "type": "string",
+        "default": "default",
+        "description": "Stable user identity for cross-channel sessions"
+      },
+      "autoCapture": {
+        "type": "boolean",
+        "default": true,
+        "description": "Auto-extract and store facts after each agent turn"
+      },
+      "autoRecall": {
+        "type": "boolean",
+        "default": true,
+        "description": "Auto-inject relevant memories before each agent turn"
+      },
+      "localSummarization": {
+        "type": "boolean",
+        "default": true,
+        "description": "Summarize locally before uploading (privacy-first)"
+      },
+      "consolidationThreshold": {
+        "type": "number",
+        "default": 20,
+        "description": "Messages before auto-consolidation"
+      },
+      "idleConsolidationTimeout": {
+        "type": "number",
+        "default": 300,
+        "description": "Seconds of inactivity before idle consolidation fires. 0 = disabled."
+      },
+      "sessionTtl": {
+        "type": "number",
+        "default": 3600,
+        "description": "Working memory TTL in seconds"
+      },
+      "topK": {
+        "type": "number",
+        "default": 5,
+        "description": "Max memories per recall"
+      },
+      "searchThreshold": {
+        "type": "number",
+        "default": 0.3,
+        "description": "Min similarity for recall (0-1)"
+      },
+      "artifactDir": {
+        "type": "string",
+        "description": "Local artifact storage path"
+      },
+      "piiRedaction": {
+        "type": "boolean",
+        "default": true,
+        "description": "Redact PII before upload"
+      },
+      "dreamStateSchedule": {
+        "type": "string",
+        "description": "Cron expression for Dream State (e.g. '0 3 * * *'). 'off' = disabled. Auto-loaded from ~/.kumiho/preferences.json if omitted."
+      },
+      "dreamStateModel": {
+        "type": "object",
+        "description": "LLM for Dream State. Auto-loaded from ~/.kumiho/preferences.json if omitted.",
+        "properties": {
+          "provider": { "type": "string", "enum": ["openai", "anthropic"] },
+          "model": { "type": "string" },
+          "apiKey": { "type": "string" }
+        }
+      },
+      "consolidationModel": {
+        "type": "object",
+        "description": "LLM for session consolidation. Auto-loaded from ~/.kumiho/preferences.json if omitted.",
+        "properties": {
+          "provider": { "type": "string", "enum": ["openai", "anthropic"] },
+          "model": { "type": "string" },
+          "apiKey": { "type": "string" }
+        }
+      },
+      "llm": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": ["openai", "anthropic"],
+            "description": "LLM provider for summarization"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model name for summarization"
+          },
+          "apiKey": {
+            "type": "string",
+            "description": "API key for summarization LLM (if different from agent)"
+          }
+        }
+      },
+      "privacy": {
+        "type": "object",
+        "properties": {
+          "uploadSummariesOnly": {
+            "type": "boolean",
+            "default": true,
+            "description": "Only send structured summaries, never raw text"
+          },
+          "localArtifacts": {
+            "type": "boolean",
+            "default": true,
+            "description": "Keep raw chats and media on local filesystem"
+          },
+          "storeTranscriptions": {
+            "type": "boolean",
+            "default": true,
+            "description": "Store voice/image transcription text in Kumiho"
+          }
+        }
+      },
+      "local": {
+        "type": "object",
+        "description": "Local mode settings (kumiho-mcp subprocess)",
+        "properties": {
+          "pythonPath": {
+            "type": "string",
+            "default": "python",
+            "description": "Python executable path (e.g. /path/to/venv/bin/python)"
+          },
+          "command": {
+            "type": "string",
+            "default": "kumiho-mcp",
+            "description": "MCP server command or Python module (e.g. kumiho-mcp, kumiho.mcp_server)"
+          },
+          "args": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Extra CLI args for the MCP server"
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "description": "Extra environment variables for the Python process"
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Working directory for the Python process"
+          },
+          "timeout": {
+            "type": "number",
+            "default": 30000,
+            "description": "Request timeout in milliseconds"
+          }
+        }
+      }
+    },
+    "required": []
+  }
+}
