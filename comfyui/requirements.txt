@@ -1,0 +1,15 @@
+# Kumiho ComfyUI Custom Nodes Dependencies
+# These are additional dependencies beyond what ComfyUI provides
+
+# Kumiho SDK - direct Python access to Kumiho Cloud (RECOMMENDED)
+# Much more performant than HTTP API calls
+kumiho>=0.8.2
+
+# Kumiho CLI - required for authentication
+# Run `kumiho-cli login` to create kumiho_authentication.json
+kumiho-cli>=1.0.0
+
+# These are typically provided by ComfyUI but listed for completeness
+# torch
+# numpy
+# Pillow

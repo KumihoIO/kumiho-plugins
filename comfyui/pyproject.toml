@@ -1,0 +1,33 @@
+[project]
+name = "kumiho-comfyui"
+description = "Kumiho ComfyUI custom nodes - Connect ComfyUI workflows with Kumiho Cloud asset management system"
+version = "1.0.2"
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "numpy",
+    "Pillow",
+    "requests",
+    "aiohttp",
+    "kumiho",
+]
+
+[project.urls]
+Homepage = "https://kumiho.io"
+Repository = "https://github.com/kumihoclouds/kumiho-comfyui"
+Documentation = "https://docs.kumiho.io"
+
+[tool.comfy]
+PublisherId = "kumiho"
+DisplayName = "Kumiho"
+Icon = "https://kumiho.io/images/kumiho_icon.png"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["kumiho_nodes*"]
