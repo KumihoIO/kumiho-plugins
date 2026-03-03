@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "kumiho-memory": {
+      "command": "python",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/scripts/run_kumiho_mcp.py"
+      ],
+      "env": {
+        "KUMIHO_AUTH_TOKEN": "${KUMIHO_AUTH_TOKEN:-}",
+        "KUMIHO_CONTROL_PLANE_URL": "${KUMIHO_CONTROL_PLANE_URL:-https://control.kumiho.cloud}",
+        "KUMIHO_CLAUDE_DISCOVERY_USER_AGENT": "${KUMIHO_CLAUDE_DISCOVERY_USER_AGENT:-kumiho-claude/0.8.1}",
+        "KUMIHO_MCP_LOG_LEVEL": "${KUMIHO_MCP_LOG_LEVEL:-INFO}",
+        "KUMIHO_CLAUDE_PACKAGE_SPEC": "${KUMIHO_CLAUDE_PACKAGE_SPEC:-kumiho[mcp]>=0.9.7 kumiho-memory[all]>=0.3.1}",
+        "KUMIHO_CLAUDE_DISABLE_LLM_FALLBACK": "${KUMIHO_CLAUDE_DISABLE_LLM_FALLBACK:-}",
+        "KUMIHO_AUTO_ASSESS": "1"
+      }
+    }
+  }
+}

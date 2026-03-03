@@ -1,0 +1,25 @@
+{
+  "name": "kumiho-memory",
+  "version": "0.8.1",
+  "description": "Persistent graph-native memory for Claude — recalls context across sessions, stores decisions and preferences, and bootstraps identity at session start.",
+  "author": {
+    "name": "Kumiho Inc.",
+    "url": "https://kumiho.io"
+  },
+  "repository": "https://github.com/kumihoclouds/kumiho-claude",
+  "homepage": "https://docs.kumiho.io/python/mcp.html",
+  "license": "MIT",
+  "keywords": [
+    "kumiho",
+    "memory",
+    "mcp",
+    "graph",
+    "cognitive-memory",
+    "plugin",
+    "claude"
+  ],
+  "skills": "./skills",
+  "commands": "./commands",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json"
+}

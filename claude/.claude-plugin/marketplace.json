@@ -1,0 +1,17 @@
+{
+  "name": "kumiho-claude",
+  "owner": {
+    "name": "Kumiho Inc.",
+    "url": "https://kumiho.io"
+  },
+  "metadata": {
+    "description": "Persistent graph-native memory for Claude — recalls context across sessions, stores decisions and preferences automatically."
+  },
+  "plugins": [
+    {
+      "name": "kumiho-memory",
+      "source": "./",
+      "description": "Run local Kumiho MCP with kumiho-memory."
+    }
+  ]
+}

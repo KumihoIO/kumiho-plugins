@@ -1,0 +1,41 @@
+{
+  "description": "Kumiho memory plugin hooks — session bootstrap, auto-approval, and artifact generation",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/session-bootstrap.py\"",
+            "timeout": 5,
+            "statusMessage": "Bootstrapping Kumiho memory..."
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/save-session-artifact.py\"",
+            "timeout": 10,
+            "statusMessage": "Saving session artifact..."
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "mcp__.*kumiho-memory.*__kumiho_.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/auto-approve-memory.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
