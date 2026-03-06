@@ -232,11 +232,17 @@ export async function autoCapture(
     return { captured: false, consolidated: false, messageCount: 0 };
   }
 
-  state.lastAssistantResponse = assistantResponse;
+  // Skip empty/whitespace-only responses (e.g. tool-only turns)
+  const trimmed = (assistantResponse ?? "").trim();
+  if (!trimmed) {
+    return { captured: false, consolidated: false, messageCount: state.messageCount };
+  }
+
+  state.lastAssistantResponse = trimmed;
   state.messageCount++;
 
   // Store assistant response in working memory
-  await client.chatAdd(state.sessionId, "assistant", assistantResponse, {
+  await client.chatAdd(state.sessionId, "assistant", trimmed, {
     timestamp: new Date().toISOString(),
   });
 

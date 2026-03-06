@@ -997,11 +997,20 @@ export default {
         const messages = (ctx["messages"] as Array<{ role: string; content: string }> | undefined) ?? [];
         const lastAssistantMsg = [...messages].reverse().find((m) => m.role === "assistant");
         const raw = lastAssistantMsg?.content;
-        const response = typeof raw === "string"
-          ? raw
-          : Array.isArray(raw)
-            ? (raw as Array<{ type: string; text?: string }>).filter((b) => b.type === "text").map((b) => b.text).join("\n")
-            : "";
+        let response: string;
+        if (typeof raw === "string") {
+          response = raw;
+        } else if (Array.isArray(raw)) {
+          const blocks = raw as Array<{ type: string; text?: string; name?: string }>;
+          const textParts = blocks.filter((b) => b.type === "text").map((b) => b.text ?? "");
+          const toolParts = blocks.filter((b) => b.type === "tool_use").map((b) => `[tool: ${b.name}]`);
+          response = textParts.join("\n").trim();
+          if (!response && toolParts.length > 0) {
+            response = `(Tool-only turn: ${toolParts.join(", ")})`;
+          }
+        } else {
+          response = "";
+        }
         await autoCapture(
           state.client,
           state.config,
@@ -1176,7 +1185,9 @@ export function createKumihoMemory(rawConfig: KumihoPluginConfig = {}) {
 
     /** Trigger Dream State consolidation. */
     async dream() {
-      return kumihoClient.triggerDreamState();
+      const dm = cfg.dreamStateModel;
+      const modelConfig = dm?.provider || dm?.model || dm?.apiKey ? dm : undefined;
+      return kumihoClient.triggerDreamState(modelConfig);
     },
 
     /** Store tool execution result. */

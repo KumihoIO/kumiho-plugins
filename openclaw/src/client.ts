@@ -243,11 +243,12 @@ export class KumihoClient {
     content: string,
     metadata?: Record<string, unknown>,
   ): Promise<void> {
+    if (!content?.trim()) return; // skip empty messages
     await this.transport.call("kumiho_chat_add", {
       project: this.project,
       session_id: sessionId,
       role,
-      message: content,
+      message: content.trim(),
       metadata,
     });
   }

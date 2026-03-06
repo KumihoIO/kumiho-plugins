@@ -1,6 +1,6 @@
 {
   "name": "@kumiho/openclaw-kumiho",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Long-term cognitive memory for OpenClaw agents, powered by Kumiho Cloud. Privacy-first: raw chats stay local, only structured summaries go to the cloud.",
   "type": "module",
   "license": "MIT",

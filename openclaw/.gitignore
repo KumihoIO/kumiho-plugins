@@ -31,5 +31,3 @@ Thumbs.db
 
 # Claude Code
 CLAUDE.md
-dist/index.d.ts
-dist/index.js
