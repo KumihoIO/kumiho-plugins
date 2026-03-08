@@ -220,6 +220,17 @@ interface PluginAPI {
     event: string,
     handler: (ctx: Record<string, unknown>) => void | Promise<void>,
   ) => void;
+  registerTool: (tool: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+    execute: (
+      toolCallId: string,
+      params: Record<string, unknown>,
+      signal?: AbortSignal,
+      onUpdate?: (text: string) => void,
+    ) => Promise<unknown> | unknown;
+  }) => void;
 }
 
 interface CLIProgram {
@@ -512,7 +523,7 @@ export default {
           name,
           description: schema.description,
           parameters: schema.parameters,
-          async execute(_toolCallId, params) {
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
             const result = await handler(toolCtx, params ?? {});
             return typeof result === "string" ? result : JSON.stringify(result);
           },
