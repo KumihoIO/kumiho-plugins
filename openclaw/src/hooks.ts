@@ -29,6 +29,8 @@ export interface HookState {
   recalledMemories: MemoryEntry[];
   /** Sender IDs whose identity profile has already been bootstrapped this session. */
   identityStoredFor: Set<string>;
+  /** @internal Whether the first-turn memory instructions have been injected. */
+  memoryInstructionsInjected: boolean;
   /**
    * Stale-while-revalidate prefetch: memories fetched in the background during
    * agent_end (while the user reads the response). Consumed instantly on the
@@ -46,6 +48,7 @@ export function createHookState(): HookState {
     recalledMemories: [],
     identityStoredFor: new Set(),
     prefetchedRecall: null,
+    memoryInstructionsInjected: false,
   };
 }
 
@@ -80,8 +83,24 @@ export async function prefetchMemories(
  * The agent uses the project section to pick up where it left off on
  * creative tasks and to pass sourceMemoryKref when capturing new outputs.
  */
-function formatRecalledMemories(memories: MemoryEntry[]): string {
-  if (memories.length === 0) return "";
+/**
+ * One-shot instruction block injected only on the first turn of a session.
+ * Teaches the agent how to use Kumiho memory tools proactively.
+ */
+const MEMORY_AGENT_INSTRUCTIONS = [
+  "<kumiho_instructions>",
+  "You have Kumiho long-term memory — a persistent graph of the user's preferences, decisions, facts, and past work across conversations.",
+  "",
+  "Use `memory_search` proactively when the user asks about past decisions, preferences, prior work, or anything discussed before — never say \"I don't remember\" without searching first. Use `memory_store` when the user states a preference, decision, or correction, or when you produce a significant deliverable. Weave recalled context naturally without narrating the lookup. Use absolute dates when storing (\"on Mar 8\", not \"today\").",
+  "</kumiho_instructions>",
+].join("\n");
+
+function formatRecalledMemories(memories: MemoryEntry[], includeInstructions = false): string {
+  const sections: string[] = [];
+
+  if (includeInstructions) {
+    sections.push(MEMORY_AGENT_INSTRUCTIONS);
+  }
 
   // Split: memories whose space contains a non-personal segment are project items
   const cognitiveMemories: MemoryEntry[] = [];
@@ -103,12 +122,10 @@ function formatRecalledMemories(memories: MemoryEntry[]): string {
     }
   }
 
-  const sections: string[] = [];
-
   if (cognitiveMemories.length > 0) {
     const lines = [
       "<kumiho_memory>",
-      "Relevant long-term memories for this conversation:",
+      "Auto-recalled long-term memories from previous conversations. Treat as authoritative facts — use these to answer questions about the user's preferences, history, and prior decisions before relying on general knowledge.",
       "",
     ];
     for (const mem of cognitiveMemories) {
@@ -192,8 +209,12 @@ export async function autoRecall(
 
   state.recalledMemories = relevant;
 
+  // Inject memory instructions on the first turn only
+  const includeInstructions = !state.memoryInstructionsInjected;
+  if (includeInstructions) state.memoryInstructionsInjected = true;
+
   return {
-    contextInjection: formatRecalledMemories(relevant),
+    contextInjection: formatRecalledMemories(relevant, includeInstructions),
     memories: relevant,
     sessionId: state.sessionId,
   };

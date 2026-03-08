@@ -382,6 +382,64 @@ function msUntilNextCron(cron: string): number {
   return next.getTime() - now.getTime();
 }
 
+// ---------------------------------------------------------------------------
+// LLM key resolution for Dream State / consolidation
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the LLM model config for Dream State, falling back through:
+ *   1. Explicit `dreamStateModel` config (from plugin config or preferences)
+ *   2. General `llm` config on the plugin
+ *   3. Standard env vars: KUMIHO_LLM_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY
+ *
+ * This ensures Dream State can always authenticate with an LLM as long as the
+ * host process (OpenClaw) has _any_ LLM API key available — no separate config
+ * required.
+ */
+function resolveDreamStateModelConfig(
+  cfg: ResolvedConfig,
+): { provider?: string; model?: string; apiKey?: string } | undefined {
+  const dm = cfg.dreamStateModel ?? {};
+
+  // If dreamStateModel already has an apiKey, use it directly.
+  if (dm.apiKey) return dm;
+
+  // Try the general llm config.
+  const llmKey = cfg.llm?.apiKey;
+  if (llmKey) {
+    return {
+      provider: dm.provider || cfg.llm?.provider,
+      model: dm.model || cfg.llm?.model,
+      apiKey: llmKey,
+    };
+  }
+
+  // Try env vars — the host (OpenClaw) typically exports one of these.
+  const envKey =
+    process.env.KUMIHO_LLM_API_KEY ||
+    process.env.ANTHROPIC_API_KEY ||
+    process.env.OPENAI_API_KEY;
+
+  if (envKey) {
+    const provider =
+      dm.provider ||
+      process.env.KUMIHO_LLM_PROVIDER ||
+      (process.env.ANTHROPIC_API_KEY && envKey === process.env.ANTHROPIC_API_KEY
+        ? "anthropic"
+        : undefined);
+
+    return {
+      provider,
+      model: dm.model || process.env.KUMIHO_LLM_MODEL || undefined,
+      apiKey: envKey,
+    };
+  }
+
+  // Nothing found — return whatever partial config exists so the MCP server
+  // can still try its own env-var fallback.
+  return dm.provider || dm.model ? dm : undefined;
+}
+
 /**
  * Run Dream State via the standalone Python CLI as a fallback.
  * Spawns `python -m kumiho_memory dream` using the resolved Python path.
@@ -398,7 +456,7 @@ function execDreamStateCli(
 
     // Inject model config as env vars for the CLI subprocess
     const env = { ...process.env };
-    const dm = cfg.dreamStateModel;
+    const dm = resolveDreamStateModelConfig(cfg);
     if (dm?.provider) env.KUMIHO_LLM_PROVIDER = dm.provider;
     if (dm?.model) env.KUMIHO_LLM_MODEL = dm.model;
     if (dm?.apiKey) env.KUMIHO_LLM_API_KEY = dm.apiKey;
@@ -436,8 +494,7 @@ function scheduleDreamState(
   dreamStateTimer = setTimeout(async () => {
     dreamStateTimer = null;
     try {
-      const dm = cfg.dreamStateModel;
-      const modelConfig = dm?.provider || dm?.model || dm?.apiKey ? dm : undefined;
+      const modelConfig = resolveDreamStateModelConfig(cfg);
       const stats = await kumihoClient.triggerDreamState(modelConfig);
       logger.info(
         `Kumiho Dream State complete — ${stats.events_processed} events, ` +

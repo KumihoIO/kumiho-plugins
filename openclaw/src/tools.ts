@@ -20,6 +20,50 @@ import type { ResolvedConfig, MemoryScope, MemoryType, MemoryEntry } from "./typ
 import { creativeCaptureHandler, projectRecallHandler } from "./creative.js";
 
 // ---------------------------------------------------------------------------
+// LLM key resolution for Dream State
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve LLM model config for Dream State, falling back through:
+ * dreamStateModel → llm config → env vars (ANTHROPIC_API_KEY, etc.)
+ */
+function resolveDreamModelConfig(
+  cfg: ResolvedConfig,
+): { provider?: string; model?: string; apiKey?: string } | undefined {
+  const dm = cfg.dreamStateModel ?? {};
+  if (dm.apiKey) return dm;
+
+  const llmKey = cfg.llm?.apiKey;
+  if (llmKey) {
+    return {
+      provider: dm.provider || cfg.llm?.provider,
+      model: dm.model || cfg.llm?.model,
+      apiKey: llmKey,
+    };
+  }
+
+  const envKey =
+    process.env.KUMIHO_LLM_API_KEY ||
+    process.env.ANTHROPIC_API_KEY ||
+    process.env.OPENAI_API_KEY;
+
+  if (envKey) {
+    return {
+      provider:
+        dm.provider ||
+        process.env.KUMIHO_LLM_PROVIDER ||
+        (process.env.ANTHROPIC_API_KEY && envKey === process.env.ANTHROPIC_API_KEY
+          ? "anthropic"
+          : undefined),
+      model: dm.model || process.env.KUMIHO_LLM_MODEL || undefined,
+      apiKey: envKey,
+    };
+  }
+
+  return dm.provider || dm.model ? dm : undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Tool parameter schemas (JSON Schema for OpenClaw tool registry)
 // ---------------------------------------------------------------------------
 
@@ -27,7 +71,9 @@ export const TOOL_SCHEMAS = {
   memory_search: {
     description:
       "Search Kumiho long-term memory using a natural language query. " +
-      "Returns relevant memories across all channels the user has interacted on.",
+      "Use this proactively when the user asks about past decisions, preferences, prior work, " +
+      "or anything that might have been discussed in previous conversations. " +
+      "Never say 'I don't remember' without searching first.",
     parameters: {
       type: "object" as const,
       properties: {
@@ -56,8 +102,9 @@ export const TOOL_SCHEMAS = {
 
   memory_store: {
     description:
-      "Explicitly store a fact, decision, or summary in Kumiho long-term memory. " +
-      "Use this when the user asks you to remember something specific.",
+      "Store a fact, decision, preference, or summary in Kumiho long-term memory. " +
+      "Use proactively when the user states a preference, makes a decision, gives a correction, " +
+      "or asks you to remember something. Also store your own significant outputs (plans, analyses, decisions).",
     parameters: {
       type: "object" as const,
       properties: {
@@ -484,8 +531,7 @@ export async function handleMemoryConsolidate(
 }
 
 export async function handleMemoryDream(ctx: ToolContext): Promise<string> {
-  const dm = ctx.config.dreamStateModel;
-  const modelConfig = dm?.provider || dm?.model || dm?.apiKey ? dm : undefined;
+  const modelConfig = resolveDreamModelConfig(ctx.config);
   const stats = await ctx.client.triggerDreamState(modelConfig);
 
   const lines = [
