@@ -97,6 +97,12 @@ export const TOOL_SCHEMAS = {
           type: "string",
           description: "The kref identifier of the memory to retrieve",
         },
+        includeArtifact: {
+          type: "boolean",
+          description:
+            "Also fetch the artifact file location (default: false). " +
+            "Only needed for deep lookups where you need the raw content path.",
+        },
       },
       required: ["kref"],
     },
@@ -337,6 +343,8 @@ export async function handleMemoryStore(
     type,
     title,
     summary: params.content,
+    userText: params.content,
+    assistantText: "",
     topics: params.topics,
     spaceHint: params.spaceHint,
     tags: [type, "user-stored"],
@@ -349,9 +357,9 @@ export async function handleMemoryStore(
 
 export async function handleMemoryGet(
   ctx: ToolContext,
-  params: { kref: string },
+  params: { kref: string; includeArtifact?: boolean },
 ): Promise<string> {
-  const entry = await ctx.client.getRevision(params.kref);
+  const entry = await ctx.client.getRevision(params.kref, params.includeArtifact ?? false);
   return formatMemoryEntry(entry);
 }
 

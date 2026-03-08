@@ -317,7 +317,7 @@ export class KumihoClient {
       item_krefs: string[];
       revision_krefs: string[];
       spaces_used: string[];
-      revisions?: MemoryEntry[];
+      scores?: number[];
     }>("kumiho_memory_retrieve", {
       project: this.project,
       query: params.query,
@@ -326,28 +326,89 @@ export class KumihoClient {
       memory_types: params.memoryTypes,
     });
 
-    if (raw.revisions) return raw.revisions;
+    // Resolve each revision_kref via getRevision() which maps metadata
+    // fields (title, summary, type) into MemoryEntry shape.
+    const krefs = raw.revision_krefs ?? [];
+    if (krefs.length === 0) return [];
 
-    return (raw.revision_krefs ?? []).map((kref, i) => ({
-      kref,
-      type: "summary" as MemoryType,
-      title: "",
-      summary: "",
-      topics: [],
-      space: raw.spaces_used[i],
-    }));
+    const entries = await Promise.all(
+      krefs.map((kref, i) =>
+        this.getRevision(kref)
+          .then((entry) => ({
+            ...entry,
+            score: raw.scores?.[i],
+            space: entry.space || raw.spaces_used?.[i],
+          }))
+          .catch(() => ({
+            kref,
+            type: "summary" as MemoryType,
+            title: "",
+            summary: "",
+            topics: [] as string[],
+            space: raw.spaces_used?.[i],
+            score: raw.scores?.[i],
+          })),
+      ),
+    );
+
+    return entries;
   }
 
   // -----------------------------------------------------------------------
   // Revision details
   // -----------------------------------------------------------------------
 
-  async getRevision(kref: string): Promise<MemoryEntry> {
-    return this.transport.call<MemoryEntry>("kumiho_get_revision", { kref });
+  /**
+   * Fetch a revision and map it to a MemoryEntry.
+   *
+   * The raw MCP revision stores title/summary/type in its `metadata` dict,
+   * so we extract those into top-level MemoryEntry fields.
+   *
+   * When `includeArtifact` is true, also fetches the default artifact's
+   * content (file location) and attaches it as `artifactLocation`.
+   */
+  async getRevision(kref: string, includeArtifact = false): Promise<MemoryEntry> {
+    const raw = await this.transport.call<{
+      kref: string;
+      item_kref: string;
+      metadata?: Record<string, string>;
+      tags?: string[];
+      created_at?: string;
+      default_artifact?: string;
+    }>("kumiho_get_revision", { kref });
+
+    const meta = raw.metadata ?? {};
+    const entry: MemoryEntry = {
+      kref: raw.kref,
+      type: (meta.type as MemoryEntry["type"]) ?? "summary",
+      title: meta.title ?? "",
+      summary: meta.summary ?? "",
+      topics: meta.topics ? JSON.parse(meta.topics) : [],
+      timestamp: raw.created_at,
+      space: meta.space,
+      metadata: meta,
+    };
+
+    if (includeArtifact && raw.default_artifact) {
+      try {
+        const artifactKref = `${raw.kref}&a=${raw.default_artifact}`;
+        const artifact = await this.transport.call<{
+          location?: string;
+          metadata?: Record<string, string>;
+        }>("kumiho_get_artifact", { artifact_kref: artifactKref });
+        if (artifact.location) {
+          entry.metadata = { ...entry.metadata, artifact_location: artifact.location };
+        }
+      } catch {
+        // Artifact fetch is best-effort
+      }
+    }
+
+    return entry;
   }
 
-  async getRevisions(krefs: string[]): Promise<MemoryEntry[]> {
-    return Promise.all(krefs.map((k) => this.getRevision(k)));
+  async getRevisions(krefs: string[], includeArtifact = false): Promise<MemoryEntry[]> {
+    return Promise.all(krefs.map((k) => this.getRevision(k, includeArtifact)));
   }
 
   // -----------------------------------------------------------------------

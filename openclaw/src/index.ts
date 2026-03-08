@@ -504,6 +504,20 @@ export default {
           }
         },
       );
+
+      // Also register as an LLM-visible tool so the agent can invoke it
+      const schema = TOOL_SCHEMAS[name as keyof typeof TOOL_SCHEMAS];
+      if (schema) {
+        api.registerTool({
+          name,
+          description: schema.description,
+          parameters: schema.parameters,
+          async execute(_toolCallId, params) {
+            const result = await handler(toolCtx, params ?? {});
+            return typeof result === "string" ? result : JSON.stringify(result);
+          },
+        });
+      }
     }
 
     // -----------------------------------------------------------------------
