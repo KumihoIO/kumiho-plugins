@@ -348,6 +348,7 @@ export class McpBridge extends EventEmitter {
   async callTool<T = unknown>(
     toolName: string,
     args: Record<string, unknown>,
+    timeoutMs?: number,
   ): Promise<T> {
     if (!this.initialized) {
       throw new McpBridgeError(
@@ -359,7 +360,7 @@ export class McpBridge extends EventEmitter {
     const result = (await this.sendRequest("tools/call", {
       name: toolName,
       arguments: args,
-    })) as McpToolResult;
+    }, timeoutMs)) as McpToolResult;
 
     if (result.isError) {
       const errorText =
@@ -387,7 +388,9 @@ export class McpBridge extends EventEmitter {
   private sendRequest(
     method: string,
     params: Record<string, unknown>,
+    timeoutMs?: number,
   ): Promise<unknown> {
+    const effectiveTimeout = timeoutMs ?? this.timeout;
     return new Promise((resolve, reject) => {
       if (!this.proc?.stdin?.writable) {
         reject(
@@ -408,11 +411,11 @@ export class McpBridge extends EventEmitter {
         this.pending.delete(id);
         reject(
           new McpBridgeError(
-            `MCP request '${method}' timed out after ${this.timeout}ms`,
+            `MCP request '${method}' timed out after ${effectiveTimeout}ms`,
             "TIMEOUT",
           ),
         );
-      }, this.timeout);
+      }, effectiveTimeout);
 
       this.pending.set(id, { resolve, reject, timer });
 

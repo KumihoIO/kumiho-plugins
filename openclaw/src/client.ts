@@ -46,7 +46,7 @@ export class KumihoApiError extends Error {
  * call() sends a tool invocation and returns the parsed result.
  */
 export interface Transport {
-  call<T>(tool: string, params: Record<string, unknown>): Promise<T>;
+  call<T>(tool: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T>;
   start?(): Promise<void>;
   close?(): Promise<void>;
   ping(): Promise<boolean>;
@@ -69,9 +69,9 @@ export class HttpTransport implements Transport {
     this.timeout = 30_000;
   }
 
-  async call<T>(tool: string, params: Record<string, unknown>): Promise<T> {
+  async call<T>(tool: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeout);
+    const timer = setTimeout(() => controller.abort(), timeoutMs ?? this.timeout);
 
     try {
       const res = await fetch(`${this.baseUrl}/api/v1/mcp/tools`, {
@@ -164,8 +164,8 @@ export class McpTransport implements Transport {
     await this.bridge.close();
   }
 
-  async call<T>(tool: string, params: Record<string, unknown>): Promise<T> {
-    return this.bridge.callTool<T>(tool, params);
+  async call<T>(tool: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+    return this.bridge.callTool<T>(tool, params, timeoutMs);
   }
 
   async ping(): Promise<boolean> {
@@ -491,7 +491,13 @@ export class KumihoClient {
     if (modelConfig?.provider) params.provider = modelConfig.provider;
     if (modelConfig?.model) params.model = modelConfig.model;
     if (modelConfig?.apiKey) params.api_key = modelConfig.apiKey;
-    return this.transport.call<DreamStateStats>("kumiho_memory_dream_state", params);
+    // Dream State can take minutes (event collection + LLM assessment).
+    // Use a 5-minute timeout instead of the default 30s.
+    return this.transport.call<DreamStateStats>(
+      "kumiho_memory_dream_state",
+      params,
+      5 * 60 * 1000,
+    );
   }
 
   // -----------------------------------------------------------------------
