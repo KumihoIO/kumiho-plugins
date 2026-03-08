@@ -82,7 +82,7 @@ export async function creativeCaptureHandler(
   if (!bffUrl) {
     return (
       "Creative capture is not configured: `bffEndpoint` is missing.\n" +
-      "Set `bffEndpoint` in the Kumiho plugin config to point at your kumiho-FastAPI instance."
+      "Set `bffEndpoint` in the Kumiho plugin config (defaults to https://api.kumiho.cloud)."
     );
   }
 

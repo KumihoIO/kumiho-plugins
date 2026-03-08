@@ -46,6 +46,55 @@ function loadPreferences(): KumihoPreferences {
   return {};
 }
 
+// ---------------------------------------------------------------------------
+// Auth loader — reads ~/.kumiho/kumiho_authentication.json written by kumiho-setup
+// ---------------------------------------------------------------------------
+
+interface KumihoAuthentication {
+  api_token?: string;
+  api_token_expires_at?: number;
+  id_token?: string;
+  refresh_token?: string;
+  expires_at?: number;
+  control_plane_token?: string;
+  cp_expires_at?: number;
+  email?: string;
+  api_key?: string;
+  project_id?: string | null;
+}
+
+/**
+ * Load the long-lived api_token from ~/.kumiho/kumiho_authentication.json.
+ * Falls back to id_token if api_token is missing or expired.
+ * Returns empty string if nothing usable is found.
+ */
+function loadAuthToken(): string {
+  try {
+    const path = join(homedir(), ".kumiho", "kumiho_authentication.json");
+    if (!existsSync(path)) return "";
+    const auth = JSON.parse(readFileSync(path, "utf8")) as KumihoAuthentication;
+
+    // Prefer api_token (long-lived service token with tenant_id claim)
+    if (auth.api_token) {
+      const now = Math.floor(Date.now() / 1000);
+      if (!auth.api_token_expires_at || auth.api_token_expires_at > now) {
+        return auth.api_token;
+      }
+    }
+
+    // Fall back to id_token (short-lived Firebase token)
+    if (auth.id_token) {
+      const now = Math.floor(Date.now() / 1000);
+      if (!auth.expires_at || auth.expires_at > now) {
+        return auth.id_token;
+      }
+    }
+
+    return "";
+  } catch { /* ignore */ }
+  return "";
+}
+
 import { KumihoClient, KumihoApiError, createTransport, type Transport } from "./client.js";
 import { McpBridgeError, type McpToolDefinition } from "./mcp-bridge.js";
 import { PIIRedactor } from "./privacy.js";
@@ -109,7 +158,7 @@ function resolveConfig(raw: KumihoPluginConfig): ResolvedConfig {
   const mode = raw.mode ?? "local";
 
   const apiKey =
-    raw.apiKey || process.env.KUMIHO_API_TOKEN || process.env.KUMIHO_API_KEY || "";
+    raw.apiKey || process.env.KUMIHO_API_TOKEN || process.env.KUMIHO_API_KEY || loadAuthToken();
 
   // Cloud mode requires an API key. Local mode does not (Python SDK handles auth).
   if (mode === "cloud" && !apiKey) {
@@ -123,11 +172,11 @@ function resolveConfig(raw: KumihoPluginConfig): ResolvedConfig {
   const endpoint =
     raw.endpoint || process.env.KUMIHO_ENDPOINT || "https://api.kumiho.cloud";
 
-  // BFF defaults to the same endpoint in cloud mode, local FastAPI in local mode
+  // BFF defaults to the Kumiho Cloud API endpoint in all modes
   const bffEndpoint =
     raw.bffEndpoint ||
     process.env.KUMIHO_BFF_ENDPOINT ||
-    (mode === "cloud" ? endpoint : "http://localhost:8000");
+    endpoint;
 
   // Fall back to ~/.kumiho/preferences.json written by kumiho-setup
   const prefs = loadPreferences();

@@ -65,9 +65,8 @@ export interface KumihoPluginConfig {
   /** Kumiho Cloud API endpoint (cloud mode only) */
   endpoint?: string;
   /**
-   * BFF (kumiho-FastAPI) base URL for creative capture pipeline.
-   * Cloud mode default: same as endpoint.
-   * Local mode default: http://localhost:8000
+   * BFF base URL for creative capture pipeline.
+   * Defaults to the Kumiho Cloud API endpoint.
    */
   bffEndpoint?: string;
   /** Kumiho project name */

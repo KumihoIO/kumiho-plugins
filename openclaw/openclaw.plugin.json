@@ -1,6 +1,10 @@
 {
   "id": "openclaw-kumiho",
   "kind": "memory",
+  "pythonDependencies": {
+    "kumiho": ">=0.9.16",
+    "kumiho-memory": ">=0.3.16"
+  },
   "uiHints": {
     "mode": {
       "label": "Mode",
