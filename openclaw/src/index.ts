@@ -1059,19 +1059,23 @@ export default {
         const idleMs = (config?.idleConsolidationTimeout ?? 0) * 1000;
         if (idleMs > 0 && state.hookState.messageCount > 0) {
           clearIdleTimer();
+          // Capture references at arm-time so a second register() call
+          // doesn't replace them with a fresh (empty) hookState.
+          const capturedState = state;
           idleTimer = setTimeout(() => {
             idleTimer = null;
-            const s = hookState;
-            if (!s || s.messageCount === 0) return;
+            if (capturedState.hookState.messageCount === 0) return;
             void consolidateSession(
-              state.client,
-              state.config,
-              s,
-              state.redactor,
-              state.artifacts,
+              capturedState.client,
+              capturedState.config,
+              capturedState.hookState,
+              capturedState.redactor,
+              capturedState.artifacts,
             ).then((ok) => {
               if (ok) api.logger.info("Kumiho: idle consolidation complete");
-            }).catch(() => {});
+            }).catch((err) => {
+              api.logger.error(`Kumiho: idle consolidation failed: ${(err as Error).message}`);
+            });
           }, idleMs);
         }
       } catch (err) {

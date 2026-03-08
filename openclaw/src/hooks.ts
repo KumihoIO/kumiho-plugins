@@ -346,7 +346,9 @@ export async function consolidateSession(
 
     return true;
   } catch (err) {
-    // Consolidation failure should not break the conversation
+    // Consolidation failure should not break the conversation, but log it
+    // so failures aren't silently swallowed.
+    console.error(`[kumiho] consolidateSession failed: ${(err as Error).message}`);
     return false;
   }
 }
