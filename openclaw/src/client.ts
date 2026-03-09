@@ -506,6 +506,7 @@ export class KumihoClient {
           title: params.title,
           content: params.content,
           kind: params.kind,
+          creative_project: this.project,
           project: params.project,
           tags: params.tags ?? [],
           source_memory_kref: params.sourceMemoryKref,
