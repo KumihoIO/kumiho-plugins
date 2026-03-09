@@ -29,10 +29,10 @@ import { execFile } from "node:child_process";
 interface KumihoPreferences {
   dreamState?: {
     schedule?: string;
-    model?: { provider?: string; model?: string };
+    model?: { provider?: string; model?: string; apiKey?: string };
   };
   consolidation?: {
-    model?: { provider?: string; model?: string };
+    model?: { provider?: string; model?: string; apiKey?: string };
   };
 }
 
@@ -154,11 +154,33 @@ export type {
 // Config resolution
 // ---------------------------------------------------------------------------
 
-function resolveConfig(raw: KumihoPluginConfig): ResolvedConfig {
+function resolveConfig(
+  raw: KumihoPluginConfig,
+  hostModels?: Record<string, { apiKey?: string; baseUrl?: string }>,
+): ResolvedConfig {
   const mode = raw.mode ?? "local";
 
   const apiKey =
     raw.apiKey || process.env.KUMIHO_API_TOKEN || process.env.KUMIHO_API_KEY || loadAuthToken();
+
+  // Resolve the host's LLM API key and provider from the gateway model
+  // provider config.  This is the key OpenClaw itself uses for model calls —
+  // plugins inherit it so Dream State / consolidation work out of the box.
+  let hostLlmApiKey = "";
+  let hostLlmProvider = "";
+  if (hostModels?.anthropic?.apiKey) {
+    hostLlmApiKey = hostModels.anthropic.apiKey;
+    hostLlmProvider = "anthropic";
+  } else if (hostModels?.openai?.apiKey) {
+    hostLlmApiKey = hostModels.openai.apiKey;
+    hostLlmProvider = "openai";
+  } else if (process.env.ANTHROPIC_API_KEY) {
+    hostLlmApiKey = process.env.ANTHROPIC_API_KEY;
+    hostLlmProvider = "anthropic";
+  } else if (process.env.OPENAI_API_KEY) {
+    hostLlmApiKey = process.env.OPENAI_API_KEY;
+    hostLlmProvider = "openai";
+  }
 
   // Cloud mode requires an API key. Local mode does not (Python SDK handles auth).
   if (mode === "cloud" && !apiKey) {
@@ -203,6 +225,8 @@ function resolveConfig(raw: KumihoPluginConfig): ResolvedConfig {
     dreamStateModel: raw.dreamStateModel ?? (prefs.dreamState?.model as import("./types.js").KumihoLLMConfig | undefined) ?? {},
     consolidationModel: raw.consolidationModel ?? (prefs.consolidation?.model as import("./types.js").KumihoLLMConfig | undefined) ?? {},
     llm: raw.llm ?? {},
+    hostLlmApiKey,
+    hostLlmProvider,
     privacy: {
       uploadSummariesOnly: raw.privacy?.uploadSummariesOnly ?? true,
       localArtifacts: raw.privacy?.localArtifacts ?? true,
@@ -231,7 +255,13 @@ function resolveConfig(raw: KumihoPluginConfig): ResolvedConfig {
 // ---------------------------------------------------------------------------
 
 interface PluginAPI {
-  config: { plugins?: { entries?: Record<string, { config?: KumihoPluginConfig }> } };
+  config: {
+    plugins?: { entries?: Record<string, { config?: KumihoPluginConfig }> };
+    /** Host gateway model provider config (resolved SecretRefs). */
+    models?: {
+      providers?: Record<string, { apiKey?: string; baseUrl?: string }>;
+    };
+  };
   logger: {
     info: (msg: string) => void;
     warn: (msg: string) => void;
@@ -388,13 +418,14 @@ function msUntilNextCron(cron: string): number {
 
 /**
  * Resolve the LLM model config for Dream State, falling back through:
- *   1. Explicit `dreamStateModel` config (from plugin config or preferences)
- *   2. General `llm` config on the plugin
- *   3. Standard env vars: KUMIHO_LLM_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY
+ *   1. Explicit `dreamStateModel.apiKey` (from plugin config or preferences)
+ *   2. General `llm.apiKey` on the plugin
+ *   3. Host gateway's model provider key (from `api.config.models.providers`)
+ *   4. Standard env vars: KUMIHO_LLM_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY
  *
- * This ensures Dream State can always authenticate with an LLM as long as the
- * host process (OpenClaw) has _any_ LLM API key available — no separate config
- * required.
+ * Step 3 is the normal path — the plugin inherits the same LLM key that
+ * OpenClaw itself uses for model calls, so Dream State works out of the box
+ * without separate LLM key configuration.
  */
 function resolveDreamStateModelConfig(
   cfg: ResolvedConfig,
@@ -414,7 +445,18 @@ function resolveDreamStateModelConfig(
     };
   }
 
-  // Try env vars — the host (OpenClaw) typically exports one of these.
+  // Use the host gateway's LLM API key (resolved from models.providers at
+  // registration time).  This is the same key OpenClaw uses for its own
+  // model calls — no separate config needed.
+  if (cfg.hostLlmApiKey) {
+    return {
+      provider: dm.provider || cfg.hostLlmProvider || undefined,
+      model: dm.model,
+      apiKey: cfg.hostLlmApiKey,
+    };
+  }
+
+  // Fallback: env vars (typically set by OpenClaw during onboarding).
   const envKey =
     process.env.KUMIHO_LLM_API_KEY ||
     process.env.ANTHROPIC_API_KEY ||
@@ -435,8 +477,8 @@ function resolveDreamStateModelConfig(
     };
   }
 
-  // Nothing found — return whatever partial config exists so the MCP server
-  // can still try its own env-var fallback.
+  // Nothing found — return partial config; MCP server's shared summarizer
+  // will attempt its own env-var resolution.
   return dm.provider || dm.model ? dm : undefined;
 }
 
@@ -548,10 +590,23 @@ export default {
       api.config?.plugins?.entries?.["openclaw-kumiho"]?.config ?? {};
 
     try {
-      config = resolveConfig(rawConfig);
+      config = resolveConfig(rawConfig, api.config?.models?.providers);
     } catch (err) {
       api.logger.error(`Kumiho: ${(err as Error).message}`);
       return;
+    }
+
+    // Forward the host's LLM API key to the MCP subprocess so the Python
+    // side (MemorySummarizer, Dream State) can authenticate with the same
+    // key OpenClaw uses — no separate LLM key config needed.
+    if (config.hostLlmApiKey && config.mode === "local") {
+      const extra: Record<string, string> = {};
+      if (!process.env.KUMIHO_LLM_API_KEY) {
+        extra.KUMIHO_LLM_API_KEY = config.hostLlmApiKey;
+      }
+      if (Object.keys(extra).length) {
+        config.local.env = { ...config.local.env, ...extra };
+      }
     }
 
     // Create transport (HTTP for cloud, MCP stdio for local)

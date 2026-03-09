@@ -147,6 +147,10 @@ export interface ResolvedConfig {
   /** LLM for session consolidation. Empty provider = use agent default. */
   consolidationModel: KumihoLLMConfig;
   llm: KumihoLLMConfig;
+  /** LLM API key inherited from the host gateway's model provider config. */
+  hostLlmApiKey: string;
+  /** LLM provider name corresponding to hostLlmApiKey ("anthropic" | "openai" | ""). */
+  hostLlmProvider: string;
   privacy: Required<KumihoPrivacyConfig>;
   local: Required<Pick<KumihoLocalConfig, "pythonPath" | "command" | "timeout">> &
     Pick<KumihoLocalConfig, "args" | "env" | "cwd">;
