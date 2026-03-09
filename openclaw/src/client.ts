@@ -523,7 +523,12 @@ export class KumihoClient {
         );
       }
 
-      return (await res.json()) as CreativeCaptureResult;
+      const raw = (await res.json()) as Record<string, unknown>;
+      return {
+        queued: raw.queued,
+        jobId: (raw.job_id ?? raw.jobId) as string,
+        message: raw.message,
+      } as CreativeCaptureResult;
     } catch (err) {
       if (err instanceof KumihoApiError) throw err;
       if ((err as Error).name === "AbortError") {
