@@ -241,8 +241,9 @@ export const TOOL_SCHEMAS = {
         },
         kind: {
           type: "string",
-          enum: ["document", "code", "design", "plan", "analysis", "other"],
-          description: "Kind of creative output (default: document)",
+          description:
+            "Item kind — any URL-safe string (e.g. 'document', 'code', 'blog-post', " +
+            "'email', 'design', 'plan', 'analysis'). Default: document.",
         },
         project: {
           type: "string",
@@ -306,8 +307,7 @@ export const TOOL_SCHEMAS = {
         },
         kind: {
           type: "string",
-          enum: ["document", "code", "design", "plan", "analysis", "other"],
-          description: "Filter by creative kind",
+          description: "Filter by item kind (e.g. 'document', 'code', 'blog-post')",
         },
         limit: {
           type: "number",

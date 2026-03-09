@@ -349,7 +349,8 @@ export type CreativeKind =
   | "design"
   | "plan"
   | "analysis"
-  | "other";
+  | "other"
+  | (string & {});
 
 /**
  * Parameters for the creative_capture tool.

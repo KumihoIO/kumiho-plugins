@@ -44,18 +44,10 @@ export interface CreativeToolContext {
  * Falls back to "other" for unrecognised strings.
  */
 function coerceKind(raw: unknown): CreativeKind {
-  const KINDS: CreativeKind[] = [
-    "document",
-    "code",
-    "design",
-    "plan",
-    "analysis",
-    "other",
-  ];
-  if (typeof raw === "string" && KINDS.includes(raw as CreativeKind)) {
+  if (typeof raw === "string" && /^[a-zA-Z][a-zA-Z0-9_-]*$/.test(raw)) {
     return raw as CreativeKind;
   }
-  return "other";
+  return "document";
 }
 
 /**
