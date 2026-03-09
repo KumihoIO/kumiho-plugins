@@ -545,6 +545,56 @@ export class KumihoClient {
   }
 
   // -----------------------------------------------------------------------
+  // Creative job status
+  // -----------------------------------------------------------------------
+
+  async getCreativeJobStatus(
+    jobId: string,
+    bffUrl: string,
+    apiKey: string,
+  ): Promise<{ job_id: string; status: string; result?: Record<string, unknown>; error?: string }> {
+    const url = `${bffUrl.replace(/\/+$/, "")}/api/v1/apps/creative/jobs/${encodeURIComponent(jobId)}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+
+    try {
+      const res = await fetch(url, {
+        method: "GET",
+        headers: { "X-Kumiho-Token": apiKey },
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new KumihoApiError(
+          `Creative job status error: ${res.status} ${body}`,
+          "BFF_ERROR",
+          res.status,
+        );
+      }
+
+      return (await res.json()) as {
+        job_id: string;
+        status: string;
+        result?: Record<string, unknown>;
+        error?: string;
+      };
+    } catch (err) {
+      if (err instanceof KumihoApiError) throw err;
+      if ((err as Error).name === "AbortError") {
+        throw new KumihoApiError("Creative job status timeout", "TIMEOUT", 0);
+      }
+      throw new KumihoApiError(
+        `Creative job status network error: ${(err as Error).message}`,
+        "NETWORK_ERROR",
+        0,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // Dream State
   // -----------------------------------------------------------------------
 

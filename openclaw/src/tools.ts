@@ -17,7 +17,7 @@
 
 import type { KumihoClient } from "./client.js";
 import type { ResolvedConfig, MemoryScope, MemoryType, MemoryEntry } from "./types.js";
-import { creativeCaptureHandler, projectRecallHandler } from "./creative.js";
+import { creativeCaptureHandler, creativeJobStatusHandler, projectRecallHandler } from "./creative.js";
 
 // ---------------------------------------------------------------------------
 // LLM key resolution for Dream State
@@ -267,6 +267,23 @@ export const TOOL_SCHEMAS = {
         },
       },
       required: ["title", "content", "project"],
+    },
+  },
+
+  creative_job_status: {
+    description:
+      "Check the status of a creative capture job. Returns the resulting krefs " +
+      "(item_kref, revision_kref, memory_kref) when the pipeline completes, which can be " +
+      "shared with sub-agents or referenced in follow-up operations.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        jobId: {
+          type: "string",
+          description: "The job ID returned by creative_capture",
+        },
+      },
+      required: ["jobId"],
     },
   },
 
@@ -578,6 +595,8 @@ export const TOOL_HANDLERS: Record<
   memory_dream: (ctx) => handleMemoryDream(ctx),
   creative_capture: (ctx, p) =>
     creativeCaptureHandler(ctx, p as Parameters<typeof creativeCaptureHandler>[1]),
+  creative_job_status: (ctx, p) =>
+    creativeJobStatusHandler(ctx, p as { jobId: string }),
   project_recall: (ctx, p) =>
     projectRecallHandler(ctx, p as Parameters<typeof projectRecallHandler>[1]),
 };

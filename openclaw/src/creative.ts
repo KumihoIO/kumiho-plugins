@@ -119,7 +119,7 @@ export async function creativeCaptureHandler(
         : "",
       ``,
       `The content is being processed and linked to your memory graph in the background.`,
-      `Use the job ID to poll status: GET /api/v1/apps/creative/jobs/${result.jobId}`,
+      `Use creative_job_status with this job ID to check progress and retrieve the resulting krefs.`,
     ]
       .filter((l) => l !== undefined)
       .join("\n");
@@ -127,6 +127,60 @@ export async function creativeCaptureHandler(
     const msg = (err as Error).message;
     ctx.logger.error(`creative_capture failed: ${msg}`);
     return `Creative capture failed: ${msg}`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// creative_job_status
+// ---------------------------------------------------------------------------
+
+/**
+ * Handle the creative_job_status tool.
+ *
+ * Polls the BFF for the status of a creative capture job and returns the
+ * resulting krefs when the pipeline is done.
+ */
+export async function creativeJobStatusHandler(
+  ctx: CreativeToolContext,
+  params: { jobId: string },
+): Promise<string> {
+  const jobId = (params.jobId ?? "").trim();
+  if (!jobId) return "creative_job_status: `jobId` is required.";
+
+  const bffUrl = ctx.config.bffEndpoint;
+  if (!bffUrl) {
+    return "Creative job status is not configured: `bffEndpoint` is missing.";
+  }
+
+  try {
+    const job = await ctx.client.getCreativeJobStatus(
+      jobId,
+      bffUrl,
+      ctx.config.apiKey,
+    );
+
+    const lines: string[] = [
+      `Job ID : ${jobId}`,
+      `Status : ${job.status}`,
+    ];
+
+    if (job.status === "done" && job.result) {
+      lines.push("");
+      if (job.result.item_kref) lines.push(`Item Kref     : ${job.result.item_kref}`);
+      if (job.result.revision_kref) lines.push(`Revision Kref : ${job.result.revision_kref}`);
+      if (job.result.memory_kref) lines.push(`Memory Kref   : ${job.result.memory_kref}`);
+      if (job.result.space) lines.push(`Space         : ${job.result.space}`);
+    } else if (job.status === "failed") {
+      lines.push(`Error  : ${job.error ?? "unknown"}`);
+    } else if (job.status === "pending" || job.status === "processing") {
+      lines.push("", "The pipeline is still running. Check again shortly.");
+    }
+
+    return lines.join("\n");
+  } catch (err) {
+    const msg = (err as Error).message;
+    ctx.logger.error(`creative_job_status failed: ${msg}`);
+    return `Creative job status check failed: ${msg}`;
   }
 }
 
