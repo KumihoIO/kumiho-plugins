@@ -29,10 +29,12 @@ import { execFile } from "node:child_process";
 interface KumihoPreferences {
   dreamState?: {
     schedule?: string;
-    model?: { provider?: string; model?: string; apiKey?: string };
+    // API keys must NOT be stored in preferences.json — use the host gateway's
+    // model provider config (hostLlmApiKey) or the plugin's llm.apiKey field.
+    model?: { provider?: string; model?: string };
   };
   consolidation?: {
-    model?: { provider?: string; model?: string; apiKey?: string };
+    model?: { provider?: string; model?: string };
   };
 }
 
@@ -40,7 +42,18 @@ function loadPreferences(): KumihoPreferences {
   try {
     const path = join(homedir(), ".kumiho", "preferences.json");
     if (existsSync(path)) {
-      return JSON.parse(readFileSync(path, "utf8")) as KumihoPreferences;
+      const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+      // Strip any API key fields that may have been manually added — keys must
+      // come from the plugin config or the host gateway, not preferences.json.
+      for (const section of ["dreamState", "consolidation"] as const) {
+        const s = raw[section] as Record<string, unknown> | undefined;
+        if (s?.["model"] && typeof s["model"] === "object") {
+          const m = s["model"] as Record<string, unknown>;
+          delete m["apiKey"];
+          delete m["api_key"];
+        }
+      }
+      return raw as KumihoPreferences;
     }
   } catch { /* ignore */ }
   return {};
