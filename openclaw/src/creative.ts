@@ -215,6 +215,10 @@ export async function creativeRecallHandler(
     // Normalise to a flat list of {kref, name, kind, score?} for rendering
     let items: Array<{ kref: string; name: string; kind?: string; score?: number }>;
 
+    // Get a fresh token so the MCP subprocess can access cross-project spaces.
+    // This mirrors how creative_capture gets a fresh token for each BFF call.
+    const authToken = ctx.getToken ? await ctx.getToken() : "";
+
     if (query) {
       // Natural language search — ranked by relevance
       const raw = await ctx.client.callTool<{ results?: FulltextResult[] }>(
@@ -225,6 +229,7 @@ export async function creativeRecallHandler(
           kind: kindFilter,
           limit,
           include_revision_metadata: true,
+          ...(authToken ? { auth_token: authToken } : {}),
         },
       );
       items = (raw.results ?? []).map((r) => ({ ...r.item, score: r.score }));
@@ -236,6 +241,7 @@ export async function creativeRecallHandler(
           context_filter: context,
           kind_filter: kindFilter,
           include_metadata: true,
+          ...(authToken ? { auth_token: authToken } : {}),
         },
       );
       items = raw.items ?? [];
