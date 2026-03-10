@@ -214,3 +214,75 @@ describe("consolidateSession", () => {
     expect(result).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// autoRecall — spacePaths scoping
+// ---------------------------------------------------------------------------
+
+import { autoRecall } from "../hooks.js";
+import type { ChannelInfo } from "../types.js";
+
+describe("autoRecall — spacePaths scoping", () => {
+  function makeRecallClient(memoryRetrieveFn = vi.fn().mockResolvedValue([])) {
+    return {
+      chatAdd: vi.fn().mockResolvedValue(undefined),
+      memoryRetrieve: memoryRetrieveFn,
+    } as unknown as KumihoClient;
+  }
+
+  const recallConfig: ResolvedConfig = {
+    ...baseConfig,
+    topK: 5,
+    searchThreshold: 0.0,
+  };
+
+  it("passes no spacePaths for personal_dm — searches whole project", async () => {
+    const memoryRetrieve = vi.fn().mockResolvedValue([]);
+    const client = makeRecallClient(memoryRetrieve);
+    const state = createHookState();
+    const channel: ChannelInfo = { channelType: "personal_dm", channelId: "tg:123" };
+
+    await autoRecall(client, recallConfig, state, "what did we work on?", channel);
+
+    expect(memoryRetrieve).toHaveBeenCalledOnce();
+    const [params] = memoryRetrieve.mock.calls[0] as [{ spacePaths?: string[] }];
+    expect(params.spacePaths).toBeUndefined();
+  });
+
+  it("restricts spacePaths for team_channel — isolates team space", async () => {
+    const memoryRetrieve = vi.fn().mockResolvedValue([]);
+    const client = makeRecallClient(memoryRetrieve);
+    const state = createHookState();
+    const channel: ChannelInfo = { channelType: "team_channel", channelId: "slack:C123", teamSlug: "eng" };
+
+    await autoRecall(client, recallConfig, state, "deploy status?", channel);
+
+    const [params] = memoryRetrieve.mock.calls[0] as [{ spacePaths?: string[] }];
+    expect(params.spacePaths).toBeDefined();
+    expect(params.spacePaths![0]).toContain("eng");
+  });
+
+  it("restricts spacePaths for group_dm — isolates group space", async () => {
+    const memoryRetrieve = vi.fn().mockResolvedValue([]);
+    const client = makeRecallClient(memoryRetrieve);
+    const state = createHookState();
+    const channel: ChannelInfo = { channelType: "group_dm", channelId: "tg:group:456", groupId: "456" };
+
+    await autoRecall(client, recallConfig, state, "hey", channel);
+
+    const [params] = memoryRetrieve.mock.calls[0] as [{ spacePaths?: string[] }];
+    expect(params.spacePaths).toBeDefined();
+    expect(params.spacePaths![0]).toContain("456");
+  });
+
+  it("passes no spacePaths when channel is undefined", async () => {
+    const memoryRetrieve = vi.fn().mockResolvedValue([]);
+    const client = makeRecallClient(memoryRetrieve);
+    const state = createHookState();
+
+    await autoRecall(client, recallConfig, state, "hello");
+
+    const [params] = memoryRetrieve.mock.calls[0] as [{ spacePaths?: string[] }];
+    expect(params.spacePaths).toBeUndefined();
+  });
+});

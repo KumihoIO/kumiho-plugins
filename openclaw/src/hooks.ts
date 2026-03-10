@@ -186,9 +186,13 @@ export async function autoRecall(
 
   // Buffer message and retrieve memories in parallel — they're independent operations
   const channelMeta = channel ? buildChannelMetadata(channel) : {};
-  const spacePaths = channel
-    ? [getMemorySpace(channel, config.project)]
-    : undefined;
+  // For personal DMs, search across all spaces — the user's work memories
+  // (e.g. CognitiveMemory/work/*) are just as relevant as personal memories.
+  // Only restrict space for group/team channels where isolation is needed.
+  const spacePaths =
+    channel && channel.channelType !== "personal_dm"
+      ? [getMemorySpace(channel, config.project)]
+      : undefined;
 
   const [, memories] = await Promise.all([
     client.chatAdd(state.sessionId, "user", userMessage, {
