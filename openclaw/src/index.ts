@@ -233,7 +233,7 @@ async function getAuthToken(): Promise<string> {
   return "";
 }
 
-import { KumihoClient, KumihoApiError, createTransport, type Transport } from "./client.js";
+import { KumihoClient, KumihoApiError, createTransport, McpTransport, type Transport } from "./client.js";
 import { McpBridgeError, type McpToolDefinition } from "./mcp-bridge.js";
 import { PIIRedactor } from "./privacy.js";
 import { ArtifactManager } from "./artifacts.js";
@@ -964,6 +964,18 @@ export default {
 
         // In local mode, start the MCP subprocess
         if (transport.start) {
+          // Inject the workspace-scoped auth token so the subprocess can search
+          // across all the user's projects (e.g. creative project + CognitiveMemory).
+          // getAuthToken() refreshes the Firebase token if expired.
+          if (transport instanceof McpTransport) {
+            try {
+              const authToken = await getAuthToken();
+              transport.addEnv({ KUMIHO_AUTH_TOKEN: authToken });
+            } catch (err) {
+              api.logger.warn(`Could not inject KUMIHO_AUTH_TOKEN: ${(err as Error).message}`);
+            }
+          }
+
           api.logger.info(
             `Starting kumiho-mcp subprocess (${config.local.command})...`,
           );

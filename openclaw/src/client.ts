@@ -156,6 +156,11 @@ export class McpTransport implements Transport {
     });
   }
 
+  /** Inject env vars before the subprocess is spawned. Must be called before start(). */
+  addEnv(vars: Record<string, string>): void {
+    this.bridge.addEnv(vars);
+  }
+
   async start(): Promise<void> {
     await this.bridge.start();
   }

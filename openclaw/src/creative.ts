@@ -186,12 +186,17 @@ export async function creativeJobStatusHandler(
 // creative_recall
 // ---------------------------------------------------------------------------
 
+// kumiho_fulltext_search returns {results: [{item: {kref, name, kind, ...}, score, matched_in}]}
+type FulltextResult = { item: { kref: string; name: string; kind?: string }; score?: number };
+// kumiho_search_items returns {items: [{kref, name, kind, ...}]}
+type SearchItem = { kref: string; name: string; kind?: string };
+
 /**
  * Handle the creative_recall tool.
  *
- * Searches Kumiho long-term memory for creative outputs in the specified
- * space.  Results are formatted as a structured list the agent can
- * reference when continuing a project.
+ * Queries the Kumiho graph for creative Items in the specified space.
+ * Uses kumiho_fulltext_search when a query is provided, kumiho_search_items
+ * for a plain listing. These are graph Item queries — not AI memory recall.
  */
 export async function creativeRecallHandler(
   ctx: CreativeToolContext,
@@ -201,32 +206,49 @@ export async function creativeRecallHandler(
   if (!space) return "creative_recall: `space` (space slug) is required.";
 
   const kumihoProject = (params.creativeProject ?? ctx.config.project).trim();
-  const kind = coerceKind(params.kind ?? "other");
-  const query =
-    params.query?.trim() ||
-    [space, params.kind ? kind : ""].filter(Boolean).join(" ");
+  const context = `${kumihoProject}/${space}`;
+  const kindFilter = params.kind ? coerceKind(params.kind) : undefined;
+  const query = params.query?.trim();
   const limit = params.limit ?? ctx.config.topK;
 
-  // Scope recall to this space within the creative project
-  const spacePaths = [`${kumihoProject}/${space}`];
-
   try {
-    const results = await ctx.client.memoryRetrieve({
-      query,
-      limit,
-      spacePaths,
-    });
+    // Normalise to a flat list of {kref, name, kind, score?} for rendering
+    let items: Array<{ kref: string; name: string; kind?: string; score?: number }>;
 
-    if (results.length === 0) {
-      return `No creative items found in space "${kumihoProject}/${space}". Capture something first using creative_capture.`;
+    if (query) {
+      // Natural language search — ranked by relevance
+      const raw = await ctx.client.callTool<{ results?: FulltextResult[] }>(
+        "kumiho_fulltext_search",
+        {
+          query,
+          context,
+          kind: kindFilter,
+          limit,
+          include_revision_metadata: true,
+        },
+      );
+      items = (raw.results ?? []).map((r) => ({ ...r.item, score: r.score }));
+    } else {
+      // List mode — enumerate all items in the space
+      const raw = await ctx.client.callTool<{ items?: SearchItem[] }>(
+        "kumiho_search_items",
+        {
+          context_filter: context,
+          kind_filter: kindFilter,
+          include_metadata: true,
+        },
+      );
+      items = raw.items ?? [];
     }
 
-    const lines: string[] = [`## Space: ${kumihoProject}/${space}`, ""];
+    if (items.length === 0) {
+      return `No creative items found in space "${context}". Capture something first using creative_capture.`;
+    }
 
-    for (const item of results) {
-      lines.push(`### ${item.title || "(untitled)"}`);
-      if (item.summary) lines.push(item.summary);
-      if (item.topics?.length) lines.push(`Tags: ${item.topics.join(", ")}`);
+    const lines: string[] = [`## Space: ${context}`, ""];
+    for (const item of items) {
+      lines.push(`### ${item.name || "(untitled)"}`);
+      if (item.kind) lines.push(`Kind: ${item.kind}`);
       if (item.score != null) lines.push(`Relevance: ${item.score.toFixed(2)}`);
       lines.push(`Kref: ${item.kref}`);
       lines.push("");

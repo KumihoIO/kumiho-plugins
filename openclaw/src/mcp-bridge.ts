@@ -135,6 +135,8 @@ export class McpBridge extends EventEmitter {
   private readonly cwd: string | undefined;
   private readonly timeout: number;
   private readonly log: NonNullable<McpBridgeOptions["logger"]>;
+  /** Extra env vars injected after construction (e.g. auth tokens resolved asynchronously). */
+  private extraEnv: Record<string, string> = {};
 
   constructor(opts: McpBridgeOptions = {}) {
     super();
@@ -154,6 +156,14 @@ export class McpBridge extends EventEmitter {
   // -----------------------------------------------------------------------
   // Lifecycle
   // -----------------------------------------------------------------------
+
+  /**
+   * Merge additional env vars into the subprocess environment.
+   * Must be called before start(). Used to inject tokens resolved asynchronously.
+   */
+  addEnv(vars: Record<string, string>): void {
+    Object.assign(this.extraEnv, vars);
+  }
 
   /**
    * Spawn the Python MCP server and perform the initialization handshake.
@@ -193,7 +203,7 @@ export class McpBridge extends EventEmitter {
 
     this.proc = spawn(spawnCmd, spawnArgs, {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, ...this.childEnv },
+      env: { ...process.env, ...this.childEnv, ...this.extraEnv },
       cwd: this.cwd,
       // Prevent the child from inheriting the parent's signal handlers
       detached: false,
