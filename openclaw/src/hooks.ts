@@ -323,9 +323,14 @@ export async function consolidateSession(
       working.messages,
     );
 
-    // 3. Build summary text from conversation
-    const conversationText = working.messages
-      .map((m) => `${m.role}: ${m.content}`)
+    // 3. Split messages by role
+    const userText = working.messages
+      .filter((m) => m.role === "user")
+      .map((m) => m.content)
+      .join("\n");
+    const assistantText = working.messages
+      .filter((m) => m.role === "assistant")
+      .map((m) => m.content)
       .join("\n");
 
     // 4. Redact PII
@@ -345,8 +350,8 @@ export async function consolidateSession(
       type: "summary",
       title: `Session consolidation: ${state.sessionId}`,
       summary: summaryText,
-      userText: config.privacy.uploadSummariesOnly ? summaryText : conversationText,
-      assistantText: "",
+      userText: config.privacy.uploadSummariesOnly ? summaryText : userText,
+      assistantText: config.privacy.uploadSummariesOnly ? "" : assistantText,
       artifactLocation: artifact.location,
       spaceHint,
       tags: ["consolidated", "summary"],

@@ -325,14 +325,19 @@ export interface ToolExecutionParams {
 // ---------------------------------------------------------------------------
 
 export interface DreamStateStats {
+  success: boolean;
   events_processed: number;
   revisions_assessed: number;
   deprecated: number;
   metadata_updated: number;
   tags_added: number;
   edges_created: number;
+  /** ISO timestamp of the last processed event (backward-compat cursor). */
+  cursor?: string | null;
   duration_ms: number;
   errors: string[];
+  /** Kref of the generated Dream State report item, if any. */
+  report_kref?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -367,8 +372,15 @@ export interface CreativeCaptureParams {
   /** Kind of creative output. */
   kind: CreativeKind;
   /**
+   * Kumiho project for creative outputs (e.g. 'blog-posts', 'marketing').
+   * Must NOT be CognitiveMemory — creative outputs live in their own project.
+   * The only exception is free-tier users limited to 1 project, where the
+   * space is created under CognitiveMemory as a fallback.
+   */
+  creativeProject: string;
+  /**
    * Project space slug (e.g. "blog-post-jan25", "api-refactor").
-   * This becomes the Kumiho space under the project root.
+   * This becomes the Kumiho space under the creative project.
    */
   project: string;
   /** Optional topic tags for discovery. */

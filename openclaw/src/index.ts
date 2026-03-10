@@ -19,7 +19,7 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 
 // ---------------------------------------------------------------------------
@@ -95,6 +95,144 @@ function loadAuthToken(): string {
   return "";
 }
 
+const _AUTH_PATH = join(homedir(), ".kumiho", "kumiho_authentication.json");
+
+// ---------------------------------------------------------------------------
+// OpenClaw auth-profile loader — reads ~/.openclaw/agents/main/agent/auth-profiles.json
+// ---------------------------------------------------------------------------
+
+interface OpenClawAuthProfile {
+  type: string;
+  provider: string;
+  token: string;
+}
+
+interface OpenClawAuthProfiles {
+  version?: number;
+  profiles?: Record<string, OpenClawAuthProfile>;
+  lastGood?: Record<string, string>;
+  usageStats?: Record<string, { lastUsed?: number; errorCount?: number }>;
+}
+
+/**
+ * Load the best LLM API key from OpenClaw's auth-profiles.json.
+ * Uses `lastGood` to pick the preferred profile per provider.
+ * If `preferredProvider` is given, tries that provider first.
+ * Falls back to whichever profile was used most recently.
+ */
+function loadOpenClawAuthProfile(
+  preferredProvider?: string,
+): { provider: string; apiKey: string } | null {
+  try {
+    const path = join(homedir(), ".openclaw", "agents", "main", "agent", "auth-profiles.json");
+    if (!existsSync(path)) return null;
+    const data = JSON.parse(readFileSync(path, "utf8")) as OpenClawAuthProfiles;
+    const profiles = data.profiles ?? {};
+    const lastGood = data.lastGood ?? {};
+    const stats = data.usageStats ?? {};
+
+    // Try the preferred provider first via lastGood
+    if (preferredProvider) {
+      const profileKey = lastGood[preferredProvider];
+      if (profileKey) {
+        const p = profiles[profileKey];
+        if (p?.token) return { provider: p.provider || preferredProvider, apiKey: p.token };
+      }
+    }
+
+    // Try any lastGood entry, preferring the one with the highest lastUsed
+    const lastGoodEntries = Object.entries(lastGood)
+      .map(([, profileKey]) => ({ profileKey, lastUsed: stats[profileKey]?.lastUsed ?? 0 }))
+      .sort((a, b) => b.lastUsed - a.lastUsed);
+
+    for (const { profileKey } of lastGoodEntries) {
+      const p = profiles[profileKey];
+      if (p?.token) return { provider: p.provider, apiKey: p.token };
+    }
+
+    // Last resort: pick profile with lowest errorCount and highest lastUsed
+    const best = Object.entries(profiles)
+      .filter(([, p]) => !!p.token)
+      .sort(([ka], [kb]) => {
+        const ea = stats[ka]?.errorCount ?? 0;
+        const eb = stats[kb]?.errorCount ?? 0;
+        if (ea !== eb) return ea - eb;
+        return (stats[kb]?.lastUsed ?? 0) - (stats[ka]?.lastUsed ?? 0);
+      })[0];
+
+    if (best) {
+      const [, p] = best;
+      return { provider: p.provider, apiKey: p.token };
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+/**
+ * Refresh a Firebase ID token using the stored refresh_token.
+ * Writes the updated id_token + expires_at back to the auth file.
+ * Returns the new token, or null on failure.
+ */
+async function refreshFirebaseToken(
+  auth: KumihoAuthentication,
+  authPath: string,
+): Promise<string | null> {
+  if (!auth.refresh_token || !auth.api_key) return null;
+  try {
+    const url = `https://securetoken.googleapis.com/v1/token?key=${auth.api_key}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(auth.refresh_token)}`,
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      id_token?: string;
+      refresh_token?: string;
+      expires_in?: string;
+    };
+    if (!data.id_token) return null;
+    const expiresIn = parseInt(data.expires_in ?? "3600", 10);
+    const updated: KumihoAuthentication = {
+      ...auth,
+      id_token: data.id_token,
+      refresh_token: data.refresh_token ?? auth.refresh_token,
+      expires_at: Math.floor(Date.now() / 1000) + expiresIn,
+    };
+    writeFileSync(authPath, JSON.stringify(updated, null, 2), "utf8");
+    return data.id_token;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return a fresh auth token, refreshing the Firebase ID token via the
+ * securetoken endpoint if the stored id_token is expired.
+ */
+async function getAuthToken(): Promise<string> {
+  try {
+    if (!existsSync(_AUTH_PATH)) return "";
+    const auth = JSON.parse(readFileSync(_AUTH_PATH, "utf8")) as KumihoAuthentication;
+    const now = Math.floor(Date.now() / 1000);
+
+    if (auth.api_token) {
+      if (!auth.api_token_expires_at || auth.api_token_expires_at > now) {
+        return auth.api_token;
+      }
+    }
+
+    if (auth.id_token) {
+      if (!auth.expires_at || auth.expires_at > now) {
+        return auth.id_token;
+      }
+      const refreshed = await refreshFirebaseToken(auth, _AUTH_PATH);
+      if (refreshed) return refreshed;
+    }
+  } catch { /* ignore */ }
+  return "";
+}
+
 import { KumihoClient, KumihoApiError, createTransport, type Transport } from "./client.js";
 import { McpBridgeError, type McpToolDefinition } from "./mcp-bridge.js";
 import { PIIRedactor } from "./privacy.js";
@@ -156,30 +294,21 @@ export type {
 
 function resolveConfig(
   raw: KumihoPluginConfig,
-  hostModels?: Record<string, { apiKey?: string; baseUrl?: string }>,
 ): ResolvedConfig {
   const mode = raw.mode ?? "local";
 
   const apiKey =
     raw.apiKey || process.env.KUMIHO_API_TOKEN || process.env.KUMIHO_API_KEY || loadAuthToken();
 
-  // Resolve the host's LLM API key and provider from the gateway model
-  // provider config.  This is the key OpenClaw itself uses for model calls —
-  // plugins inherit it so Dream State / consolidation work out of the box.
+  // Resolve the LLM key for Dream State / consolidation from OpenClaw's
+  // auth-profiles.json — always present after login, never user-configured.
   let hostLlmApiKey = "";
   let hostLlmProvider = "";
-  if (hostModels?.anthropic?.apiKey) {
-    hostLlmApiKey = hostModels.anthropic.apiKey;
-    hostLlmProvider = "anthropic";
-  } else if (hostModels?.openai?.apiKey) {
-    hostLlmApiKey = hostModels.openai.apiKey;
-    hostLlmProvider = "openai";
-  } else if (process.env.ANTHROPIC_API_KEY) {
-    hostLlmApiKey = process.env.ANTHROPIC_API_KEY;
-    hostLlmProvider = "anthropic";
-  } else if (process.env.OPENAI_API_KEY) {
-    hostLlmApiKey = process.env.OPENAI_API_KEY;
-    hostLlmProvider = "openai";
+  const preferredProvider = raw.dreamStateModel?.provider || raw.llm?.provider;
+  const profile = loadOpenClawAuthProfile(preferredProvider);
+  if (profile) {
+    hostLlmApiKey = profile.apiKey;
+    hostLlmProvider = profile.provider;
   }
 
   // Cloud mode requires an API key. Local mode does not (Python SDK handles auth).
@@ -254,74 +383,9 @@ function resolveConfig(
 //   5. Shutdown: service stop() called
 // ---------------------------------------------------------------------------
 
-interface PluginAPI {
-  config: {
-    plugins?: { entries?: Record<string, { config?: KumihoPluginConfig }> };
-    /** Host gateway model provider config (resolved SecretRefs). */
-    models?: {
-      providers?: Record<string, { apiKey?: string; baseUrl?: string }>;
-    };
-  };
-  logger: {
-    info: (msg: string) => void;
-    warn: (msg: string) => void;
-    error: (msg: string) => void;
-  };
-  runtime?: {
-    injectContext?: (text: string) => void;
-  };
-  registerGatewayMethod: (
-    name: string,
-    handler: (ctx: {
-      respond: (ok: boolean, data: unknown) => void;
-      params?: Record<string, unknown>;
-    }) => void,
-  ) => void;
-  registerCli: (
-    fn: (ctx: { program: CLIProgram }) => void,
-    opts: { commands: string[] },
-  ) => void;
-  registerService: (svc: {
-    id: string;
-    start: () => void | Promise<void>;
-    stop: () => void | Promise<void>;
-  }) => void;
-  registerCommand: (cmd: {
-    name: string;
-    description: string;
-    requireAuth: boolean;
-    acceptsArgs: boolean;
-    handler: (ctx: { senderId: string; channel: string; args?: string }) => {
-      text: string;
-    };
-  }) => void;
-  on: (
-    event: string,
-    handler: (ctx: Record<string, unknown>) => void | Promise<void>,
-  ) => void;
-  registerTool: (tool: {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-    execute: (
-      toolCallId: string,
-      params: Record<string, unknown>,
-      signal?: AbortSignal,
-      onUpdate?: (text: string) => void,
-    ) => Promise<unknown> | unknown;
-  }) => void;
-}
-
-interface CLIProgram {
-  command: (name: string) => CLICommand;
-}
-
-interface CLICommand {
-  description: (desc: string) => CLICommand;
-  argument: (name: string, desc: string) => CLICommand;
-  option: (flags: string, desc: string) => CLICommand;
-  action: (fn: (...args: unknown[]) => void | Promise<void>) => CLICommand;
-}
+// Use the real OpenClaw plugin API type from the SDK.
+// This ensures we never drift from the actual interface.
+import type { OpenClawPluginApi as PluginAPI } from "openclaw/plugin-sdk";
 
 // ---------------------------------------------------------------------------
 // Plugin state (singleton per gateway lifecycle)
@@ -432,54 +496,14 @@ function resolveDreamStateModelConfig(
 ): { provider?: string; model?: string; apiKey?: string } | undefined {
   const dm = cfg.dreamStateModel ?? {};
 
-  // If dreamStateModel already has an apiKey, use it directly.
-  if (dm.apiKey) return dm;
+  // API key comes from the host gateway or OpenClaw auth-profiles.json only.
+  if (!cfg.hostLlmApiKey) return undefined;
 
-  // Try the general llm config.
-  const llmKey = cfg.llm?.apiKey;
-  if (llmKey) {
-    return {
-      provider: dm.provider || cfg.llm?.provider,
-      model: dm.model || cfg.llm?.model,
-      apiKey: llmKey,
-    };
-  }
-
-  // Use the host gateway's LLM API key (resolved from models.providers at
-  // registration time).  This is the same key OpenClaw uses for its own
-  // model calls — no separate config needed.
-  if (cfg.hostLlmApiKey) {
-    return {
-      provider: dm.provider || cfg.hostLlmProvider || undefined,
-      model: dm.model,
-      apiKey: cfg.hostLlmApiKey,
-    };
-  }
-
-  // Fallback: env vars (typically set by OpenClaw during onboarding).
-  const envKey =
-    process.env.KUMIHO_LLM_API_KEY ||
-    process.env.ANTHROPIC_API_KEY ||
-    process.env.OPENAI_API_KEY;
-
-  if (envKey) {
-    const provider =
-      dm.provider ||
-      process.env.KUMIHO_LLM_PROVIDER ||
-      (process.env.ANTHROPIC_API_KEY && envKey === process.env.ANTHROPIC_API_KEY
-        ? "anthropic"
-        : undefined);
-
-    return {
-      provider,
-      model: dm.model || process.env.KUMIHO_LLM_MODEL || undefined,
-      apiKey: envKey,
-    };
-  }
-
-  // Nothing found — return partial config; MCP server's shared summarizer
-  // will attempt its own env-var resolution.
-  return dm.provider || dm.model ? dm : undefined;
+  return {
+    provider: dm.provider || cfg.hostLlmProvider || undefined,
+    model: dm.model,
+    apiKey: cfg.hostLlmApiKey,
+  };
 }
 
 /**
@@ -586,11 +610,10 @@ export default {
     // 1. Resolve configuration
     // -----------------------------------------------------------------------
 
-    const rawConfig =
-      api.config?.plugins?.entries?.["openclaw-kumiho"]?.config ?? {};
+    const rawConfig = (api.pluginConfig ?? {}) as KumihoPluginConfig;
 
     try {
-      config = resolveConfig(rawConfig, api.config?.models?.providers);
+      config = resolveConfig(rawConfig);
     } catch (err) {
       api.logger.error(`Kumiho: ${(err as Error).message}`);
       return;
@@ -632,6 +655,7 @@ export default {
         return hookState?.sessionId ?? null;
       },
       logger: api.logger,
+      getToken: () => getAuthToken(),
     };
 
     // Custom TypeScript tool names (these have value-add logic and take priority)
@@ -682,11 +706,13 @@ export default {
       if (schema) {
         api.registerTool({
           name,
+          label: schema.description,
           description: schema.description,
           parameters: schema.parameters,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             const result = await handler(toolCtx, params ?? {});
-            return typeof result === "string" ? result : JSON.stringify(result);
+            const text = typeof result === "string" ? result : JSON.stringify(result);
+            return { content: [{ type: "text" as const, text }], details: result };
           },
         });
       }
@@ -934,7 +960,7 @@ export default {
 
     api.registerService({
       id: "kumiho-memory",
-      async start() {
+      async start(_ctx) {
         if (!client || !config || !transport) return;
 
         // In local mode, start the MCP subprocess
@@ -1011,7 +1037,7 @@ export default {
         // Arm Dream State scheduler (if configured)
         scheduleDreamState(client, config, api.logger);
       },
-      async stop() {
+      async stop(_ctx) {
         // Cancel pending Dream State timer
         if (dreamStateTimer) {
           clearTimeout(dreamStateTimer);
@@ -1112,13 +1138,13 @@ export default {
     // 7. Wire OpenClaw lifecycle events for automatic auto-recall / auto-capture
     // -----------------------------------------------------------------------
 
-    api.on("before_prompt_build", async (ctx) => {
+    api.on("before_prompt_build", async (event, _ctx) => {
       // User is active — cancel any pending idle consolidation
       clearIdleTimer();
       if (!config?.autoRecall) return;
       try {
         const state = ensureInitialized();
-        const messages = (ctx["messages"] as Array<{ role: string; content: string }> | undefined) ?? [];
+        const messages = (event.messages as Array<{ role: string; content: string }>) ?? [];
         const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
         const raw = lastUserMsg?.content;
         const message = typeof raw === "string"
@@ -1126,22 +1152,6 @@ export default {
           : Array.isArray(raw)
             ? (raw as Array<{ type: string; text?: string }>).filter((b) => b.type === "text").map((b) => b.text).join("\n")
             : state.hookState.lastUserMessage ?? "";
-        const senderId = (ctx["senderId"] as string | undefined);
-
-        if (senderId && senderId !== state.config.userId) {
-          state.hookState.sessionId = null;
-          state.config = { ...state.config, userId: senderId };
-        }
-
-        if (senderId && !state.hookState.identityStoredFor.has(senderId)) {
-          state.hookState.identityStoredFor.add(senderId);
-          void ensureUserIdentity(state.client, state.config, senderId, {
-            displayName: ctx["displayName"] as string | undefined,
-            platform: ctx["platform"] as string | undefined,
-            timezone: ctx["timezone"] as string | undefined,
-            locale: ctx["locale"] as string | undefined,
-          });
-        }
 
         let recallResult: { contextInjection: string };
 
@@ -1164,23 +1174,18 @@ export default {
         }
 
         if (recallResult.contextInjection) {
-          const inject = ctx["inject"] as ((text: string) => void) | undefined;
-          if (inject) {
-            inject(recallResult.contextInjection);
-          } else if (api.runtime?.injectContext) {
-            api.runtime.injectContext(recallResult.contextInjection);
-          }
+          return { prependContext: recallResult.contextInjection };
         }
       } catch (err) {
         api.logger.error(`Auto-recall hook failed: ${(err as Error).message}`);
       }
     });
 
-    api.on("agent_end", async (ctx) => {
+    api.on("agent_end", async (event, _ctx) => {
       if (!config?.autoCapture) return;
       try {
         const state = ensureInitialized();
-        const messages = (ctx["messages"] as Array<{ role: string; content: string }> | undefined) ?? [];
+        const messages = (event.messages as Array<{ role: string; content: string }>) ?? [];
         const lastAssistantMsg = [...messages].reverse().find((m) => m.role === "assistant");
         const raw = lastAssistantMsg?.content;
         let response: string;
@@ -1241,6 +1246,37 @@ export default {
         }
       } catch (err) {
         api.logger.error(`Auto-capture hook failed: ${(err as Error).message}`);
+      }
+    });
+
+    // -----------------------------------------------------------------------
+    // 8. Pre-compaction flush — persist working memory before context shrinks
+    //
+    // OpenClaw fires this hook just before the session context is compacted
+    // (either via /compact or auto-compaction). We flush the Kumiho session
+    // buffer to the graph so memories are not lost when the context window
+    // is reduced. This is equivalent to what the host's memoryFlush agentic
+    // turn does, but at the Kumiho graph layer.
+    // -----------------------------------------------------------------------
+
+    api.on("before_compaction", async (_event, _ctx) => {
+      // Cancel any pending idle consolidation — we're doing a full flush now.
+      clearIdleTimer();
+      try {
+        const state = ensureInitialized();
+        if (state.hookState.messageCount === 0) return;
+        const ok = await consolidateSession(
+          state.client,
+          state.config,
+          state.hookState,
+          state.redactor,
+          state.artifacts,
+        );
+        if (ok) {
+          api.logger.info("Kumiho: pre-compaction memory flush complete");
+        }
+      } catch (err) {
+        api.logger.error(`Kumiho: pre-compaction flush failed: ${(err as Error).message}`);
       }
     });
   },
@@ -1375,9 +1411,7 @@ export function createKumihoMemory(rawConfig: KumihoPluginConfig = {}) {
 
     /** Trigger Dream State consolidation. */
     async dream() {
-      const dm = cfg.dreamStateModel;
-      const modelConfig = dm?.provider || dm?.model || dm?.apiKey ? dm : undefined;
-      return kumihoClient.triggerDreamState(modelConfig);
+      return kumihoClient.triggerDreamState(resolveDreamStateModelConfig(cfg));
     },
 
     /** Store tool execution result. */

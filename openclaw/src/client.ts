@@ -456,6 +456,8 @@ export class KumihoClient {
       summary: isError
         ? `Task "${params.task}" failed (exit ${params.exitCode ?? "N/A"}): ${params.stderr?.slice(0, 200) ?? "unknown error"}`
         : `Successfully executed: ${params.task}`,
+      userText: params.stdout ?? "",
+      assistantText: params.stderr ?? "",
       topics: params.topics ?? [],
       spaceHint: params.spaceHint,
       tags: [isError ? "error" : "action", params.status, "published"],
@@ -506,7 +508,7 @@ export class KumihoClient {
           title: params.title,
           content: params.content,
           kind: params.kind,
-          creative_project: this.project,
+          creative_project: params.creativeProject,
           project: params.project,
           tags: params.tags ?? [],
           source_memory_kref: params.sourceMemoryKref,

@@ -33,6 +33,7 @@ export interface CreativeToolContext {
   client: KumihoClient;
   config: ResolvedConfig;
   logger: { info: (msg: string) => void; error: (msg: string) => void };
+  getToken?: () => Promise<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -64,10 +65,12 @@ export async function creativeCaptureHandler(
   // Validate required fields
   const title = (params.title ?? "").trim();
   const content = (params.content ?? "").trim();
+  const creativeProject = (params.creativeProject ?? "").trim();
   const project = (params.project ?? "").trim();
 
   if (!title) return "creative_capture: `title` is required.";
   if (!content) return "creative_capture: `content` is required.";
+  if (!creativeProject) return "creative_capture: `creativeProject` is required. Specify the Kumiho project for creative outputs (e.g. 'blog-posts', 'marketing'). Do NOT use CognitiveMemory unless on a free-tier plan limited to 1 project.";
   if (!project) return "creative_capture: `project` (space slug) is required.";
 
   const bffUrl = ctx.config.bffEndpoint;
@@ -82,6 +85,7 @@ export async function creativeCaptureHandler(
     title,
     content,
     kind: coerceKind(params.kind),
+    creativeProject,
     project,
     tags: Array.isArray(params.tags) ? params.tags : [],
     sourceMemoryKref: params.sourceMemoryKref,
@@ -89,14 +93,15 @@ export async function creativeCaptureHandler(
   };
 
   try {
+    const token = ctx.getToken ? await ctx.getToken() : ctx.config.apiKey;
     const result = await ctx.client.creativeEnqueue(
       captureParams,
       bffUrl,
-      ctx.config.apiKey,
+      token || ctx.config.apiKey,
     );
 
     ctx.logger.info(
-      `Creative capture queued: "${title}" → ${project} (job: ${result.jobId})`,
+      `Creative capture queued: "${title}" → ${creativeProject}/${project} (job: ${result.jobId})`,
     );
 
     return [
@@ -105,7 +110,7 @@ export async function creativeCaptureHandler(
       `Job ID : ${result.jobId}`,
       `Title  : "${title}"`,
       `Kind   : ${captureParams.kind}`,
-      `Project: ${project}`,
+      `Project: ${creativeProject}/${project}`,
       params.sourceMemoryKref
         ? `Linked to memory kref: ${params.sourceMemoryKref}`
         : "",
@@ -145,10 +150,11 @@ export async function creativeJobStatusHandler(
   }
 
   try {
+    const token = ctx.getToken ? await ctx.getToken() : ctx.config.apiKey;
     const job = await ctx.client.getCreativeJobStatus(
       jobId,
       bffUrl,
-      ctx.config.apiKey,
+      token || ctx.config.apiKey,
     );
 
     const lines: string[] = [

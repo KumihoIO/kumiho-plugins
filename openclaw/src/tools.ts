@@ -24,43 +24,20 @@ import { creativeCaptureHandler, creativeJobStatusHandler, projectRecallHandler 
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve LLM model config for Dream State, falling back through:
- * dreamStateModel → llm config → env vars (ANTHROPIC_API_KEY, etc.)
+ * Resolve LLM model config for Dream State.
+ * API key comes exclusively from hostLlmApiKey (OpenClaw auth-profiles.json).
+ * Model/provider come from dreamStateModel preferences (user-selected, not a key).
  */
 function resolveDreamModelConfig(
   cfg: ResolvedConfig,
 ): { provider?: string; model?: string; apiKey?: string } | undefined {
+  if (!cfg.hostLlmApiKey) return undefined;
   const dm = cfg.dreamStateModel ?? {};
-  if (dm.apiKey) return dm;
-
-  const llmKey = cfg.llm?.apiKey;
-  if (llmKey) {
-    return {
-      provider: dm.provider || cfg.llm?.provider,
-      model: dm.model || cfg.llm?.model,
-      apiKey: llmKey,
-    };
-  }
-
-  const envKey =
-    process.env.KUMIHO_LLM_API_KEY ||
-    process.env.ANTHROPIC_API_KEY ||
-    process.env.OPENAI_API_KEY;
-
-  if (envKey) {
-    return {
-      provider:
-        dm.provider ||
-        process.env.KUMIHO_LLM_PROVIDER ||
-        (process.env.ANTHROPIC_API_KEY && envKey === process.env.ANTHROPIC_API_KEY
-          ? "anthropic"
-          : undefined),
-      model: dm.model || process.env.KUMIHO_LLM_MODEL || undefined,
-      apiKey: envKey,
-    };
-  }
-
-  return dm.provider || dm.model ? dm : undefined;
+  return {
+    provider: dm.provider || cfg.hostLlmProvider || undefined,
+    model: dm.model,
+    apiKey: cfg.hostLlmApiKey,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -245,10 +222,17 @@ export const TOOL_SCHEMAS = {
             "Item kind — any URL-safe string (e.g. 'document', 'code', 'blog-post', " +
             "'email', 'design', 'plan', 'analysis'). Default: document.",
         },
+        creativeProject: {
+          type: "string",
+          description:
+            "Kumiho project name for creative outputs (e.g. 'blog-posts', 'marketing'). " +
+            "Must NOT be CognitiveMemory — creative outputs live in their own project. " +
+            "Exception: free-tier users limited to 1 project may use CognitiveMemory as fallback.",
+        },
         project: {
           type: "string",
           description:
-            "Project space slug (e.g. 'blog-post-jan25', 'api-refactor'). " +
+            "Space slug within the creative project (e.g. 'blog-post-jan25', 'api-refactor'). " +
             "Groups outputs from the same project together in the graph.",
         },
         tags: {
@@ -267,7 +251,7 @@ export const TOOL_SCHEMAS = {
           description: "Extra metadata key-value pairs stored on the revision",
         },
       },
-      required: ["title", "content", "project"],
+      required: ["title", "content", "creativeProject", "project"],
     },
   },
 
@@ -328,6 +312,7 @@ export interface ToolContext {
   config: ResolvedConfig;
   currentSessionId: string | null;
   logger: { info: (msg: string) => void; error: (msg: string) => void };
+  getToken?: () => Promise<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -551,6 +536,10 @@ export async function handleMemoryDream(ctx: ToolContext): Promise<string> {
   const modelConfig = resolveDreamModelConfig(ctx.config);
   const stats = await ctx.client.triggerDreamState(modelConfig);
 
+  if (!stats.success && stats.errors.length > 0) {
+    return `Dream State failed:\n${stats.errors.map((e) => `  - ${e}`).join("\n")}`;
+  }
+
   const lines = [
     "Dream State consolidation complete.",
     "",
@@ -562,6 +551,10 @@ export async function handleMemoryDream(ctx: ToolContext): Promise<string> {
     `Edges created: ${stats.edges_created}`,
     `Duration: ${stats.duration_ms}ms`,
   ];
+
+  if (stats.report_kref) {
+    lines.push(`Report kref: ${stats.report_kref}`);
+  }
 
   if (stats.errors.length > 0) {
     lines.push("", `Errors: ${stats.errors.length}`, ...stats.errors.map((e) => `  - ${e}`));

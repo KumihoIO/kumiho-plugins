@@ -12,8 +12,9 @@
  *  7. Configure Dream State schedule
  *  8. Choose LLM model for Dream State   (cost-aware, lightweight recommended)
  *  9. Choose LLM model for Consolidation (cost-aware, smarter recommended)
- * 10. Write ~/.kumiho/preferences.json
- * 11. Print openclaw.json config hint
+ * 10. Collect LLM API key(s) for chosen providers
+ * 11. Write ~/.kumiho/preferences.json
+ * 12. Print openclaw.json config hint
  */
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
@@ -398,7 +399,7 @@ console.log(`${c.bold}${c.cyan}── Kumiho Configuration Wizard ────�
 
 // 7. Dream State schedule -----------------------------------------------------
 console.log();
-console.log(`${c.bold}Step 7 / 9  —  Dream State Schedule${c.reset}`);
+console.log(`${c.bold}Step 7 / 10  —  Dream State Schedule${c.reset}`);
 
 const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
@@ -419,7 +420,7 @@ if (scheduleChoice.key !== "off") {
 
 // 8. Dream State LLM model ---------------------------------------------------
 console.log();
-console.log(`${c.bold}Step 8 / 9  —  LLM Model for Dream State${c.reset}`);
+console.log(`${c.bold}Step 8 / 10  —  LLM Model for Dream State${c.reset}`);
 showDreamStateCostTable();
 
 const dreamModelChoice = await selectOption(
@@ -436,7 +437,7 @@ if (dreamModelChoice.provider) {
 
 // 9. Consolidation LLM model -------------------------------------------------
 console.log();
-console.log(`${c.bold}Step 9 / 9  —  LLM Model for Consolidation${c.reset}`);
+console.log(`${c.bold}Step 9 / 10  —  LLM Model for Consolidation${c.reset}`);
 showConsolidationCostTable();
 
 const consolidationModelChoice = await selectOption(
@@ -451,22 +452,87 @@ if (consolidationModelChoice.provider) {
   ok("Consolidation: using agent default model");
 }
 
+// 10. Collect LLM API key for Dream State -------------------------------------
+// Dream State needs a stored API key — it runs standalone via cron without a
+// host gateway, so it can't inherit the agent's key.  This applies regardless
+// of which model is chosen (including "agent default" — the cron runner still
+// needs a key to call the LLM).
+// Consolidation always runs in-session and inherits the host gateway's LLM key
+// automatically, so it never needs one stored here.
+let dreamStateApiKey = "";
+
+if (scheduleChoice.key !== "off") {
+  // Determine provider: explicit choice or fall back to anthropic (most common agent default)
+  const provider = dreamModelChoice.provider || "anthropic";
+  const envVar = provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+  const existingEnv = process.env[envVar] || process.env.KUMIHO_LLM_API_KEY;
+  const existingPref = existingPrefs?.dreamState?.model?.apiKey;
+
+  console.log();
+  console.log(`${c.bold}Step 10 / 10  —  LLM API Key for Dream State${c.reset}`);
+  console.log();
+  console.log(`  Dream State runs standalone via cron — it can't inherit the host's LLM key.`);
+  console.log(`  The API key is stored in ~/.kumiho/preferences.json for the cron runner.`);
+  console.log(`  ${c.dim}(Consolidation runs in-session and inherits the host key automatically.)${c.reset}`);
+  console.log();
+
+  if (existingPref) {
+    const masked = existingPref.slice(0, 8) + "..." + existingPref.slice(-4);
+    ok(`${provider} API key already saved: ${masked}`);
+    dreamStateApiKey = existingPref;
+  } else {
+    if (existingEnv) {
+      const masked = existingEnv.slice(0, 8) + "..." + existingEnv.slice(-4);
+      console.log(`  ${c.dim}Found ${envVar} in environment: ${masked}${c.reset}`);
+    }
+
+    const key = await askFreeText(
+      rl,
+      `${provider} API key`,
+      existingEnv ? "(press Enter to use env var)" : "sk-...",
+    );
+
+    if (key && key !== "(press Enter to use env var)") {
+      dreamStateApiKey = key;
+      ok(`${provider} API key saved for Dream State.`);
+    } else if (existingEnv) {
+      ok(`Dream State: will use ${envVar} environment variable at runtime.`);
+    } else {
+      warn(`No ${provider} API key provided. Set ${envVar} before running Dream State standalone.`);
+    }
+  }
+} else {
+  console.log();
+  console.log(`  ${c.dim}Dream State scheduling is off — skipping API key setup.${c.reset}`);
+  console.log(`  ${c.dim}If you enable it later, re-run kumiho-setup or set the env var.${c.reset}`);
+}
+
 rl.close();
 
-// 10. Write preferences.json --------------------------------------------------
+// 11. Write preferences.json --------------------------------------------------
 const prefs = {
   ...existingPrefs,
   dreamState: {
     schedule: finalCron ?? "off",
     scheduleKey: scheduleChoice.key,
     timezone: tz,
-    ...(dreamModelChoice.provider
-      ? { model: { provider: dreamModelChoice.provider, model: dreamModelChoice.model } }
-      : {}),
+    model: {
+      ...(dreamModelChoice.provider
+        ? { provider: dreamModelChoice.provider, model: dreamModelChoice.model }
+        : {}),
+      ...(dreamStateApiKey ? { apiKey: dreamStateApiKey } : {}),
+    },
   },
   consolidation: {
     ...(consolidationModelChoice.provider
-      ? { model: { provider: consolidationModelChoice.provider, model: consolidationModelChoice.model } }
+      ? {
+          model: {
+            provider: consolidationModelChoice.provider,
+            model: consolidationModelChoice.model,
+            // No apiKey here — consolidation runs in-session and inherits
+            // the host gateway's LLM key automatically.
+          },
+        }
       : {}),
   },
 };
@@ -475,7 +541,7 @@ mkdirSync(join(homedir(), ".kumiho"), { recursive: true });
 writeFileSync(PREFS_PATH, JSON.stringify(prefs, null, 2), "utf8");
 ok(`Preferences saved to ~/.kumiho/preferences.json`);
 
-// 11. Print config hint -------------------------------------------------------
+// 12. Print config hint -------------------------------------------------------
 const configPython = VENV_PYTHON.replace(/\\/g, "\\\\");
 
 console.log();
@@ -510,7 +576,7 @@ console.log(`    }`);
 console.log(`  }`);
 console.log();
 
-// 12. Dream State standalone cron instructions ---------------------------------
+// 13. Dream State standalone cron instructions ---------------------------------
 if (finalCron && scheduleChoice.key !== "off") {
   const pythonCmd = IS_WIN
     ? VENV_PYTHON.replace(/\\/g, "\\\\")
