@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   creativeRecallHandler,
   creativeCaptureHandler,
+  creativeJobStatusHandler,
   type CreativeToolContext,
 } from "../creative.js";
 import type { ResolvedConfig } from "../types.js";
@@ -253,5 +254,179 @@ describe("creativeCaptureHandler", () => {
     });
 
     expect(result).toContain("kref://CognitiveMemory/personal/memory-1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// creativeRecallHandler — auth_token pass-through (cross-project scope fix)
+// ---------------------------------------------------------------------------
+
+describe("creativeRecallHandler — getToken / auth_token", () => {
+  it("passes auth_token from getToken to kumiho_fulltext_search", async () => {
+    const callTool = vi.fn().mockResolvedValue({ results: [] });
+    const ctx: CreativeToolContext = {
+      client: { callTool } as unknown as CreativeToolContext["client"],
+      config: baseConfig,
+      logger: { info: vi.fn(), error: vi.fn() },
+      getToken: vi.fn().mockResolvedValue("tok-abc123"),
+    };
+
+    await creativeRecallHandler(ctx, { space: "blog-drafts", creativeProject: "openclaw", query: "test" });
+
+    const [, params] = callTool.mock.calls[0] as [string, Record<string, unknown>];
+    expect(params.auth_token).toBe("tok-abc123");
+  });
+
+  it("passes auth_token from getToken to kumiho_search_items (list mode)", async () => {
+    const callTool = vi.fn().mockResolvedValue({ items: [] });
+    const ctx: CreativeToolContext = {
+      client: { callTool } as unknown as CreativeToolContext["client"],
+      config: baseConfig,
+      logger: { info: vi.fn(), error: vi.fn() },
+      getToken: vi.fn().mockResolvedValue("tok-xyz789"),
+    };
+
+    await creativeRecallHandler(ctx, { space: "blog-drafts", creativeProject: "openclaw" });
+
+    const [, params] = callTool.mock.calls[0] as [string, Record<string, unknown>];
+    expect(params.auth_token).toBe("tok-xyz789");
+  });
+
+  it("omits auth_token when getToken is not provided", async () => {
+    const callTool = vi.fn().mockResolvedValue({ items: [] });
+    const ctx = makeCtx(callTool); // no getToken
+
+    await creativeRecallHandler(ctx, { space: "blog-drafts" });
+
+    const [, params] = callTool.mock.calls[0] as [string, Record<string, unknown>];
+    expect(params.auth_token).toBeUndefined();
+  });
+
+  it("omits auth_token when getToken returns empty string", async () => {
+    const callTool = vi.fn().mockResolvedValue({ items: [] });
+    const ctx: CreativeToolContext = {
+      client: { callTool } as unknown as CreativeToolContext["client"],
+      config: baseConfig,
+      logger: { info: vi.fn(), error: vi.fn() },
+      getToken: vi.fn().mockResolvedValue(""),
+    };
+
+    await creativeRecallHandler(ctx, { space: "blog-drafts" });
+
+    const [, params] = callTool.mock.calls[0] as [string, Record<string, unknown>];
+    expect(params.auth_token).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// creativeJobStatusHandler
+// ---------------------------------------------------------------------------
+
+describe("creativeJobStatusHandler", () => {
+  it("returns error when jobId is missing", async () => {
+    const ctx = makeCtx(vi.fn());
+    const result = await creativeJobStatusHandler(ctx, { jobId: "" });
+    expect(result).toContain("`jobId`");
+    expect(result).toContain("required");
+  });
+
+  it("returns error when bffEndpoint is not configured", async () => {
+    const ctx = makeCtx(vi.fn(), { ...baseConfig, bffEndpoint: "" });
+    const result = await creativeJobStatusHandler(ctx, { jobId: "job-abc" });
+    expect(result).toContain("bffEndpoint");
+  });
+
+  it("returns pending status correctly", async () => {
+    const getCreativeJobStatus = vi.fn().mockResolvedValue({ status: "pending" });
+    const ctx: CreativeToolContext = {
+      client: { getCreativeJobStatus } as unknown as CreativeToolContext["client"],
+      config: baseConfig,
+      logger: { info: vi.fn(), error: vi.fn() },
+    };
+
+    const result = await creativeJobStatusHandler(ctx, { jobId: "job-pending" });
+    expect(result).toContain("job-pending");
+    expect(result).toContain("pending");
+    expect(result).toContain("still running");
+  });
+
+  it("returns processing status correctly", async () => {
+    const getCreativeJobStatus = vi.fn().mockResolvedValue({ status: "processing" });
+    const ctx: CreativeToolContext = {
+      client: { getCreativeJobStatus } as unknown as CreativeToolContext["client"],
+      config: baseConfig,
+      logger: { info: vi.fn(), error: vi.fn() },
+    };
+
+    const result = await creativeJobStatusHandler(ctx, { jobId: "job-proc" });
+    expect(result).toContain("processing");
+    expect(result).toContain("still running");
+  });
+
+  it("returns krefs when job is done", async () => {
+    const getCreativeJobStatus = vi.fn().mockResolvedValue({
+      status: "done",
+      result: {
+        item_kref: "kref://openclaw/blog-drafts/post-1.document",
+        revision_kref: "kref://openclaw/blog-drafts/post-1.document?r=1",
+        memory_kref: "kref://CognitiveMemory/personal/mem-1.conversation?r=1",
+        space: "openclaw/blog-drafts",
+      },
+    });
+    const ctx: CreativeToolContext = {
+      client: { getCreativeJobStatus } as unknown as CreativeToolContext["client"],
+      config: baseConfig,
+      logger: { info: vi.fn(), error: vi.fn() },
+    };
+
+    const result = await creativeJobStatusHandler(ctx, { jobId: "job-done" });
+    expect(result).toContain("done");
+    expect(result).toContain("kref://openclaw/blog-drafts/post-1.document");
+    expect(result).toContain("kref://openclaw/blog-drafts/post-1.document?r=1");
+    expect(result).toContain("kref://CognitiveMemory/personal/mem-1.conversation?r=1");
+    expect(result).toContain("openclaw/blog-drafts");
+  });
+
+  it("returns error message when job failed", async () => {
+    const getCreativeJobStatus = vi.fn().mockResolvedValue({
+      status: "failed",
+      error: "Neo4j write timeout",
+    });
+    const ctx: CreativeToolContext = {
+      client: { getCreativeJobStatus } as unknown as CreativeToolContext["client"],
+      config: baseConfig,
+      logger: { info: vi.fn(), error: vi.fn() },
+    };
+
+    const result = await creativeJobStatusHandler(ctx, { jobId: "job-fail" });
+    expect(result).toContain("failed");
+    expect(result).toContain("Neo4j write timeout");
+  });
+
+  it("uses getToken for auth when provided", async () => {
+    const getCreativeJobStatus = vi.fn().mockResolvedValue({ status: "pending" });
+    const getToken = vi.fn().mockResolvedValue("tok-fresh");
+    const ctx: CreativeToolContext = {
+      client: { getCreativeJobStatus } as unknown as CreativeToolContext["client"],
+      config: baseConfig,
+      logger: { info: vi.fn(), error: vi.fn() },
+      getToken,
+    };
+
+    await creativeJobStatusHandler(ctx, { jobId: "job-abc" });
+    expect(getToken).toHaveBeenCalledOnce();
+    expect(getCreativeJobStatus).toHaveBeenCalledWith("job-abc", baseConfig.bffEndpoint, "tok-fresh");
+  });
+
+  it("returns error text on client failure", async () => {
+    const getCreativeJobStatus = vi.fn().mockRejectedValue(new Error("network error"));
+    const ctx: CreativeToolContext = {
+      client: { getCreativeJobStatus } as unknown as CreativeToolContext["client"],
+      config: baseConfig,
+      logger: { info: vi.fn(), error: vi.fn() },
+    };
+
+    const result = await creativeJobStatusHandler(ctx, { jobId: "job-err" });
+    expect(result).toContain("network error");
   });
 });
