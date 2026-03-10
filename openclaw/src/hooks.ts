@@ -166,6 +166,62 @@ export interface RecallResult {
 }
 
 /**
+ /**
+ * Build a context-enriched recall query by combining the current user message
+ * with key terms extracted from recent conversation turns.
+ *
+ * Short messages like "yeah", "what about that?", "tell me more" carry little
+ * semantic signal on their own. Appending the prior user message + last
+ * assistant response gives the retrieval a meaningful anchor without blowing
+ * up the query length.
+ *
+ * Strategy:
+ *   - Always include the current message.
+ *   - If it's short (<= 6 words), append the previous user message as context.
+ *   - Append a 20-word excerpt of the last assistant response (highest-signal
+ *     terms tend to appear early in the response).
+ *   - Deduplicate and cap total query at ~200 chars to stay within index limits.
+ */
+export function buildRecallQuery(
+  userMessage: string,
+  state: Pick<HookState, "lastUserMessage" | "lastAssistantResponse">,
+): string {
+  const parts: string[] = [userMessage.trim()];
+
+  const wordCount = userMessage.trim().split(/\s+/).length;
+
+  // Short / ambiguous message — pull in previous user turn for topic context
+  if (wordCount <= 6 && state.lastUserMessage) {
+    parts.push(state.lastUserMessage.trim());
+  }
+
+  // Prepend key terms from last assistant response (first 20 words)
+  if (state.lastAssistantResponse) {
+    const excerpt = state.lastAssistantResponse
+      .trim()
+      .split(/\s+/)
+      .slice(0, 20)
+      .join(" ");
+    parts.push(excerpt);
+  }
+
+  // Deduplicate words and cap at 200 chars
+  const seen = new Set<string>();
+  const tokens: string[] = [];
+  for (const part of parts) {
+    for (const word of part.split(/\s+/)) {
+      const w = word.toLowerCase().replace(/[^\w]/g, "");
+      if (w.length > 2 && !seen.has(w)) {
+        seen.add(w);
+        tokens.push(word);
+      }
+    }
+  }
+
+  return tokens.join(" ").slice(0, 200);
+}
+
+/**
  * Auto-recall hook: searches Kumiho for memories matching the user's message
  * and prepares context injection for the agent.
  */
@@ -180,6 +236,10 @@ export async function autoRecall(
   if (!state.sessionId) {
     state.sessionId = await generateSessionId(config.userId);
   }
+
+  // Build context-enriched query before updating state (so we capture the
+  // *previous* turn's context, not the current message overwriting it)
+  const recallQuery = buildRecallQuery(userMessage, state);
 
   state.lastUserMessage = userMessage;
   state.messageCount++;
@@ -200,7 +260,7 @@ export async function autoRecall(
       timestamp: new Date().toISOString(),
     }),
     client.memoryRetrieve({
-      query: userMessage,
+      query: recallQuery,
       limit: config.topK,
       spacePaths,
     }),

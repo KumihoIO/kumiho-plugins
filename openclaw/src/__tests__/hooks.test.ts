@@ -286,3 +286,84 @@ describe("autoRecall — spacePaths scoping", () => {
     expect(params.spacePaths).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// buildRecallQuery
+// ---------------------------------------------------------------------------
+
+import { buildRecallQuery } from "../hooks.js";
+
+describe("buildRecallQuery", () => {
+  it("returns the message unchanged when it is long enough and has no prior context", () => {
+    const result = buildRecallQuery("what is the LoCoMo benchmark score for kumiho memory", {
+      lastUserMessage: null,
+      lastAssistantResponse: null,
+    });
+    expect(result).toContain("LoCoMo");
+    expect(result).toContain("benchmark");
+  });
+
+  it("appends previous user message when current message is short (<= 6 words)", () => {
+    const result = buildRecallQuery("what about that?", {
+      lastUserMessage: "we were discussing the locomo benchmark results",
+      lastAssistantResponse: null,
+    });
+    expect(result).toContain("locomo");
+    expect(result).toContain("benchmark");
+  });
+
+  it("does NOT append previous message when current message is long enough", () => {
+    const result = buildRecallQuery("tell me about the locomo plus benchmark architecture and scoring", {
+      lastUserMessage: "something completely unrelated about dogs and weather",
+      lastAssistantResponse: null,
+    });
+    expect(result).not.toContain("dogs");
+    expect(result).not.toContain("weather");
+  });
+
+  it("appends first 20 words of last assistant response", () => {
+    const result = buildRecallQuery("yeah", {
+      lastUserMessage: null,
+      lastAssistantResponse: "The LoCoMo-Plus benchmark measures long-context memory. Kumiho scores 93.3% vs 45.7% for Gemini 2.5 Pro.",
+    });
+    expect(result).toContain("LoCoMo-Plus");
+    expect(result).toContain("benchmark");
+  });
+
+  it("deduplicates words across message and context", () => {
+    const result = buildRecallQuery("locomo benchmark", {
+      lastUserMessage: "locomo benchmark results",
+      lastAssistantResponse: "locomo benchmark score is 93.3%",
+    });
+    const words = result.split(/\s+/);
+    const locomo = words.filter(w => w.toLowerCase() === "locomo");
+    expect(locomo.length).toBe(1);
+  });
+
+  it("caps output at 200 characters", () => {
+    const long = "word ".repeat(100);
+    const result = buildRecallQuery(long, {
+      lastUserMessage: long,
+      lastAssistantResponse: long,
+    });
+    expect(result.length).toBeLessThanOrEqual(200);
+  });
+
+  it("autoRecall uses enriched query — short message gets prior context appended", async () => {
+    const memoryRetrieve = vi.fn().mockResolvedValue([]);
+    const client = {
+      chatAdd: vi.fn().mockResolvedValue(undefined),
+      memoryRetrieve,
+    } as unknown as KumihoClient;
+    const state = createHookState();
+
+    // Simulate a prior turn
+    state.lastUserMessage = "we were discussing the locomo plus benchmark";
+    state.lastAssistantResponse = "Kumiho scores 93.3% on LoCoMo-Plus";
+
+    await autoRecall(client, { ...baseConfig, topK: 5, searchThreshold: 0.0 }, state, "yeah?");
+
+    const [params] = memoryRetrieve.mock.calls[0] as [{ query: string }];
+    expect(params.query).toContain("locomo");
+  });
+});
