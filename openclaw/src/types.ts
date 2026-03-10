@@ -405,10 +405,16 @@ export interface CreativeCaptureResult {
   message: string;
 }
 
-/** Parameters for the project_recall tool. */
-export interface ProjectRecallParams {
-  /** Project space slug to search within. */
-  project: string;
+/** Parameters for the creative_recall tool. */
+export interface CreativeRecallParams {
+  /**
+   * Kumiho project name for creative outputs (e.g. 'blog-posts', 'marketing').
+   * Defaults to the plugin's configured project if omitted.
+   * Mirrors the `creativeProject` parameter of creative_capture.
+   */
+  creativeProject?: string;
+  /** Space slug to search within (e.g. 'blog-drafts', 'api-refactor'). */
+  space: string;
   /** Optional natural language query. Defaults to listing all items. */
   query?: string;
   /** Filter by creative kind. */

@@ -284,7 +284,6 @@ export type {
   CreativeKind,
   CreativeCaptureParams,
   CreativeCaptureResult,
-  ProjectRecallParams,
   CreativeItem,
 } from "./types.js";
 
@@ -846,14 +845,14 @@ export default {
             const project = args[0] as string;
             const opts = args[1] as Record<string, string>;
             const state = ensureInitialized();
-            const result = await TOOL_HANDLERS.project_recall(
+            const result = await TOOL_HANDLERS.creative_recall(
               {
                 client: state.client,
                 config: state.config,
                 currentSessionId: state.hookState.sessionId,
                 logger: api.logger,
               },
-              { project, query: opts.query, kind: opts.kind },
+              { space: project, query: opts.query, kind: opts.kind },
             );
             console.log(result);
           });
@@ -949,7 +948,7 @@ export default {
         return {
           text:
             `Capture queued: "${title}" → ${project} (${kind})\n` +
-            `Processing in background. Use project_recall to see it once done.`,
+            `Processing in background. Use creative_recall to see it once done.`,
         };
       },
     });

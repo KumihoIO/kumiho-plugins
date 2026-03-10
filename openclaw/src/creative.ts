@@ -9,7 +9,7 @@
  *   createEdge → memoryStore → discoverEdges).  The agent turn is never
  *   blocked — the tool returns a job ID immediately.
  *
- *   project_recall — Search creative items in a project space.  Returns
+ *   creative_recall — Search creative items in a space.  Returns
  *   a formatted list of past outputs so the agent can reference previous
  *   work when continuing a project.
  *
@@ -26,7 +26,7 @@ import type {
   ResolvedConfig,
   CreativeCaptureParams,
   CreativeKind,
-  ProjectRecallParams,
+  CreativeRecallParams,
 } from "./types.js";
 
 export interface CreativeToolContext {
@@ -183,31 +183,32 @@ export async function creativeJobStatusHandler(
 }
 
 // ---------------------------------------------------------------------------
-// project_recall
+// creative_recall
 // ---------------------------------------------------------------------------
 
 /**
- * Handle the project_recall tool.
+ * Handle the creative_recall tool.
  *
  * Searches Kumiho long-term memory for creative outputs in the specified
- * project space.  Results are formatted as a structured list the agent can
+ * space.  Results are formatted as a structured list the agent can
  * reference when continuing a project.
  */
-export async function projectRecallHandler(
+export async function creativeRecallHandler(
   ctx: CreativeToolContext,
-  params: Partial<ProjectRecallParams>,
+  params: Partial<CreativeRecallParams>,
 ): Promise<string> {
-  const project = (params.project ?? "").trim();
-  if (!project) return "project_recall: `project` (space slug) is required.";
+  const space = (params.space ?? "").trim();
+  if (!space) return "creative_recall: `space` (space slug) is required.";
 
+  const kumihoProject = (params.creativeProject ?? ctx.config.project).trim();
   const kind = coerceKind(params.kind ?? "other");
   const query =
     params.query?.trim() ||
-    [project, params.kind ? kind : ""].filter(Boolean).join(" ");
+    [space, params.kind ? kind : ""].filter(Boolean).join(" ");
   const limit = params.limit ?? ctx.config.topK;
 
-  // Scope recall to this project's space
-  const spacePaths = [`${ctx.config.project}/${project}`];
+  // Scope recall to this space within the creative project
+  const spacePaths = [`${kumihoProject}/${space}`];
 
   try {
     const results = await ctx.client.memoryRetrieve({
@@ -217,10 +218,10 @@ export async function projectRecallHandler(
     });
 
     if (results.length === 0) {
-      return `No creative items found in project "${project}". Capture something first using creative_capture.`;
+      return `No creative items found in space "${kumihoProject}/${space}". Capture something first using creative_capture.`;
     }
 
-    const lines: string[] = [`## Project: ${project}`, ""];
+    const lines: string[] = [`## Space: ${kumihoProject}/${space}`, ""];
 
     for (const item of results) {
       lines.push(`### ${item.title || "(untitled)"}`);
@@ -234,7 +235,7 @@ export async function projectRecallHandler(
     return lines.join("\n");
   } catch (err) {
     const msg = (err as Error).message;
-    ctx.logger.error(`project_recall failed: ${msg}`);
-    return `Project recall failed: ${msg}`;
+    ctx.logger.error(`creative_recall failed: ${msg}`);
+    return `Creative recall failed: ${msg}`;
   }
 }

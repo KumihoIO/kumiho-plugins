@@ -17,7 +17,7 @@
 
 import type { KumihoClient } from "./client.js";
 import type { ResolvedConfig, MemoryScope, MemoryType, MemoryEntry } from "./types.js";
-import { creativeCaptureHandler, creativeJobStatusHandler, projectRecallHandler } from "./creative.js";
+import { creativeCaptureHandler, creativeJobStatusHandler, creativeRecallHandler } from "./creative.js";
 
 // ---------------------------------------------------------------------------
 // LLM key resolution for Dream State
@@ -272,18 +272,27 @@ export const TOOL_SCHEMAS = {
     },
   },
 
-  project_recall: {
+  creative_recall: {
     description:
-      "Search and list creative outputs stored in a project space. " +
+      "Search and list creative outputs stored in a space. " +
       "Use this before continuing work on a project to recall previous outputs, " +
       "decisions, and artifacts. Returns krefs you can pass as sourceMemoryKref " +
       "when capturing new outputs derived from existing work.",
     parameters: {
       type: "object" as const,
       properties: {
-        project: {
+        creativeProject: {
           type: "string",
-          description: "Project space slug to search within",
+          description:
+            "Kumiho project name for creative outputs (e.g. 'blog-posts', 'marketing'). " +
+            "Defaults to the plugin's configured project if omitted. " +
+            "Must match the creativeProject used in creative_capture.",
+        },
+        space: {
+          type: "string",
+          description:
+            "Space slug to search within (e.g. 'blog-drafts', 'api-refactor'). " +
+            "Matches the `project` (space slug) parameter of creative_capture.",
         },
         query: {
           type: "string",
@@ -298,7 +307,7 @@ export const TOOL_SCHEMAS = {
           description: "Max results to return (default: topK from config)",
         },
       },
-      required: ["project"],
+      required: ["space"],
     },
   },
 } as const;
@@ -590,6 +599,6 @@ export const TOOL_HANDLERS: Record<
     creativeCaptureHandler(ctx, p as Parameters<typeof creativeCaptureHandler>[1]),
   creative_job_status: (ctx, p) =>
     creativeJobStatusHandler(ctx, p as { jobId: string }),
-  project_recall: (ctx, p) =>
-    projectRecallHandler(ctx, p as Parameters<typeof projectRecallHandler>[1]),
+  creative_recall: (ctx, p) =>
+    creativeRecallHandler(ctx, p as Parameters<typeof creativeRecallHandler>[1]),
 };
