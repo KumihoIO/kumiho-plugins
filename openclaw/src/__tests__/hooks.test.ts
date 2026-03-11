@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { consolidateSession, createHookState, type HookState } from "../hooks.js";
 import type { KumihoClient } from "../client.js";
 import type { PIIRedactor } from "../privacy.js";
@@ -365,5 +365,461 @@ describe("buildRecallQuery", () => {
 
     const [params] = memoryRetrieve.mock.calls[0] as [{ query: string }];
     expect(params.query).toContain("locomo");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordUserTurn
+// ---------------------------------------------------------------------------
+
+import { recordUserTurn, autoCapture, prefetchMemories } from "../hooks.js";
+
+describe("recordUserTurn", () => {
+  it("stores user message via chatAdd with correct role and content", async () => {
+    const chatAdd = vi.fn().mockResolvedValue(undefined);
+    const client = { chatAdd } as unknown as KumihoClient;
+    const state = createHookState();
+    state.sessionId = "session-rut-001";
+
+    await recordUserTurn(client, baseConfig, state, "hello world");
+
+    expect(chatAdd).toHaveBeenCalledOnce();
+    const [sid, role, content] = chatAdd.mock.calls[0] as [string, string, string, unknown];
+    expect(sid).toBe("session-rut-001");
+    expect(role).toBe("user");
+    expect(content).toBe("hello world");
+  });
+
+  it("sets state.lastUserMessage", async () => {
+    const client = { chatAdd: vi.fn().mockResolvedValue(undefined) } as unknown as KumihoClient;
+    const state = createHookState();
+    state.sessionId = "session-rut-002";
+
+    await recordUserTurn(client, baseConfig, state, "test message");
+
+    expect(state.lastUserMessage).toBe("test message");
+  });
+
+  it("increments state.messageCount", async () => {
+    const client = { chatAdd: vi.fn().mockResolvedValue(undefined) } as unknown as KumihoClient;
+    const state = createHookState();
+    state.sessionId = "session-rut-003";
+    state.messageCount = 3;
+
+    await recordUserTurn(client, baseConfig, state, "msg");
+
+    expect(state.messageCount).toBe(4);
+  });
+
+  it("initialises sessionId when null", async () => {
+    const client = { chatAdd: vi.fn().mockResolvedValue(undefined) } as unknown as KumihoClient;
+    const state = createHookState();
+    expect(state.sessionId).toBeNull();
+
+    await recordUserTurn(client, baseConfig, state, "hello");
+
+    expect(state.sessionId).not.toBeNull();
+    expect(typeof state.sessionId).toBe("string");
+  });
+
+  it("includes channel metadata in chatAdd call when channel provided", async () => {
+    const chatAdd = vi.fn().mockResolvedValue(undefined);
+    const client = { chatAdd } as unknown as KumihoClient;
+    const state = createHookState();
+    state.sessionId = "session-rut-004";
+    const channel: ChannelInfo = { platform: "telegram", channelType: "personal_dm" };
+
+    await recordUserTurn(client, baseConfig, state, "msg", channel);
+
+    const [, , , meta] = chatAdd.mock.calls[0] as [string, string, string, Record<string, unknown>];
+    expect(meta).toHaveProperty("channel");
+    expect((meta.channel as Record<string, unknown>).platform).toBe("telegram");
+  });
+
+  it("propagates chatAdd rejection to caller", async () => {
+    const client = {
+      chatAdd: vi.fn().mockRejectedValue(new Error("Redis down")),
+    } as unknown as KumihoClient;
+    const state = createHookState();
+    state.sessionId = "session-rut-005";
+
+    await expect(recordUserTurn(client, baseConfig, state, "msg")).rejects.toThrow("Redis down");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// consolidateSession — LLM summarization
+// ---------------------------------------------------------------------------
+
+describe("consolidateSession — LLM summarization", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("uses static fallback when localSummarization is false", async () => {
+    const messages = makeMessages([{ user: "Hello", assistant: "Hi there" }]);
+    const client = makeClient(messages);
+    const state = createHookState();
+    state.sessionId = "session-llm-001";
+
+    await consolidateSession(client, baseConfig, state, makeRedactor(), makeArtifacts());
+
+    const call = vi.mocked(client.memoryStore).mock.calls[0][0];
+    expect(call.summary).toMatch(/Consolidated/i);
+  });
+
+  it("uses static fallback when no LLM provider is configured", async () => {
+    const config: ResolvedConfig = {
+      ...baseConfig,
+      localSummarization: true,
+      consolidationModel: {},
+      llm: {},
+      hostLlmProvider: "",
+      hostLlmApiKey: "",
+    };
+    const messages = makeMessages([{ user: "Hello", assistant: "Hi" }]);
+    const client = makeClient(messages);
+    const state = createHookState();
+    state.sessionId = "session-llm-002";
+
+    await consolidateSession(client, config, state, makeRedactor(), makeArtifacts());
+
+    const call = vi.mocked(client.memoryStore).mock.calls[0][0];
+    expect(call.summary).toMatch(/Consolidated/i);
+  });
+
+  it("calls Anthropic API and uses LLM response as summary", async () => {
+    const llmSummary = "The user asked about TypeScript generics and received an explanation.";
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ content: [{ text: llmSummary }] }),
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const config: ResolvedConfig = {
+      ...baseConfig,
+      localSummarization: true,
+      hostLlmProvider: "anthropic",
+      hostLlmApiKey: "sk-ant-test-key",
+    };
+    const messages = makeMessages([{ user: "Explain generics", assistant: "Generics are..." }]);
+    const client = makeClient(messages);
+    const state = createHookState();
+    state.sessionId = "session-llm-003";
+
+    await consolidateSession(client, config, state, makeRedactor(), makeArtifacts());
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.anthropic.com/v1/messages");
+    const headers = init.headers as Record<string, string>;
+    expect(headers["x-api-key"]).toBe("sk-ant-test-key");
+    expect(headers["anthropic-version"]).toBeDefined();
+
+    const call = vi.mocked(client.memoryStore).mock.calls[0][0];
+    expect(call.summary).toBe(llmSummary);
+  });
+
+  it("calls OpenAI API and uses LLM response as summary", async () => {
+    const llmSummary = "Conversation about Python async/await patterns.";
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: llmSummary } }],
+      }),
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const config: ResolvedConfig = {
+      ...baseConfig,
+      localSummarization: true,
+      hostLlmProvider: "openai",
+      hostLlmApiKey: "sk-openai-test-key",
+    };
+    const messages = makeMessages([{ user: "async/await?", assistant: "Use async functions..." }]);
+    const client = makeClient(messages);
+    const state = createHookState();
+    state.sessionId = "session-llm-004";
+
+    await consolidateSession(client, config, state, makeRedactor(), makeArtifacts());
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.openai.com/v1/chat/completions");
+    const headers = init.headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe("Bearer sk-openai-test-key");
+
+    const call = vi.mocked(client.memoryStore).mock.calls[0][0];
+    expect(call.summary).toBe(llmSummary);
+  });
+
+  it("falls back to static summary when fetch rejects", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network error")));
+
+    const config: ResolvedConfig = {
+      ...baseConfig,
+      localSummarization: true,
+      hostLlmProvider: "anthropic",
+      hostLlmApiKey: "sk-ant-test",
+    };
+    const messages = makeMessages([{ user: "hi", assistant: "hello" }]);
+    const client = makeClient(messages);
+    const state = createHookState();
+    state.sessionId = "session-llm-005";
+
+    const result = await consolidateSession(client, config, state, makeRedactor(), makeArtifacts());
+
+    expect(result).toBe(true);
+    const call = vi.mocked(client.memoryStore).mock.calls[0][0];
+    expect(call.summary).toMatch(/Consolidated/i);
+  });
+
+  it("falls back to static summary when API returns non-ok status", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 429 }));
+
+    const config: ResolvedConfig = {
+      ...baseConfig,
+      localSummarization: true,
+      hostLlmProvider: "anthropic",
+      hostLlmApiKey: "sk-ant-test",
+    };
+    const messages = makeMessages([{ user: "hi", assistant: "hello" }]);
+    const client = makeClient(messages);
+    const state = createHookState();
+    state.sessionId = "session-llm-006";
+
+    await consolidateSession(client, config, state, makeRedactor(), makeArtifacts());
+
+    const call = vi.mocked(client.memoryStore).mock.calls[0][0];
+    expect(call.summary).toMatch(/Consolidated/i);
+  });
+
+  it("prefers consolidationModel.apiKey over hostLlmApiKey", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ content: [{ text: "summary" }] }),
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const config: ResolvedConfig = {
+      ...baseConfig,
+      localSummarization: true,
+      consolidationModel: { provider: "anthropic", apiKey: "explicit-key" },
+      hostLlmProvider: "anthropic",
+      hostLlmApiKey: "host-key",
+    };
+    const messages = makeMessages([{ user: "q", assistant: "a" }]);
+    const client = makeClient(messages);
+    const state = createHookState();
+    state.sessionId = "session-llm-007";
+
+    await consolidateSession(client, config, state, makeRedactor(), makeArtifacts());
+
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)["x-api-key"]).toBe("explicit-key");
+  });
+
+  it("caps transcript at 8000 chars before sending to LLM", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ content: [{ text: "summary" }] }),
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const config: ResolvedConfig = {
+      ...baseConfig,
+      localSummarization: true,
+      hostLlmProvider: "anthropic",
+      hostLlmApiKey: "sk-ant-test",
+    };
+    // Produce messages well over 8000 chars total
+    const bigMsg = "x".repeat(3000);
+    const messages = makeMessages([
+      { user: bigMsg, assistant: bigMsg },
+      { user: bigMsg, assistant: bigMsg },
+    ]);
+    const client = makeClient(messages);
+    const state = createHookState();
+    state.sessionId = "session-llm-008";
+
+    await consolidateSession(client, config, state, makeRedactor(), makeArtifacts());
+
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as { messages: Array<{ content: string }> };
+    const promptContent = body.messages[0].content;
+    // The conversation transcript embedded in the prompt is capped at 8000 chars
+    expect(promptContent.length).toBeLessThan(9000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// autoCapture
+// ---------------------------------------------------------------------------
+
+describe("autoCapture", () => {
+  it("returns captured:false when sessionId is null", async () => {
+    const client = { chatAdd: vi.fn() } as unknown as KumihoClient;
+    const state = createHookState();
+
+    const result = await autoCapture(client, baseConfig, state, makeRedactor(), makeArtifacts(), "response");
+
+    expect(result.captured).toBe(false);
+    expect(vi.mocked(client.chatAdd)).not.toHaveBeenCalled();
+  });
+
+  it("returns captured:false when lastUserMessage is null", async () => {
+    const client = { chatAdd: vi.fn() } as unknown as KumihoClient;
+    const state = createHookState();
+    state.sessionId = "session-ac-001";
+    state.lastUserMessage = null;
+
+    const result = await autoCapture(client, baseConfig, state, makeRedactor(), makeArtifacts(), "response");
+
+    expect(result.captured).toBe(false);
+  });
+
+  it("returns captured:false when response is empty", async () => {
+    const client = { chatAdd: vi.fn() } as unknown as KumihoClient;
+    const state = createHookState();
+    state.sessionId = "session-ac-002";
+    state.lastUserMessage = "hello";
+
+    const result = await autoCapture(client, baseConfig, state, makeRedactor(), makeArtifacts(), "   ");
+
+    expect(result.captured).toBe(false);
+    expect(vi.mocked(client.chatAdd)).not.toHaveBeenCalled();
+  });
+
+  it("stores assistant message via chatAdd", async () => {
+    const chatAdd = vi.fn().mockResolvedValue(undefined);
+    const client = { chatAdd } as unknown as KumihoClient;
+    const state = createHookState();
+    state.sessionId = "session-ac-003";
+    state.lastUserMessage = "question";
+
+    await autoCapture(client, baseConfig, state, makeRedactor(), makeArtifacts(), "the answer");
+
+    expect(chatAdd).toHaveBeenCalledOnce();
+    const [, role, content] = chatAdd.mock.calls[0] as [string, string, string];
+    expect(role).toBe("assistant");
+    expect(content).toBe("the answer");
+  });
+
+  it("sets state.lastAssistantResponse", async () => {
+    const client = { chatAdd: vi.fn().mockResolvedValue(undefined) } as unknown as KumihoClient;
+    const state = createHookState();
+    state.sessionId = "session-ac-004";
+    state.lastUserMessage = "question";
+
+    await autoCapture(client, baseConfig, state, makeRedactor(), makeArtifacts(), "  trimmed response  ");
+
+    expect(state.lastAssistantResponse).toBe("trimmed response");
+  });
+
+  it("returns consolidated:false when messageCount is below threshold", async () => {
+    const client = { chatAdd: vi.fn().mockResolvedValue(undefined) } as unknown as KumihoClient;
+    const state = createHookState();
+    state.sessionId = "session-ac-005";
+    state.lastUserMessage = "question";
+    state.messageCount = 5; // threshold is 20
+
+    const result = await autoCapture(client, baseConfig, state, makeRedactor(), makeArtifacts(), "response");
+
+    expect(result.captured).toBe(true);
+    expect(result.consolidated).toBe(false);
+  });
+
+  it("triggers consolidation and returns consolidated:true when messageCount reaches threshold", async () => {
+    // After autoCapture increments messageCount to 20, consolidation fires
+    const messages = makeMessages([{ user: "q", assistant: "a" }]);
+    const fullClient = makeClient(messages);
+    // Add chatAdd mock (used for storing assistant message)
+    (fullClient as unknown as Record<string, unknown>).chatAdd = vi.fn().mockResolvedValue(undefined);
+
+    const state = createHookState();
+    state.sessionId = "session-ac-006";
+    state.lastUserMessage = "question";
+    state.messageCount = 19; // will become 20 after increment → triggers consolidation
+
+    const result = await autoCapture(fullClient, baseConfig, state, makeRedactor(), makeArtifacts(), "response");
+
+    expect(result.consolidated).toBe(true);
+    expect(vi.mocked(fullClient.memoryStore)).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// prefetchMemories
+// ---------------------------------------------------------------------------
+
+describe("prefetchMemories", () => {
+  const memories: import("../types.js").MemoryEntry[] = [
+    { kref: "kref://x/y/z?r=1", type: "fact", title: "Test fact", summary: "Something important", topics: [], score: 0.9 },
+    { kref: "kref://x/y/w?r=1", type: "fact", title: "Low score", summary: "Not very relevant", topics: [], score: 0.2 },
+  ];
+
+  it("calls memoryRetrieve with query and topK", async () => {
+    const memoryRetrieve = vi.fn().mockResolvedValue([]);
+    const client = { memoryRetrieve } as unknown as KumihoClient;
+    const config = { ...baseConfig, topK: 7 };
+
+    await prefetchMemories(client, config, "test query");
+
+    expect(memoryRetrieve).toHaveBeenCalledOnce();
+    const [params] = memoryRetrieve.mock.calls[0] as [{ query: string; limit: number }];
+    expect(params.query).toBe("test query");
+    expect(params.limit).toBe(7);
+  });
+
+  it("filters out memories below searchThreshold", async () => {
+    const client = {
+      memoryRetrieve: vi.fn().mockResolvedValue(memories),
+    } as unknown as KumihoClient;
+    const config = { ...baseConfig, searchThreshold: 0.5 };
+
+    const result = await prefetchMemories(client, config, "query");
+
+    // Only the 0.9 score memory passes the 0.5 threshold
+    expect(result.memories).toHaveLength(1);
+    expect(result.memories[0].kref).toBe("kref://x/y/z?r=1");
+  });
+
+  it("returns non-empty contextInjection when memories pass threshold", async () => {
+    const client = {
+      memoryRetrieve: vi.fn().mockResolvedValue([memories[0]]),
+    } as unknown as KumihoClient;
+
+    const result = await prefetchMemories(client, baseConfig, "query");
+
+    expect(result.contextInjection).not.toBe("");
+    expect(result.contextInjection).toContain("Test fact");
+  });
+
+  it("returns empty contextInjection when no memories pass threshold", async () => {
+    const client = {
+      memoryRetrieve: vi.fn().mockResolvedValue([memories[1]]), // score 0.2 below 0.5 threshold
+    } as unknown as KumihoClient;
+    const config = { ...baseConfig, searchThreshold: 0.5 };
+
+    const result = await prefetchMemories(client, config, "query");
+
+    expect(result.contextInjection).toBe("");
+    expect(result.memories).toHaveLength(0);
+  });
+
+  it("does not call chatAdd — read-only with no state mutations", async () => {
+    const chatAdd = vi.fn();
+    const client = {
+      chatAdd,
+      memoryRetrieve: vi.fn().mockResolvedValue([]),
+    } as unknown as KumihoClient;
+    const state = createHookState();
+    state.sessionId = "session-pf-001";
+    state.messageCount = 5;
+
+    await prefetchMemories(client, baseConfig, "query");
+
+    expect(chatAdd).not.toHaveBeenCalled();
+    expect(state.messageCount).toBe(5); // unchanged
   });
 });
