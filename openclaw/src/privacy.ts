@@ -22,17 +22,19 @@ const PII_PATTERNS: PIIPattern[] = [
     type: "email",
     regex: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
   },
+  // credit_card must precede phone — the phone regex matches sub-sequences
+  // of 16-digit card numbers (e.g. "1111 1111" inside "4111 1111 1111 1111").
   {
-    type: "phone",
-    regex: /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/g,
+    type: "credit_card",
+    regex: /\b(?:\d{4}[-\s]?){3}\d{4}\b/g,
   },
   {
     type: "ssn",
     regex: /\b\d{3}-\d{2}-\d{4}\b/g,
   },
   {
-    type: "credit_card",
-    regex: /\b(?:\d{4}[-\s]?){3}\d{4}\b/g,
+    type: "phone",
+    regex: /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/g,
   },
   {
     type: "ip_address",
