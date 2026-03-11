@@ -255,6 +255,7 @@ import {
   autoCapture,
   consolidateSession,
   prefetchMemories,
+  recordUserTurn,
   createHookState,
   type HookState,
 } from "./hooks.js";
@@ -1184,6 +1185,10 @@ export default {
           // then kick off a fresh background prefetch for the next turn.
           recallResult = state.hookState.prefetchedRecall;
           state.hookState.prefetchedRecall = null;
+          // Store the user message and update state — prefetchMemories is read-only
+          // and does not do this, so without this call every turn after the first
+          // would silently drop the user message from the session buffer.
+          await recordUserTurn(state.client, state.config, state.hookState, message);
           void prefetchMemories(state.client, state.config, message)
             .then((r) => { state.hookState.prefetchedRecall = r; })
             .catch(() => {});

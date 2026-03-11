@@ -14,7 +14,7 @@
 import type { KumihoClient } from "./client.js";
 import type { PIIRedactor } from "./privacy.js";
 import type { ArtifactManager } from "./artifacts.js";
-import type { ResolvedConfig, MemoryEntry, ChannelInfo } from "./types.js";
+import type { ResolvedConfig, MemoryEntry, ChannelInfo, ChatMessage } from "./types.js";
 import { generateSessionId, getMemorySpace, buildChannelMetadata } from "./session.js";
 
 // ---------------------------------------------------------------------------
@@ -50,6 +50,35 @@ export function createHookState(): HookState {
     prefetchedRecall: null,
     memoryInstructionsInjected: false,
   };
+}
+
+/**
+ * Record the user's turn in the session buffer and update hook state.
+ *
+ * This is the write-only counterpart to prefetchMemories. In the
+ * stale-while-revalidate path, before_prompt_build uses a prefetched recall
+ * result and skips autoRecall — but autoRecall is the only place that calls
+ * chatAdd for the user message and bumps messageCount. Without this call,
+ * every turn after the first silently drops the user message from the buffer,
+ * producing session artifacts that contain only assistant turns.
+ */
+export async function recordUserTurn(
+  client: KumihoClient,
+  config: ResolvedConfig,
+  state: HookState,
+  userMessage: string,
+  channel?: ChannelInfo,
+): Promise<void> {
+  if (!state.sessionId) {
+    state.sessionId = await generateSessionId(config.userId);
+  }
+  state.lastUserMessage = userMessage;
+  state.messageCount++;
+  const channelMeta = channel ? buildChannelMetadata(channel) : {};
+  await client.chatAdd(state.sessionId, "user", userMessage, {
+    ...channelMeta,
+    timestamp: new Date().toISOString(),
+  });
 }
 
 /**
@@ -352,6 +381,90 @@ export async function autoCapture(
 }
 
 // ---------------------------------------------------------------------------
+// LLM-based session summarization
+// ---------------------------------------------------------------------------
+
+/**
+ * Call the configured LLM to generate a conversation summary.
+ * Supports Anthropic and OpenAI APIs via direct fetch.
+ * Returns null if no LLM is configured or the call fails (caller falls back to static summary).
+ */
+async function generateConsolidationSummary(
+  config: ResolvedConfig,
+  messages: ChatMessage[],
+): Promise<string | null> {
+  if (!config.localSummarization) return null;
+
+  const provider =
+    config.consolidationModel.provider ||
+    config.llm.provider ||
+    config.hostLlmProvider;
+  const apiKey =
+    config.consolidationModel.apiKey ||
+    config.llm.apiKey ||
+    config.hostLlmApiKey;
+
+  if (!provider || !apiKey) return null;
+
+  // Build interleaved transcript (cap at 8000 chars to stay within token limits)
+  const transcript = messages
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+    .join("\n\n")
+    .slice(0, 8000);
+
+  const prompt =
+    `Summarize the following conversation in 2-4 sentences. Focus on: key topics discussed, ` +
+    `decisions made, important facts or preferences expressed by the user. Be concise — this ` +
+    `summary will be stored as a long-term memory and recalled in future sessions.\n\n` +
+    `<conversation>\n${transcript}\n</conversation>\n\n` +
+    `Provide only the summary text, no labels or preamble.`;
+
+  try {
+    if (provider === "anthropic") {
+      const model = config.consolidationModel.model || "claude-haiku-4-5-20251001";
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 512,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json() as { content?: Array<{ text?: string }> };
+      return data.content?.[0]?.text?.trim() ?? null;
+    }
+
+    if (provider === "openai") {
+      const model = config.consolidationModel.model || "gpt-4o-mini";
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 512,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+      return data.choices?.[0]?.message?.content?.trim() ?? null;
+    }
+  } catch { /* fall through */ }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Session consolidation
 // ---------------------------------------------------------------------------
 
@@ -397,8 +510,9 @@ export async function consolidateSession(
       .map((m) => m.content)
       .join("\n");
 
-    // 4. Redact PII
-    let summaryText = `Consolidated ${working.message_count} messages from session ${state.sessionId}`;
+    // 4. Generate LLM summary (falls back to static if localSummarization is off or LLM unavailable)
+    const llmSummary = await generateConsolidationSummary(config, working.messages);
+    let summaryText = llmSummary ?? `Consolidated ${working.message_count} messages from session ${state.sessionId}`;
     if (config.piiRedaction) {
       const redacted = redactor.redact(summaryText);
       summaryText = redactor.anonymizeSummary(redacted.text);
