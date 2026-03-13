@@ -410,6 +410,8 @@ let config: ResolvedConfig | null = null;
 let redactor: PIIRedactor | null = null;
 let artifacts: ArtifactManager | null = null;
 let hookState: HookState | null = null;
+let startPromise: Promise<void> | null = null;
+let runtimeStatusLogged = false;
 
 // Idle consolidation timer — armed after each agent_end, cancelled when the
 // user sends another message. Fires consolidation when the session goes quiet.
@@ -419,6 +421,13 @@ function clearIdleTimer() {
   if (idleTimer !== null) {
     clearTimeout(idleTimer);
     idleTimer = null;
+  }
+}
+
+function clearDreamStateTimer() {
+  if (dreamStateTimer !== null) {
+    clearTimeout(dreamStateTimer);
+    dreamStateTimer = null;
   }
 }
 
@@ -598,16 +607,81 @@ function scheduleDreamState(
 }
 
 function ensureInitialized(): {
+  transport: Transport;
   client: KumihoClient;
   config: ResolvedConfig;
   redactor: PIIRedactor;
   artifacts: ArtifactManager;
   hookState: HookState;
 } {
-  if (!client || !config || !redactor || !artifacts || !hookState) {
+  if (!transport || !client || !config || !redactor || !artifacts || !hookState) {
     throw new Error("Kumiho plugin not initialized. Check your configuration.");
   }
-  return { client, config, redactor, artifacts, hookState };
+  return { transport, client, config, redactor, artifacts, hookState };
+}
+
+async function ensureRuntimeStarted(
+  logger: { info: (m: string) => void; warn: (m: string) => void; error: (m: string) => void },
+): Promise<ReturnType<typeof ensureInitialized>> {
+  const state = ensureInitialized();
+  let didStart = false;
+
+  if (state.config.mode === "local") {
+    const isRunning = await state.transport.ping().catch(() => false);
+    if (!isRunning) {
+      if (startPromise === null) {
+        startPromise = (async () => {
+          if (state.transport instanceof McpTransport) {
+            try {
+              const authToken = await getAuthToken();
+              state.transport.addEnv({ KUMIHO_AUTH_TOKEN: authToken });
+            } catch (err) {
+              logger.warn(`Could not inject KUMIHO_AUTH_TOKEN: ${(err as Error).message}`);
+            }
+          }
+
+          logger.info(
+            `Starting kumiho-mcp subprocess (${state.config.local.command})...`,
+          );
+          await state.transport.start?.();
+          logger.info("kumiho-mcp subprocess started and MCP handshake complete");
+        })().finally(() => {
+          startPromise = null;
+        });
+      }
+
+      await startPromise;
+      didStart = true;
+    }
+  }
+
+  if (!state.hookState.sessionId) {
+    state.hookState.sessionId = await generateSessionId(state.config.userId);
+  }
+
+  if (!runtimeStatusLogged || didStart) {
+    const healthy = await state.client.ping();
+    if (healthy) {
+      logger.info(
+        state.config.mode === "local"
+          ? "kumiho-mcp local bridge connected"
+          : "Kumiho Cloud connection verified",
+      );
+    } else {
+      logger.warn(
+        state.config.mode === "local"
+          ? "kumiho-mcp process not responding"
+          : "Kumiho Cloud unreachable - memories will be queued for later sync",
+      );
+    }
+    runtimeStatusLogged = true;
+  }
+
+  if (dreamStateTimer === null) {
+    scheduleDreamState(state.client, state.config, logger);
+  }
+
+  return state;
 }
 
 // ---------------------------------------------------------------------------
@@ -699,6 +773,7 @@ export default {
         `kumiho.tool.${name}`,
         async ({ respond, params }) => {
           try {
+            await ensureRuntimeStarted(api.logger);
             const result = await handler(toolCtx, params ?? {});
             respond(true, { result });
           } catch (err) {
@@ -723,6 +798,7 @@ export default {
           description: schema.description,
           parameters: schema.parameters,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
+            await ensureRuntimeStarted(api.logger);
             const result = await handler(toolCtx, params ?? {});
             const text = typeof result === "string" ? result : JSON.stringify(result);
             return { content: [{ type: "text" as const, text }], details: result };
@@ -746,7 +822,7 @@ export default {
           .action(async (...args: unknown[]) => {
             const query = args[0] as string;
             const opts = args[1] as Record<string, string>;
-            const state = ensureInitialized();
+            const state = await ensureRuntimeStarted(api.logger);
             const result = await TOOL_HANDLERS.memory_search(
               {
                 client: state.client,
@@ -767,7 +843,7 @@ export default {
           .command("stats")
           .description("Show Kumiho memory statistics")
           .action(async () => {
-            const state = ensureInitialized();
+            const state = await ensureRuntimeStarted(api.logger);
             const healthy = await state.client.ping();
             const sessionInfo = state.hookState.sessionId
               ? await state.client.chatGet(state.hookState.sessionId, 1).catch(() => null)
@@ -793,7 +869,7 @@ export default {
           .command("consolidate")
           .description("Consolidate current session into long-term memory")
           .action(async () => {
-            const state = ensureInitialized();
+            const state = await ensureRuntimeStarted(api.logger);
             const result = await TOOL_HANDLERS.memory_consolidate(
               {
                 client: state.client,
@@ -810,7 +886,7 @@ export default {
           .command("dream")
           .description("Trigger Dream State memory maintenance")
           .action(async () => {
-            const state = ensureInitialized();
+            const state = await ensureRuntimeStarted(api.logger);
             const result = await TOOL_HANDLERS.memory_dream(
               {
                 client: state.client,
@@ -833,7 +909,7 @@ export default {
             const title = args[0] as string;
             const project = args[1] as string;
             const opts = args[2] as Record<string, string>;
-            const state = ensureInitialized();
+            const state = await ensureRuntimeStarted(api.logger);
             const content =
               state.hookState.lastAssistantResponse?.trim() ||
               `Content captured via CLI on ${new Date().toISOString().slice(0, 10)}`;
@@ -858,7 +934,7 @@ export default {
           .action(async (...args: unknown[]) => {
             const project = args[0] as string;
             const opts = args[1] as Record<string, string>;
-            const state = ensureInitialized();
+            const state = await ensureRuntimeStarted(api.logger);
             const result = await TOOL_HANDLERS.creative_recall(
               {
                 client: state.client,
@@ -938,22 +1014,26 @@ export default {
           };
         }
 
-        const state = ensureInitialized();
-
         // Use last assistant response as content, fall back to a placeholder
-        const content =
-          state.hookState.lastAssistantResponse?.trim() ||
-          `Content captured via /capture on ${new Date().toISOString().slice(0, 10)}`;
-
-        void TOOL_HANDLERS.creative_capture(
-          {
-            client: state.client,
-            config: state.config,
-            currentSessionId: state.hookState.sessionId,
-            logger: api.logger,
-          },
-          { title, content, project, kind },
-        )
+        void ensureRuntimeStarted(api.logger)
+          .then((state) =>
+            TOOL_HANDLERS.creative_capture(
+              {
+                client: state.client,
+                config: state.config,
+                currentSessionId: state.hookState.sessionId,
+                logger: api.logger,
+              },
+              {
+                title,
+                content:
+                  state.hookState.lastAssistantResponse?.trim() ||
+                  `Content captured via /capture on ${new Date().toISOString().slice(0, 10)}`,
+                project,
+                kind,
+              },
+            ),
+          )
           .then((result) => api.logger.info(`/capture: ${result}`))
           .catch((err) =>
             api.logger.error(`/capture failed: ${(err as Error).message}`),
@@ -974,41 +1054,22 @@ export default {
     api.registerService({
       id: "kumiho-memory",
       async start(_ctx) {
-        if (!client || !config || !transport) return;
-
-        // In local mode, start the MCP subprocess
-        if (transport.start) {
-          // Inject the workspace-scoped auth token so the subprocess can search
-          // across all the user's projects (e.g. creative project + CognitiveMemory).
-          // getAuthToken() refreshes the Firebase token if expired.
-          if (transport instanceof McpTransport) {
-            try {
-              const authToken = await getAuthToken();
-              transport.addEnv({ KUMIHO_AUTH_TOKEN: authToken });
-            } catch (err) {
-              api.logger.warn(`Could not inject KUMIHO_AUTH_TOKEN: ${(err as Error).message}`);
-            }
-          }
-
-          api.logger.info(
-            `Starting kumiho-mcp subprocess (${config.local.command})...`,
+        try {
+          await ensureRuntimeStarted(api.logger);
+        } catch (err) {
+          api.logger.error(
+            `Failed to start kumiho-mcp: ${(err as Error).message}. ` +
+              `Run 'npx kumiho-setup' to install the Python backend, ` +
+              `or set local.pythonPath in your openclaw.json config. ` +
+              `Manual install: pip install "kumiho[mcp]" "kumiho-memory[all]"`,
           );
-          try {
-            await transport.start();
-            api.logger.info("kumiho-mcp subprocess started and MCP handshake complete");
-          } catch (err) {
-            api.logger.error(
-              `Failed to start kumiho-mcp: ${(err as Error).message}. ` +
-                `Run 'npx kumiho-setup' to install the Python backend, ` +
-                `or set local.pythonPath in your openclaw.json config. ` +
-                `Manual install: pip install "kumiho[mcp]" "kumiho-memory[all]"`,
-            );
-            return;
-          }
+          return;
         }
 
+        const state = ensureInitialized();
+
         // Register MCP-discovered tools as pass-through gateway methods
-        const discovered = client.getDiscoveredTools();
+        const discovered = state.client.getDiscoveredTools();
         let passthroughCount = 0;
         for (const tool of discovered) {
           if (customToolNames.has(tool.name)) continue;
@@ -1018,7 +1079,8 @@ export default {
             `kumiho.tool.${toolName}`,
             async ({ respond, params }) => {
               try {
-                const result = await client!.callTool(toolName, params ?? {});
+                await ensureRuntimeStarted(api.logger);
+                const result = await state.client.callTool(toolName, params ?? {});
                 respond(true, { result });
               } catch (err) {
                 const msg =
@@ -1039,35 +1101,12 @@ export default {
               `(${customToolNames.size} custom TypeScript handlers preserved)`,
           );
         }
-
-        // Initialize session
-        hookState!.sessionId = await generateSessionId(config.userId);
-
-        // Verify connectivity
-        const healthy = await client.ping();
-        if (healthy) {
-          api.logger.info(
-            config.mode === "local"
-              ? "kumiho-mcp local bridge connected"
-              : "Kumiho Cloud connection verified",
-          );
-        } else {
-          api.logger.warn(
-            config.mode === "local"
-              ? "kumiho-mcp process not responding"
-              : "Kumiho Cloud unreachable - memories will be queued for later sync",
-          );
-        }
-
-        // Arm Dream State scheduler (if configured)
-        scheduleDreamState(client, config, api.logger);
       },
       async stop(_ctx) {
-        // Cancel pending Dream State timer
-        if (dreamStateTimer) {
-          clearTimeout(dreamStateTimer);
-          dreamStateTimer = null;
-        }
+        startPromise = null;
+        runtimeStatusLogged = false;
+        clearDreamStateTimer();
+        clearIdleTimer();
         // In local mode, gracefully shut down the Python process
         if (transport?.close) {
           api.logger.info("Shutting down kumiho-mcp subprocess...");
@@ -1090,7 +1129,7 @@ export default {
         }
 
         try {
-          const state = ensureInitialized();
+          const state = await ensureRuntimeStarted(api.logger);
 
           // Use senderId from OpenClaw's hook event if provided; fall back to config.userId.
           // This scopes memory correctly per-user without any onboarding ceremony.
@@ -1141,7 +1180,7 @@ export default {
         }
 
         try {
-          const state = ensureInitialized();
+          const state = await ensureRuntimeStarted(api.logger);
           const assistantResponse = (params?.response as string | undefined) ?? state.hookState.lastAssistantResponse ?? "";
           const captureResult = await autoCapture(
             state.client,
@@ -1168,7 +1207,7 @@ export default {
       clearIdleTimer();
       if (!config?.autoRecall) return;
       try {
-        const state = ensureInitialized();
+        const state = await ensureRuntimeStarted(api.logger);
         const messages = (event.messages as Array<{ role: string; content: string }>) ?? [];
         const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
         const raw = lastUserMsg?.content;
@@ -1213,7 +1252,7 @@ export default {
     api.on("agent_end", async (event, _ctx) => {
       if (!config?.autoCapture) return;
       try {
-        const state = ensureInitialized();
+        const state = await ensureRuntimeStarted(api.logger);
         const messages = (event.messages as Array<{ role: string; content: string }>) ?? [];
         const lastAssistantMsg = [...messages].reverse().find((m) => m.role === "assistant");
         const raw = lastAssistantMsg?.content;
@@ -1292,7 +1331,7 @@ export default {
       // Cancel any pending idle consolidation — we're doing a full flush now.
       clearIdleTimer();
       try {
-        const state = ensureInitialized();
+        const state = await ensureRuntimeStarted(api.logger);
         if (state.hookState.messageCount === 0) return;
         const ok = await consolidateSession(
           state.client,
