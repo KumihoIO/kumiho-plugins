@@ -58,6 +58,8 @@ openclaw kumiho stats
 
 That's it. `kumiho-setup` now offers to merge the plugin entry into `~/.openclaw/openclaw.json` automatically. If that file is missing or you skip the merge, it prints the exact `plugins.entries.openclaw-kumiho` block to paste manually. Mode defaults to `"local"`, the venv is auto-detected, and Dream State schedule is loaded from `~/.kumiho/preferences.json`.
 
+The setup wizard now includes GPT-5-sized OpenAI presets for Dream State and Consolidation, plus a custom model entry so you can type host-specific model IDs such as `gpt-5.3-codex-spark`.
+
 ## Features
 
 | Feature | Description |
@@ -265,13 +267,13 @@ export KUMIHO_MEMORY_ARTIFACT_ROOT="~/.kumiho/artifacts"
 
           // Dream State (auto-loaded from ~/.kumiho/preferences.json if omitted)
           "dreamStateSchedule": "0 3 * * *",   // Cron — "off" to disable
-          "dreamStateModel": { "provider": "anthropic", "model": "claude-haiku-4-5-20251001" },
-          "consolidationModel": { "provider": "anthropic", "model": "claude-sonnet-4-6" },
+          "dreamStateModel": { "provider": "openai", "model": "gpt-5-mini" },
+          "consolidationModel": { "provider": "openai", "model": "gpt-5-codex" },
 
           // LLM for summarization (optional, uses agent default)
           "llm": {
-            "provider": "anthropic",
-            "model": "claude-haiku-4-5-20251001"
+            "provider": "openai",
+            "model": "gpt-5-mini"
           },
 
           // Local mode subprocess settings

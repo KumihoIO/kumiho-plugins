@@ -664,6 +664,43 @@ describe("consolidateSession — LLM summarization", () => {
     expect(call.summary).toBe(llmSummary);
   });
 
+  it("accepts openai-codex as an alias for OpenAI consolidation config", async () => {
+    const llmSummary = "Conversation summary from the codex alias path.";
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        output_text: llmSummary,
+      }),
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const config: ResolvedConfig = {
+      ...baseConfig,
+      localSummarization: true,
+      consolidationModel: {
+        provider: "openai-codex",
+        model: "gpt-5-codex",
+      },
+      hostLlmProvider: "openai",
+      hostLlmApiKey: "oauth-access-token",
+    };
+    const messages = makeMessages([{ user: "Summarize this thread", assistant: "Here is the thread summary." }]);
+    const client = makeClient(messages);
+    const state = createHookState();
+    state.sessionId = "session-llm-004c";
+
+    await consolidateSession(client, config, state, makeRedactor(), makeArtifacts());
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.openai.com/v1/responses");
+    const headers = init.headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe("Bearer oauth-access-token");
+
+    const call = vi.mocked(client.memoryStore).mock.calls[0][0];
+    expect(call.summary).toBe(llmSummary);
+  });
+
   it("falls back to static summary when fetch rejects", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network error")));

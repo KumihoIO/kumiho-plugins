@@ -195,7 +195,7 @@
         "type": "object",
         "description": "LLM for Dream State. Auto-loaded from ~/.kumiho/preferences.json if omitted.",
         "properties": {
-          "provider": { "type": "string", "enum": ["openai", "anthropic"] },
+          "provider": { "type": "string", "enum": ["openai", "openai-codex", "anthropic"] },
           "model": { "type": "string" },
           "apiKey": { "type": "string" }
         }
@@ -204,7 +204,7 @@
         "type": "object",
         "description": "LLM for session consolidation. Auto-loaded from ~/.kumiho/preferences.json if omitted.",
         "properties": {
-          "provider": { "type": "string", "enum": ["openai", "anthropic"] },
+          "provider": { "type": "string", "enum": ["openai", "openai-codex", "anthropic"] },
           "model": { "type": "string" },
           "apiKey": { "type": "string" }
         }
@@ -214,7 +214,7 @@
         "properties": {
           "provider": {
             "type": "string",
-            "enum": ["openai", "anthropic"],
+            "enum": ["openai", "openai-codex", "anthropic"],
             "description": "LLM provider for summarization"
           },
           "model": {

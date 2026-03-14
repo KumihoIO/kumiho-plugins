@@ -15,6 +15,7 @@ import type { KumihoClient } from "./client.js";
 import type { PIIRedactor } from "./privacy.js";
 import type { ArtifactManager } from "./artifacts.js";
 import type { ResolvedConfig, MemoryEntry, ChannelInfo, ChatMessage } from "./types.js";
+import { normalizeConfiguredLlmProvider } from "./llm.js";
 import { generateSessionId, getMemorySpace, buildChannelMetadata } from "./session.js";
 
 // ---------------------------------------------------------------------------
@@ -398,8 +399,9 @@ async function generateConsolidationSummary(
   }
 
   const explicitProvider =
-    config.consolidationModel.provider ||
-    config.llm.provider;
+    normalizeConfiguredLlmProvider(
+      config.consolidationModel.provider || config.llm.provider,
+    );
   const explicitApiKey =
     config.consolidationModel.apiKey ||
     config.llm.apiKey;

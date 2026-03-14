@@ -142,11 +142,12 @@ type InheritedLlmConfig = { provider: "anthropic" | "openai"; apiKey: string };
 function getPreferredLlmProvider(
   raw: Pick<KumihoPluginConfig, "consolidationModel" | "dreamStateModel" | "llm">,
 ): string | undefined {
-  return (
+  const preferred = (
     raw.consolidationModel?.provider ||
     raw.dreamStateModel?.provider ||
     raw.llm?.provider
   );
+  return normalizeConfiguredLlmProvider(preferred) || preferred;
 }
 
 function extractCredentialString(value: unknown, depth = 0): string | null {
@@ -423,6 +424,7 @@ import {
   TOOL_HANDLERS,
   type ToolContext,
 } from "./tools.js";
+import { normalizeConfiguredLlmProvider } from "./llm.js";
 import { generateSessionId } from "./session.js";
 import { ensureUserIdentity } from "./identity.js";
 import type {
@@ -675,7 +677,7 @@ function resolveDreamStateModelConfig(
   cfg: ResolvedConfig,
 ): { provider?: string; model?: string; apiKey?: string } | undefined {
   const dm = cfg.dreamStateModel ?? {};
-  const explicitProvider = dm.provider || cfg.llm.provider;
+  const explicitProvider = normalizeConfiguredLlmProvider(dm.provider || cfg.llm.provider);
   const explicitApiKey = dm.apiKey || cfg.llm.apiKey;
   if (
     explicitProvider &&
@@ -702,7 +704,7 @@ function resolveSessionLlmConfig(
   cfg: ResolvedConfig,
 ): { provider?: string; model?: string; apiKey?: string } | undefined {
   const cm = cfg.consolidationModel ?? {};
-  const explicitProvider = cm.provider || cfg.llm.provider;
+  const explicitProvider = normalizeConfiguredLlmProvider(cm.provider || cfg.llm.provider);
   const explicitApiKey = cm.apiKey || cfg.llm.apiKey;
   if (
     explicitProvider &&
@@ -739,6 +741,9 @@ function buildLlmEnv(
 
   if (modelConfig.model) {
     env.KUMIHO_LLM_MODEL = modelConfig.model;
+    if (/codex/i.test(modelConfig.model)) {
+      env.KUMIHO_LLM_LIGHT_MODEL = modelConfig.model;
+    }
   }
 
   if (modelConfig.provider === "openai") {
@@ -1038,8 +1043,7 @@ export default {
     }
 
     const dreamProviderHint =
-      config.dreamStateModel.provider ||
-      config.llm.provider;
+      normalizeConfiguredLlmProvider(config.dreamStateModel.provider || config.llm.provider);
     if (
       dreamProviderHint &&
       !config.dreamStateModel.apiKey &&

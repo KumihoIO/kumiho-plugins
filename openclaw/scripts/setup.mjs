@@ -115,6 +115,25 @@ async function askYesNo(rl, prompt, defaultYes = true) {
   });
 }
 
+async function resolveModelChoice(rl, question, options, customDefaultModel) {
+  const choice = await selectOption(rl, question, options);
+  if (choice.model !== "__custom__") {
+    return choice;
+  }
+
+  console.log();
+  const customModel = await askFreeText(
+    rl,
+    `${choice.provider} model id`,
+    customDefaultModel,
+  );
+  return {
+    ...choice,
+    model: customModel,
+    note: `custom — ${customModel}`,
+  };
+}
+
 function isPlainObject(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -153,9 +172,14 @@ const DREAM_MODELS = [
     recommended: true,
   },
   {
-    label: "gpt-4o-mini (OpenAI)",
-    note: "cheapest — ~$0.018/month",
-    provider: "openai", model: "gpt-4o-mini",
+    label: "gpt-5-mini (OpenAI)",
+    note: "small GPT-5 general-purpose model",
+    provider: "openai", model: "gpt-5-mini",
+  },
+  {
+    label: "gpt-5-nano (OpenAI)",
+    note: "cheapest GPT-5 option",
+    provider: "openai", model: "gpt-5-nano",
   },
   {
     label: "claude-sonnet-4-6 (Anthropic)",
@@ -163,9 +187,14 @@ const DREAM_MODELS = [
     provider: "anthropic", model: "claude-sonnet-4-6",
   },
   {
-    label: "gpt-4o (OpenAI)",
-    note: "~$0.30/month",
-    provider: "openai", model: "gpt-4o",
+    label: "Custom OpenAI model",
+    note: "type any model id, e.g. gpt-5.3-codex-spark",
+    provider: "openai", model: "__custom__",
+  },
+  {
+    label: "Custom Anthropic model",
+    note: "type any Anthropic model id",
+    provider: "anthropic", model: "__custom__",
   },
   { label: "Use agent default", note: "no extra API key needed", provider: null, model: null },
 ];
@@ -183,14 +212,34 @@ const CONSOLIDATION_MODELS = [
     provider: "anthropic", model: "claude-haiku-4-5-20251001",
   },
   {
-    label: "gpt-4o (OpenAI)",
-    note: "~$0.30/month",
-    provider: "openai", model: "gpt-4o",
+    label: "gpt-5-codex (OpenAI)",
+    note: "best OpenAI coding-focused summary model",
+    provider: "openai", model: "gpt-5-codex",
   },
   {
-    label: "gpt-4o-mini (OpenAI)",
-    note: "~$0.018/month — minimal quality",
-    provider: "openai", model: "gpt-4o-mini",
+    label: "gpt-5.1-codex-mini (OpenAI)",
+    note: "smaller Codex option",
+    provider: "openai", model: "gpt-5.1-codex-mini",
+  },
+  {
+    label: "gpt-5-mini (OpenAI)",
+    note: "small general-purpose GPT-5 model",
+    provider: "openai", model: "gpt-5-mini",
+  },
+  {
+    label: "gpt-5-nano (OpenAI)",
+    note: "smallest GPT-5 option",
+    provider: "openai", model: "gpt-5-nano",
+  },
+  {
+    label: "Custom OpenAI model",
+    note: "type any model id, e.g. gpt-5.3-codex-spark",
+    provider: "openai", model: "__custom__",
+  },
+  {
+    label: "Custom Anthropic model",
+    note: "type any Anthropic model id",
+    provider: "anthropic", model: "__custom__",
   },
   { label: "Use agent default", note: "no extra API key needed", provider: null, model: null },
 ];
@@ -204,13 +253,13 @@ function showDreamStateCostTable() {
   console.log(`  ${c.bold}Dream State${c.reset} classifies and enriches existing memories.`);
   console.log(`  It processes structured data — a smaller model is more than enough.`);
   console.log();
-  console.log(`  ${c.dim}Estimated cost (one nightly run, average memory graph):${c.reset}`);
+  console.log(`  ${c.dim}Preset guidance (one nightly run, average memory graph):${c.reset}`);
   console.log();
-  console.log(`  ${c.dim}Model           Input       Output      Per night   Per month${c.reset}`);
-  console.log(`  ${c.dim}─────────────── ─────────── ─────────── ─────────── ─────────${c.reset}`);
-  console.log(`  Haiku           $0.25/1M    $1.25/1M    ~$0.001     ${c.green}~$0.03${c.reset}`);
-  console.log(`  Sonnet          $3/1M       $15/1M      ~$0.011     ~$0.33`);
-  console.log(`  GPT-4o-mini     $0.15/1M    $0.60/1M    ~$0.0006    ${c.green}~$0.018${c.reset}`);
+  console.log(`  ${c.dim}Recommended presets:${c.reset}`);
+  console.log(`  Haiku           cheapest Anthropic option`);
+  console.log(`  GPT-5-mini      small OpenAI general-purpose model`);
+  console.log(`  GPT-5-nano      smallest OpenAI preset`);
+  console.log(`  Custom OpenAI   type any model id (e.g. gpt-5.3-codex-spark)`);
   console.log();
 }
 
@@ -219,17 +268,14 @@ function showConsolidationCostTable() {
   console.log(`  ${c.bold}Consolidation${c.reset} summarizes conversations into lasting long-term memories.`);
   console.log(`  A smarter model produces richer, more useful context for future sessions.`);
   console.log();
-  console.log(`  ${c.dim}Estimated cost (average user: ~4-6 sessions/night):${c.reset}`);
+  console.log(`  ${c.dim}Preset guidance (average user: ~4-6 sessions/night):${c.reset}`);
   console.log();
-  console.log(`  ${c.dim}Model           Per session   Per night   Per month${c.reset}`);
-  console.log(`  ${c.dim}─────────────── ───────────── ─────────── ─────────${c.reset}`);
-  console.log(`  Haiku           ~$0.001       ~$0.006     ${c.green}~$0.18${c.reset}`);
-  console.log(`  Sonnet          ~$0.013       ~$0.078     ~$0.39`);
-  console.log(`  GPT-4o-mini     ~$0.0006      ~$0.004     ${c.green}~$0.12${c.reset}`);
-  console.log(`  GPT-4o          ~$0.008       ~$0.048     ~$0.29`);
-  console.log();
-  console.log(`  ${c.dim}Combined monthly (Haiku + Haiku): ~$0.21 — essentially noise.${c.reset}`);
-  console.log(`  ${c.dim}Combined monthly (Sonnet + Sonnet): ~$0.72${c.reset}`);
+  console.log(`  ${c.dim}Recommended presets:${c.reset}`);
+  console.log(`  Sonnet          richest Anthropic summaries`);
+  console.log(`  GPT-5-codex     strongest OpenAI coding-focused summary model`);
+  console.log(`  GPT-5.1-codex-mini  smaller Codex option`);
+  console.log(`  GPT-5-mini      cheaper general-purpose OpenAI option`);
+  console.log(`  Custom OpenAI   type any model id (e.g. gpt-5.3-codex-spark)`);
   console.log();
 }
 
@@ -467,10 +513,11 @@ console.log();
 console.log(`${c.bold}Step 8 / 10  —  LLM Model for Dream State${c.reset}`);
 showDreamStateCostTable();
 
-const dreamModelChoice = await selectOption(
+const dreamModelChoice = await resolveModelChoice(
   rl,
   "Which model should Dream State use?",
   DREAM_MODELS,
+  "gpt-5-mini",
 );
 
 if (dreamModelChoice.provider) {
@@ -484,10 +531,11 @@ console.log();
 console.log(`${c.bold}Step 9 / 10  —  LLM Model for Consolidation${c.reset}`);
 showConsolidationCostTable();
 
-const consolidationModelChoice = await selectOption(
+const consolidationModelChoice = await resolveModelChoice(
   rl,
   "Which model should Consolidation use?",
   CONSOLIDATION_MODELS,
+  "gpt-5.3-codex-spark",
 );
 
 if (consolidationModelChoice.provider) {

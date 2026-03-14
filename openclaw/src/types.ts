@@ -9,12 +9,14 @@
  * summaries travel to the graph database.
  */
 
+import type { SupportedLlmProvider } from "./llm.js";
+
 // ---------------------------------------------------------------------------
 // Plugin configuration
 // ---------------------------------------------------------------------------
 
 export interface KumihoLLMConfig {
-  provider?: "openai" | "anthropic";
+  provider?: SupportedLlmProvider;
   model?: string;
   apiKey?: string;
 }

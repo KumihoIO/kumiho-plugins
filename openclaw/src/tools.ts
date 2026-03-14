@@ -18,6 +18,7 @@
 import type { KumihoClient } from "./client.js";
 import type { ResolvedConfig, MemoryScope, MemoryType, MemoryEntry } from "./types.js";
 import { creativeCaptureHandler, creativeJobStatusHandler, creativeRecallHandler } from "./creative.js";
+import { normalizeConfiguredLlmProvider } from "./llm.js";
 
 // ---------------------------------------------------------------------------
 // LLM key resolution for Dream State
@@ -32,7 +33,7 @@ function resolveDreamModelConfig(
   cfg: ResolvedConfig,
 ): { provider?: string; model?: string; apiKey?: string } | undefined {
   const dm = cfg.dreamStateModel ?? {};
-  const explicitProvider = dm.provider || cfg.llm.provider;
+  const explicitProvider = normalizeConfiguredLlmProvider(dm.provider || cfg.llm.provider);
   const explicitApiKey = dm.apiKey || cfg.llm.apiKey;
   if (
     explicitProvider &&
