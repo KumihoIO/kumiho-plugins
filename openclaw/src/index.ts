@@ -137,7 +137,7 @@ interface OpenClawAuthProfiles {
   };
 }
 
-type InheritedLlmConfig = { provider: string; apiKey: string };
+type InheritedLlmConfig = { provider: "anthropic" | "openai"; apiKey: string };
 
 function getPreferredLlmProvider(
   raw: Pick<KumihoPluginConfig, "consolidationModel" | "dreamStateModel" | "llm">,
@@ -208,7 +208,7 @@ function extractOpenClawProfileCredential(
  */
 function loadOpenClawAuthProfile(
   preferredProvider?: string,
-): { provider: string; apiKey: string } | null {
+): InheritedLlmConfig | null {
   try {
     const path = join(homedir(), ".openclaw", "agents", "main", "agent", "auth-profiles.json");
     if (!existsSync(path)) return null;
