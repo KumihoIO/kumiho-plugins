@@ -35,7 +35,7 @@ openclaw plugins install @kumiho/openclaw-kumiho
 # 2. Set up the Python backend and authenticate
 npx --package=@kumiho/openclaw-kumiho kumiho-setup
 
-# 3. Add to openclaw.json
+# 3. Let kumiho-setup update openclaw.json, or paste the printed snippet
 ```
 
 ```json5
@@ -56,7 +56,7 @@ npx --package=@kumiho/openclaw-kumiho kumiho-setup
 openclaw kumiho stats
 ```
 
-That's it. Mode defaults to `"local"`, the venv is auto-detected, and Dream State schedule is loaded from `~/.kumiho/preferences.json`.
+That's it. `kumiho-setup` now offers to merge the plugin entry into `~/.openclaw/openclaw.json` automatically. If that file is missing or you skip the merge, it prints the exact `plugins.entries.openclaw-kumiho` block to paste manually. Mode defaults to `"local"`, the venv is auto-detected, and Dream State schedule is loaded from `~/.kumiho/preferences.json`.
 
 ## Features
 

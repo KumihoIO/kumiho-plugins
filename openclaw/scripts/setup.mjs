@@ -14,7 +14,8 @@
  *  9. Choose LLM model for Consolidation (cost-aware, smarter recommended)
  * 10. Collect LLM API key(s) for chosen providers
  * 11. Write ~/.kumiho/preferences.json
- * 12. Print openclaw.json config hint
+ * 12. Offer to update openclaw.json
+ * 13. Print openclaw.json config hint
  */
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
@@ -29,6 +30,7 @@ const BIN = IS_WIN ? "Scripts" : "bin";
 const EXT = IS_WIN ? ".exe" : "";
 const VENV_PYTHON = join(VENV_DIR, BIN, `python${EXT}`);
 const PREFS_PATH = join(homedir(), ".kumiho", "preferences.json");
+const OPENCLAW_CONFIG_PATH = join(homedir(), ".openclaw", "openclaw.json");
 
 const c = {
   reset:  "\x1b[0m",
@@ -85,6 +87,48 @@ async function askFreeText(rl, prompt, placeholder) {
       resolve(answer.trim() || placeholder);
     });
   });
+}
+
+async function askYesNo(rl, prompt, defaultYes = true) {
+  const suffix = defaultYes ? "[Y/n]" : "[y/N]";
+  return new Promise((resolve) => {
+    const ask = () => {
+      rl.question(`  ${prompt} ${suffix}: `, (answer) => {
+        const normalized = answer.trim().toLowerCase();
+        if (!normalized) {
+          resolve(defaultYes);
+          return;
+        }
+        if (["y", "yes"].includes(normalized)) {
+          resolve(true);
+          return;
+        }
+        if (["n", "no"].includes(normalized)) {
+          resolve(false);
+          return;
+        }
+        console.log(`  ${c.yellow}Please answer yes or no.${c.reset}`);
+        ask();
+      });
+    };
+    ask();
+  });
+}
+
+function isPlainObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function mergeObjects(base, extra) {
+  const result = isPlainObject(base) ? { ...base } : {};
+  for (const [key, value] of Object.entries(extra)) {
+    if (isPlainObject(value) && isPlainObject(result[key])) {
+      result[key] = mergeObjects(result[key], value);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -507,8 +551,6 @@ if (scheduleChoice.key !== "off") {
   console.log(`  ${c.dim}If you enable it later, re-run kumiho-setup or set the env var.${c.reset}`);
 }
 
-rl.close();
-
 // 11. Write preferences.json --------------------------------------------------
 const prefs = {
   ...existingPrefs,
@@ -541,42 +583,164 @@ mkdirSync(join(homedir(), ".kumiho"), { recursive: true });
 writeFileSync(PREFS_PATH, JSON.stringify(prefs, null, 2), "utf8");
 ok(`Preferences saved to ~/.kumiho/preferences.json`);
 
-// 12. Print config hint -------------------------------------------------------
+// 12. Offer to update openclaw.json ------------------------------------------
+const openClawPluginConfig = {
+  mode: "local",
+  ...(finalCron && scheduleChoice.key !== "off"
+    ? { dreamStateSchedule: finalCron }
+    : {}),
+  ...(dreamModelChoice.provider
+    ? {
+        dreamStateModel: {
+          provider: dreamModelChoice.provider,
+          model: dreamModelChoice.model,
+        },
+      }
+    : {}),
+  ...(consolidationModelChoice.provider
+    ? {
+        consolidationModel: {
+          provider: consolidationModelChoice.provider,
+          model: consolidationModelChoice.model,
+        },
+      }
+    : {}),
+  local: {
+    pythonPath: VENV_PYTHON,
+  },
+};
+
+let openClawConfigUpdated = false;
+let openClawConfigUpdateError = "";
+
+console.log();
+console.log(`${c.bold}Step 11 / 11  —  OpenClaw Config${c.reset}`);
+console.log();
+console.log(`  Config path: ${c.cyan}${OPENCLAW_CONFIG_PATH}${c.reset}`);
+console.log(`  kumiho-setup can merge the plugin entry automatically if that file exists.`);
+console.log();
+
+if (existsSync(OPENCLAW_CONFIG_PATH)) {
+  const shouldUpdate = await askYesNo(
+    rl,
+    "Update openclaw.json with the openclaw-kumiho plugin config now?",
+    true,
+  );
+
+  if (shouldUpdate) {
+    try {
+      const existing = JSON.parse(readFileSync(OPENCLAW_CONFIG_PATH, "utf8"));
+      const plugins = isPlainObject(existing.plugins) ? { ...existing.plugins } : {};
+      const entries = isPlainObject(plugins.entries) ? { ...plugins.entries } : {};
+      const existingEntry =
+        isPlainObject(entries["openclaw-kumiho"]) ? entries["openclaw-kumiho"] : {};
+      const existingEntryConfig =
+        isPlainObject(existingEntry.config) ? existingEntry.config : {};
+
+      entries["openclaw-kumiho"] = {
+        ...existingEntry,
+        enabled: true,
+        config: mergeObjects(existingEntryConfig, openClawPluginConfig),
+      };
+
+      plugins.entries = entries;
+
+      const updated = {
+        ...existing,
+        plugins,
+      };
+
+      writeFileSync(OPENCLAW_CONFIG_PATH, JSON.stringify(updated, null, 2), "utf8");
+      ok(`Updated ${OPENCLAW_CONFIG_PATH}`);
+      openClawConfigUpdated = true;
+    } catch (err) {
+      openClawConfigUpdateError = err instanceof Error ? err.message : String(err);
+      warn(`Could not update openclaw.json automatically: ${openClawConfigUpdateError}`);
+    }
+  } else {
+    warn("Skipped automatic openclaw.json update.");
+  }
+} else {
+  warn(`openclaw.json not found at ${OPENCLAW_CONFIG_PATH}`);
+}
+
+rl.close();
+
+// 13. Print config hint -------------------------------------------------------
 const configPython = VENV_PYTHON.replace(/\\/g, "\\\\");
 
 console.log();
 console.log(`${c.bold}${c.green}Setup complete!${c.reset}`);
 console.log();
 console.log("Preferences are auto-loaded from ~/.kumiho/preferences.json.");
-console.log("To override any setting explicitly, add it to your openclaw.json:");
+if (openClawConfigUpdated) {
+  console.log(`openclaw.json was updated at ${OPENCLAW_CONFIG_PATH}.`);
+  console.log("Review the merged plugin entry below if you want to tweak it further:");
+} else {
+  console.log("Add or verify this plugin entry in your openclaw.json:");
+  console.log(`Path: ${OPENCLAW_CONFIG_PATH}`);
+  if (openClawConfigUpdateError) {
+    console.log(`Reason automatic update failed: ${openClawConfigUpdateError}`);
+  }
+}
 console.log();
 
-const dreamModelJson = dreamModelChoice.provider
-  ? `\n          "dreamStateModel": { "provider": "${dreamModelChoice.provider}", "model": "${dreamModelChoice.model}" },`
-  : "";
-const consolidationModelJson = consolidationModelChoice.provider
-  ? `\n          "consolidationModel": { "provider": "${consolidationModelChoice.provider}", "model": "${consolidationModelChoice.model}" },`
-  : "";
-const scheduleJson = finalCron && scheduleChoice.key !== "off"
-  ? `\n          "dreamStateSchedule": "${finalCron}",`
-  : "";
-
+console.log(`Place this under ${c.cyan}plugins.entries${c.reset} in openclaw.json:`);
+console.log();
 console.log(`  ${c.cyan}"openclaw-kumiho"${c.reset}: {`);
 console.log(`    ${c.cyan}"enabled"${c.reset}: true,`);
 console.log(`    ${c.cyan}"config"${c.reset}: {`);
-console.log(`      ${c.dim}// Mode + auth${c.reset}`);
-console.log(`      ${c.cyan}"mode"${c.reset}: "local",`);
-console.log(`      ${c.cyan}"userId"${c.reset}: "your-user-id",${scheduleJson}${dreamModelJson}${consolidationModelJson}`);
-console.log();
-console.log(`      ${c.dim}// Optional: override Python path${c.reset}`);
-console.log(`      ${c.cyan}"local"${c.reset}: {`);
-console.log(`        ${c.cyan}"pythonPath"${c.reset}: "${configPython}"`);
-console.log(`      }`);
+const configLines = [
+  { text: `      ${c.cyan}"mode"${c.reset}: "local"`, comma: true },
+  { text: `      ${c.dim}// Optional: set userId if you want a fixed identity override${c.reset}`, comma: false },
+  { text: `      ${c.dim}// "userId": "your-user-id",${c.reset}`, comma: false },
+];
+if (dreamModelChoice.provider === "openai" || consolidationModelChoice.provider === "openai") {
+  configLines.push(
+    { text: `      ${c.dim}// OpenClaw OAuth / Codex users: keep provider as "openai" here.${c.reset}`, comma: false },
+  );
+}
+configLines.push(
+  { text: `      ${c.cyan}"local"${c.reset}: {`, comma: false },
+  { text: `        ${c.cyan}"pythonPath"${c.reset}: "${configPython}"`, comma: false },
+  { text: `      }`, comma: true },
+);
+if (finalCron && scheduleChoice.key !== "off") {
+  configLines.push({ text: `      ${c.cyan}"dreamStateSchedule"${c.reset}: "${finalCron}"`, comma: true });
+}
+if (dreamModelChoice.provider) {
+  configLines.push(
+    {
+      text:
+        `      ${c.cyan}"dreamStateModel"${c.reset}: { ` +
+        `${c.cyan}"provider"${c.reset}: "${dreamModelChoice.provider}", ` +
+        `${c.cyan}"model"${c.reset}: "${dreamModelChoice.model}" }`,
+      comma: true,
+    },
+  );
+}
+if (consolidationModelChoice.provider) {
+  configLines.push(
+    {
+      text:
+        `      ${c.cyan}"consolidationModel"${c.reset}: { ` +
+        `${c.cyan}"provider"${c.reset}: "${consolidationModelChoice.provider}", ` +
+        `${c.cyan}"model"${c.reset}: "${consolidationModelChoice.model}" }`,
+      comma: true,
+    },
+  );
+}
+for (let i = 0; i < configLines.length; i++) {
+  const line = configLines[i];
+  const hasTrailingProperty = configLines.slice(i + 1).some((item) => item.comma);
+  const suffix = line.comma && hasTrailingProperty ? "," : "";
+  console.log(`${line.text}${suffix}`);
+}
 console.log(`    }`);
 console.log(`  }`);
 console.log();
 
-// 13. Dream State standalone cron instructions ---------------------------------
+// 14. Dream State standalone cron instructions ---------------------------------
 if (finalCron && scheduleChoice.key !== "off") {
   const pythonCmd = IS_WIN
     ? VENV_PYTHON.replace(/\\/g, "\\\\")
