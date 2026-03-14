@@ -25,18 +25,32 @@ import { creativeCaptureHandler, creativeJobStatusHandler, creativeRecallHandler
 
 /**
  * Resolve LLM model config for Dream State.
- * API key comes exclusively from hostLlmApiKey (OpenClaw auth-profiles.json).
- * Model/provider come from dreamStateModel preferences (user-selected, not a key).
+ * Falls back from explicit Dream State config to generic llm config to
+ * inherited host/runtime credentials.
  */
 function resolveDreamModelConfig(
   cfg: ResolvedConfig,
 ): { provider?: string; model?: string; apiKey?: string } | undefined {
-  if (!cfg.hostLlmApiKey) return undefined;
   const dm = cfg.dreamStateModel ?? {};
+  const explicitProvider = dm.provider || cfg.llm.provider;
+  const explicitApiKey = dm.apiKey || cfg.llm.apiKey;
+  if (
+    explicitProvider &&
+    !explicitApiKey &&
+    cfg.hostLlmProvider &&
+    explicitProvider !== cfg.hostLlmProvider
+  ) {
+    return undefined;
+  }
+
+  const provider = explicitProvider || cfg.hostLlmProvider;
+  const model = dm.model || cfg.llm.model;
+  const apiKey = explicitApiKey || cfg.hostLlmApiKey;
+  if (!provider || !apiKey) return undefined;
   return {
-    provider: dm.provider || cfg.hostLlmProvider || undefined,
-    model: dm.model,
-    apiKey: cfg.hostLlmApiKey,
+    provider,
+    model,
+    apiKey,
   };
 }
 

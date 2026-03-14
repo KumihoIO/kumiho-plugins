@@ -387,24 +387,48 @@ export async function autoCapture(
 /**
  * Call the configured LLM to generate a conversation summary.
  * Supports Anthropic and OpenAI APIs via direct fetch.
- * Returns null if no LLM is configured or the call fails (caller falls back to static summary).
+ * Returns a null summary with a reason when no LLM is configured or the call fails.
  */
 async function generateConsolidationSummary(
   config: ResolvedConfig,
   messages: ChatMessage[],
-): Promise<string | null> {
-  if (!config.localSummarization) return null;
+): Promise<{ summary: string | null; reason?: string }> {
+  if (!config.localSummarization) {
+    return { summary: null, reason: "local summarization is disabled" };
+  }
 
-  const provider =
+  const explicitProvider =
     config.consolidationModel.provider ||
-    config.llm.provider ||
-    config.hostLlmProvider;
-  const apiKey =
+    config.llm.provider;
+  const explicitApiKey =
     config.consolidationModel.apiKey ||
-    config.llm.apiKey ||
-    config.hostLlmApiKey;
+    config.llm.apiKey;
+  if (
+    explicitProvider &&
+    !explicitApiKey &&
+    config.hostLlmProvider &&
+    explicitProvider !== config.hostLlmProvider
+  ) {
+    return {
+      summary: null,
+      reason:
+        `configured consolidation provider "${explicitProvider}" does not match ` +
+        `the available host provider "${config.hostLlmProvider}"`,
+    };
+  }
 
-  if (!provider || !apiKey) return null;
+  const provider = explicitProvider || config.hostLlmProvider;
+  const apiKey = explicitApiKey || config.hostLlmApiKey;
+  const model =
+    config.consolidationModel.model ||
+    config.llm.model;
+
+  if (!provider || !apiKey) {
+    return {
+      summary: null,
+      reason: "no LLM provider/API key was resolved for consolidation",
+    };
+  }
 
   // Build interleaved transcript (cap at 8000 chars to stay within token limits)
   const transcript = messages
@@ -422,7 +446,6 @@ async function generateConsolidationSummary(
 
   try {
     if (provider === "anthropic") {
-      const model = config.consolidationModel.model || "claude-haiku-4-5-20251001";
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -431,18 +454,59 @@ async function generateConsolidationSummary(
           "anthropic-version": "2023-06-01",
         },
         body: JSON.stringify({
-          model,
+          model: model || "claude-haiku-4-5-20251001",
           max_tokens: 512,
           messages: [{ role: "user", content: prompt }],
         }),
       });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        return {
+          summary: null,
+          reason: `Anthropic summarization request failed with status ${res.status}`,
+        };
+      }
       const data = await res.json() as { content?: Array<{ text?: string }> };
-      return data.content?.[0]?.text?.trim() ?? null;
+      return {
+        summary: data.content?.[0]?.text?.trim() ?? null,
+        reason: "Anthropic response did not include summary text",
+      };
     }
 
     if (provider === "openai") {
-      const model = config.consolidationModel.model || "gpt-4o-mini";
+      const openAiModel = model || "gpt-4o-mini";
+      if (/codex/i.test(openAiModel)) {
+        const res = await fetch("https://api.openai.com/v1/responses", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: openAiModel,
+            input: prompt,
+            max_output_tokens: 512,
+          }),
+        });
+        if (!res.ok) {
+          return {
+            summary: null,
+            reason: `OpenAI summarization request failed with status ${res.status}`,
+          };
+        }
+        const data = await res.json() as {
+          output_text?: string;
+          output?: Array<{ content?: Array<{ text?: string }> }>;
+        };
+        const text =
+          data.output_text?.trim() ||
+          data.output?.flatMap((item) => item.content ?? []).map((item) => item.text?.trim() ?? "").find(Boolean) ||
+          null;
+        return {
+          summary: text,
+          reason: "OpenAI response did not include summary text",
+        };
+      }
+
       const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -450,18 +514,34 @@ async function generateConsolidationSummary(
           "Authorization": `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          model,
+          model: openAiModel,
           max_tokens: 512,
           messages: [{ role: "user", content: prompt }],
         }),
       });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        return {
+          summary: null,
+          reason: `OpenAI summarization request failed with status ${res.status}`,
+        };
+      }
       const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
-      return data.choices?.[0]?.message?.content?.trim() ?? null;
+      return {
+        summary: data.choices?.[0]?.message?.content?.trim() ?? null,
+        reason: "OpenAI response did not include summary text",
+      };
     }
-  } catch { /* fall through */ }
+  } catch (err) {
+    return {
+      summary: null,
+      reason: `LLM summarization request threw: ${(err as Error).message}`,
+    };
+  }
 
-  return null;
+  return {
+    summary: null,
+    reason: `unsupported LLM provider "${provider}" for consolidation`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -511,8 +591,15 @@ export async function consolidateSession(
       .join("\n");
 
     // 4. Generate LLM summary (falls back to static if localSummarization is off or LLM unavailable)
-    const llmSummary = await generateConsolidationSummary(config, working.messages);
+    const { summary: llmSummary, reason: summaryFallbackReason } =
+      await generateConsolidationSummary(config, working.messages);
     let summaryText = llmSummary ?? `Consolidated ${working.message_count} messages from session ${state.sessionId}`;
+    if (!llmSummary && config.localSummarization) {
+      console.warn(
+        `[kumiho] consolidation for ${state.sessionId} fell back to static summary: ` +
+          `${summaryFallbackReason ?? "unknown reason"}`,
+      );
+    }
     if (config.piiRedaction) {
       const redacted = redactor.redact(summaryText);
       summaryText = redactor.anonymizeSummary(redacted.text);

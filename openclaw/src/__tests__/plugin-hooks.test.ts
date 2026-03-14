@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockState = vi.hoisted(() => {
   interface StoredMessage {
@@ -174,6 +174,10 @@ describe("OpenClaw prompt hooks", () => {
     mockState.transports.length = 0;
   });
 
+  afterEach(() => {
+    vi.unmock("node:fs");
+  });
+
   it("lazy-starts the MCP bridge when before_prompt_build fires before service start", async () => {
     const { default: plugin } = await import("../index.js");
     const api = makeApi();
@@ -213,5 +217,177 @@ describe("OpenClaw prompt hooks", () => {
         String(message).includes("Bridge not initialized"),
       ),
     ).toBe(false);
+  });
+
+  it("uses host LLM credentials from the OpenClaw runtime config when available", async () => {
+    const { default: plugin } = await import("../index.js");
+    const api = makeApi() as FakeApi & {
+      config?: {
+        models?: {
+          providers?: Record<string, unknown>;
+        };
+      };
+    };
+    api.pluginConfig = {
+      ...api.pluginConfig,
+      localSummarization: true,
+      consolidationModel: { provider: "anthropic" },
+    };
+    api.config = {
+      models: {
+        providers: {
+          anthropic: { apiKey: "host-anthropic-key" },
+        },
+      },
+    };
+
+    plugin.register(api as never);
+
+    const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
+    expect(resolvedConfig.hostLlmProvider).toBe("anthropic");
+    expect(resolvedConfig.hostLlmApiKey).toBe("host-anthropic-key");
+    expect(api.logger.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("no host LLM credentials were resolved"),
+    );
+  });
+
+  it("parses the current auth-profiles schema under auth.profiles", async () => {
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      return {
+        ...actual,
+        existsSync: vi.fn((path: string) => path.endsWith("auth-profiles.json")),
+        readFileSync: vi.fn(() =>
+          JSON.stringify({
+            auth: {
+              profiles: {
+                "anthropic:linux-dev": {
+                  provider: "anthropic",
+                  mode: "token",
+                  token: "sk-ant-host-profile",
+                },
+              },
+            },
+          }),
+        ),
+      };
+    });
+
+    const { default: plugin } = await import("../index.js");
+    const api = makeApi();
+    api.pluginConfig = {
+      ...api.pluginConfig,
+      localSummarization: true,
+      consolidationModel: { provider: "anthropic" },
+    };
+
+    plugin.register(api as never);
+
+    const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
+    expect(resolvedConfig.hostLlmProvider).toBe("anthropic");
+    expect(resolvedConfig.hostLlmApiKey).toBe("sk-ant-host-profile");
+  });
+
+  it("uses an unexpired openai-codex oauth access token as the host OpenAI credential", async () => {
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      return {
+        ...actual,
+        existsSync: vi.fn((path: string) => path.endsWith("auth-profiles.json")),
+        readFileSync: vi.fn(() =>
+          JSON.stringify({
+            profiles: {
+              "openai-codex:default": {
+                type: "oauth",
+                provider: "openai-codex",
+                access: "openai-oauth-access-token",
+                refresh: "openai-oauth-refresh-token",
+                expires: Date.now() + 60 * 60 * 1000,
+              },
+            },
+            lastGood: {
+              "openai-codex": "openai-codex:default",
+            },
+          }),
+        ),
+      };
+    });
+
+    const { default: plugin } = await import("../index.js");
+    const api = makeApi();
+    api.pluginConfig = {
+      ...api.pluginConfig,
+      localSummarization: true,
+      llm: { provider: "openai", model: "gpt-5-codex" },
+    };
+
+    plugin.register(api as never);
+
+    const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
+    expect(resolvedConfig.hostLlmProvider).toBe("openai");
+    expect(resolvedConfig.hostLlmApiKey).toBe("openai-oauth-access-token");
+  });
+
+  it("warns when dreamStateModel requests a different provider than the only host credential", async () => {
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      return {
+        ...actual,
+        existsSync: vi.fn((path: string) => path.endsWith("auth-profiles.json")),
+        readFileSync: vi.fn(() =>
+          JSON.stringify({
+            profiles: {
+              "anthropic:linux-test": {
+                type: "token",
+                provider: "anthropic",
+                token: "sk-ant-live-ish",
+              },
+            },
+            lastGood: {
+              anthropic: "anthropic:linux-test",
+            },
+          }),
+        ),
+      };
+    });
+
+    const { default: plugin } = await import("../index.js");
+    const api = makeApi();
+    api.pluginConfig = {
+      ...api.pluginConfig,
+      dreamStateModel: { provider: "openai", model: "gpt-4o-mini" },
+    };
+
+    plugin.register(api as never);
+
+    expect(api.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("dreamStateModel/llm provider \"openai\" does not match"),
+    );
+  });
+
+  it("warns when local summarization cannot resolve the host auth profile", async () => {
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      return {
+        ...actual,
+        existsSync: vi.fn(() => false),
+        readFileSync: vi.fn(() => {
+          throw new Error("readFileSync should not be called");
+        }),
+      };
+    });
+
+    const { default: plugin } = await import("../index.js");
+    const api = makeApi();
+    api.pluginConfig = {
+      ...api.pluginConfig,
+      localSummarization: true,
+    };
+
+    plugin.register(api as never);
+
+    expect(api.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("no host LLM credentials were resolved"),
+    );
   });
 });

@@ -469,6 +469,7 @@ describe("consolidateSession — LLM summarization", () => {
   });
 
   it("uses static fallback when no LLM provider is configured", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const config: ResolvedConfig = {
       ...baseConfig,
       localSummarization: true,
@@ -486,6 +487,9 @@ describe("consolidateSession — LLM summarization", () => {
 
     const call = vi.mocked(client.memoryStore).mock.calls[0][0];
     expect(call.summary).toMatch(/Consolidated/i);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("no LLM provider/API key was resolved"),
+    );
   });
 
   it("calls Anthropic API and uses LLM response as summary", async () => {
@@ -553,7 +557,48 @@ describe("consolidateSession — LLM summarization", () => {
     expect(call.summary).toBe(llmSummary);
   });
 
+  it("calls OpenAI Responses API for codex models", async () => {
+    const llmSummary = "Conversation summary from gpt-5-codex.";
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        output_text: llmSummary,
+      }),
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const config: ResolvedConfig = {
+      ...baseConfig,
+      localSummarization: true,
+      llm: {
+        provider: "openai",
+        model: "gpt-5-codex",
+        apiKey: "oauth-access-token",
+      },
+    };
+    const messages = makeMessages([{ user: "Summarize this thread", assistant: "Here is the thread summary." }]);
+    const client = makeClient(messages);
+    const state = createHookState();
+    state.sessionId = "session-llm-004b";
+
+    await consolidateSession(client, config, state, makeRedactor(), makeArtifacts());
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.openai.com/v1/responses");
+    const headers = init.headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe("Bearer oauth-access-token");
+
+    const body = JSON.parse(init.body as string) as { model: string; input: string };
+    expect(body.model).toBe("gpt-5-codex");
+    expect(body.input).toContain("Summarize the following conversation");
+
+    const call = vi.mocked(client.memoryStore).mock.calls[0][0];
+    expect(call.summary).toBe(llmSummary);
+  });
+
   it("falls back to static summary when fetch rejects", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network error")));
 
     const config: ResolvedConfig = {
@@ -572,9 +617,13 @@ describe("consolidateSession — LLM summarization", () => {
     expect(result).toBe(true);
     const call = vi.mocked(client.memoryStore).mock.calls[0][0];
     expect(call.summary).toMatch(/Consolidated/i);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("network error"),
+    );
   });
 
   it("falls back to static summary when API returns non-ok status", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 429 }));
 
     const config: ResolvedConfig = {
@@ -592,6 +641,9 @@ describe("consolidateSession — LLM summarization", () => {
 
     const call = vi.mocked(client.memoryStore).mock.calls[0][0];
     expect(call.summary).toMatch(/Consolidated/i);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("status 429"),
+    );
   });
 
   it("prefers consolidationModel.apiKey over hostLlmApiKey", async () => {
@@ -649,6 +701,36 @@ describe("consolidateSession — LLM summarization", () => {
     const promptContent = body.messages[0].content;
     // The conversation transcript embedded in the prompt is capped at 8000 chars
     expect(promptContent.length).toBeLessThan(9000);
+  });
+
+  it("uses llm.model as the fallback consolidation model", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: "summary" } }],
+      }),
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const config: ResolvedConfig = {
+      ...baseConfig,
+      localSummarization: true,
+      llm: {
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        apiKey: "sk-openai-test-key",
+      },
+    };
+    const messages = makeMessages([{ user: "Summarize this", assistant: "Done" }]);
+    const client = makeClient(messages);
+    const state = createHookState();
+    state.sessionId = "session-llm-009";
+
+    await consolidateSession(client, config, state, makeRedactor(), makeArtifacts());
+
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as { model: string };
+    expect(body.model).toBe("gpt-4.1-mini");
   });
 });
 
