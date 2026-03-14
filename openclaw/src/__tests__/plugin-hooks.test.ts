@@ -10,6 +10,7 @@ const mockState = vi.hoisted(() => {
   class FakeMcpTransport {
     started = false;
     startCalls = 0;
+    closeCalls = 0;
     readonly sessions = new Map<string, StoredMessage[]>();
     readonly addEnv = vi.fn((_vars: Record<string, string>) => {});
 
@@ -20,6 +21,7 @@ const mockState = vi.hoisted(() => {
 
     async close(): Promise<void> {
       this.started = false;
+      this.closeCalls++;
     }
 
     async ping(): Promise<boolean> {
@@ -373,6 +375,130 @@ describe("OpenClaw prompt hooks", () => {
         OPENAI_API_KEY: "openai-oauth-access-token",
       },
     });
+  });
+
+  it("refreshes host OpenAI credentials before the first MCP start when auth appears later", async () => {
+    let authEnabled = false;
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      return {
+        ...actual,
+        existsSync: vi.fn((path: string) => {
+          if (path.endsWith("auth-profiles.json")) return authEnabled;
+          return actual.existsSync(path);
+        }),
+        readFileSync: vi.fn((path: string, encoding?: BufferEncoding) => {
+          if (path.endsWith("auth-profiles.json")) {
+            return JSON.stringify({
+              profiles: {
+                "openai-codex:default": {
+                  type: "oauth",
+                  provider: "openai-codex",
+                  access: "late-openai-oauth-token",
+                  expires: Date.now() + 60 * 60 * 1000,
+                },
+              },
+              lastGood: {
+                "openai-codex": "openai-codex:default",
+              },
+            });
+          }
+          return actual.readFileSync(path, encoding as never);
+        }),
+      };
+    });
+
+    const { default: plugin } = await import("../index.js");
+    const api = makeApi();
+    api.pluginConfig = {
+      ...api.pluginConfig,
+      consolidationModel: { provider: "openai", model: "gpt-5-codex" },
+    };
+
+    plugin.register(api as never);
+
+    const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
+    expect(resolvedConfig.hostLlmApiKey).toBe("");
+
+    authEnabled = true;
+    await api.service?.start({});
+
+    expect(mockState.transports[0].startCalls).toBe(1);
+    expect(resolvedConfig.hostLlmApiKey).toBe("late-openai-oauth-token");
+    expect(resolvedConfig.local).toMatchObject({
+      env: {
+        KUMIHO_LLM_PROVIDER: "openai",
+        KUMIHO_LLM_MODEL: "gpt-5-codex",
+        KUMIHO_LLM_API_KEY: "late-openai-oauth-token",
+        OPENAI_API_KEY: "late-openai-oauth-token",
+      },
+    });
+    expect(mockState.transports[0].addEnv).toHaveBeenCalledWith(
+      expect.objectContaining({
+        OPENAI_API_KEY: "late-openai-oauth-token",
+        KUMIHO_LLM_API_KEY: "late-openai-oauth-token",
+      }),
+    );
+  });
+
+  it("restarts the MCP subprocess when host OpenAI credentials appear after startup", async () => {
+    let authEnabled = false;
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      return {
+        ...actual,
+        existsSync: vi.fn((path: string) => {
+          if (path.endsWith("auth-profiles.json")) return authEnabled;
+          return actual.existsSync(path);
+        }),
+        readFileSync: vi.fn((path: string, encoding?: BufferEncoding) => {
+          if (path.endsWith("auth-profiles.json")) {
+            return JSON.stringify({
+              profiles: {
+                "openai-codex:default": {
+                  type: "oauth",
+                  provider: "openai-codex",
+                  access: "refreshed-openai-oauth-token",
+                  expires: Date.now() + 60 * 60 * 1000,
+                },
+              },
+              lastGood: {
+                "openai-codex": "openai-codex:default",
+              },
+            });
+          }
+          return actual.readFileSync(path, encoding as never);
+        }),
+      };
+    });
+
+    const { default: plugin } = await import("../index.js");
+    const api = makeApi();
+    api.pluginConfig = {
+      ...api.pluginConfig,
+      consolidationModel: { provider: "openai", model: "gpt-5-codex" },
+    };
+
+    plugin.register(api as never);
+    await api.service?.start({});
+
+    expect(mockState.transports[0].startCalls).toBe(1);
+    expect(mockState.transports[0].closeCalls).toBe(0);
+
+    authEnabled = true;
+    const beforePromptBuild = api.events.get("before_prompt_build");
+    await beforePromptBuild?.(
+      {
+        messages: [{ role: "user", content: "Remember that my MacBook battery was replaced." }],
+      },
+      {},
+    );
+
+    expect(mockState.transports[0].closeCalls).toBe(1);
+    expect(mockState.transports[0].startCalls).toBe(2);
+    expect(api.logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("Restarting kumiho-mcp subprocess to apply refreshed local credentials"),
+    );
   });
 
   it("warns when dreamStateModel requests a different provider than the only host credential", async () => {

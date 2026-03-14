@@ -750,6 +750,76 @@ function buildLlmEnv(
   return env;
 }
 
+let baseLocalEnv: Record<string, string> = {};
+let resolveLatestHostLlm: (() => InheritedLlmConfig | null) | null = null;
+
+function envMapsEqual(
+  left: Record<string, string> | undefined,
+  right: Record<string, string> | undefined,
+): boolean {
+  const leftEntries = Object.entries(left ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  const rightEntries = Object.entries(right ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  if (leftEntries.length !== rightEntries.length) return false;
+  return leftEntries.every(([key, value], index) => {
+    const [otherKey, otherValue] = rightEntries[index] ?? [];
+    return key === otherKey && value === otherValue;
+  });
+}
+
+function buildManagedLocalEnv(cfg: ResolvedConfig): Record<string, string> {
+  if (cfg.mode !== "local") return {};
+
+  const env = buildLlmEnv(resolveSessionLlmConfig(cfg));
+  if (cfg.artifactDir) {
+    env.KUMIHO_MEMORY_ARTIFACT_ROOT = cfg.artifactDir;
+  }
+  return env;
+}
+
+function syncLocalProcessEnv(cfg: ResolvedConfig): boolean {
+  if (cfg.mode !== "local") return false;
+
+  const desiredEnv = {
+    ...buildManagedLocalEnv(cfg),
+    ...baseLocalEnv,
+  };
+
+  const currentEnv = cfg.local.env ?? (cfg.local.env = {});
+  if (envMapsEqual(currentEnv, desiredEnv)) return false;
+
+  for (const key of Object.keys(currentEnv)) {
+    delete currentEnv[key];
+  }
+  for (const [key, value] of Object.entries(desiredEnv)) {
+    currentEnv[key] = value;
+  }
+
+  return true;
+}
+
+function refreshResolvedHostLlmConfig(
+  target: ResolvedConfig | null | undefined,
+): { credentialsChanged: boolean; envChanged: boolean } {
+  if (!target) {
+    return { credentialsChanged: false, envChanged: false };
+  }
+
+  const latest = resolveLatestHostLlm?.() ?? null;
+  const nextProvider = latest?.provider ?? "";
+  const nextApiKey = latest?.apiKey ?? "";
+  const credentialsChanged =
+    target.hostLlmProvider !== nextProvider ||
+    target.hostLlmApiKey !== nextApiKey;
+
+  target.hostLlmProvider = nextProvider;
+  target.hostLlmApiKey = nextApiKey;
+
+  return {
+    credentialsChanged,
+    envChanged: syncLocalProcessEnv(target),
+  };
+}
+
 /**
  * Run Dream State via the standalone Python CLI as a fallback.
  * Spawns `python -m kumiho_memory dream` using the resolved Python path.
@@ -846,7 +916,16 @@ async function ensureRuntimeStarted(
   let didStart = false;
 
   if (state.config.mode === "local") {
-    const isRunning = await state.transport.ping().catch(() => false);
+    const { envChanged } = refreshResolvedHostLlmConfig(state.config);
+    let isRunning = await state.transport.ping().catch(() => false);
+
+    if (envChanged && isRunning) {
+      logger.info("Restarting kumiho-mcp subprocess to apply refreshed local credentials");
+      await state.transport.close?.();
+      runtimeStatusLogged = false;
+      isRunning = false;
+    }
+
     if (!isRunning) {
       if (startPromise === null) {
         startPromise = (async () => {
@@ -858,13 +937,8 @@ async function ensureRuntimeStarted(
               logger.warn(`Could not inject KUMIHO_AUTH_TOKEN: ${(err as Error).message}`);
             }
 
-            const sessionLlmEnv = buildLlmEnv(resolveSessionLlmConfig(state.config));
-            const alreadyConfigured = state.config.local.env ?? {};
-            const missingSessionLlmEnv = Object.fromEntries(
-              Object.entries(sessionLlmEnv).filter(([key]) => !alreadyConfigured[key]),
-            );
-            if (Object.keys(missingSessionLlmEnv).length > 0) {
-              state.transport.addEnv(missingSessionLlmEnv);
+            if (state.config.local.env && Object.keys(state.config.local.env).length > 0) {
+              state.transport.addEnv(state.config.local.env);
             }
           }
 
@@ -930,6 +1004,7 @@ export default {
     const resolveInheritedHostLlm = () =>
       loadHostLlmFromPluginApi(api, preferredHostLlmProvider) ||
       loadOpenClawAuthProfile(preferredHostLlmProvider);
+    resolveLatestHostLlm = resolveInheritedHostLlm;
     const inheritedHostLlm = resolveInheritedHostLlm();
 
     try {
@@ -939,11 +1014,11 @@ export default {
       return;
     }
 
+    baseLocalEnv = { ...(config.local.env ?? {}) };
+    syncLocalProcessEnv(config);
+
     const refreshResolvedHostLlm = (target: ResolvedConfig | null | undefined = config) => {
-      if (!target) return;
-      const latest = resolveInheritedHostLlm();
-      target.hostLlmProvider = latest?.provider ?? "";
-      target.hostLlmApiKey = latest?.apiKey ?? "";
+      refreshResolvedHostLlmConfig(target);
     };
 
     if (
@@ -978,16 +1053,6 @@ export default {
           "Dream State will stay disabled unless OpenClaw exposes a matching host " +
           "provider or you configure a matching model credential explicitly.",
       );
-    }
-
-    // Forward the resolved LLM credentials to the MCP subprocess so the Python
-    // side (MemorySummarizer, generate_implications, Dream State) can use the
-    // same runtime config.
-    if (config.mode === "local") {
-      const sessionLlmEnv = buildLlmEnv(resolveSessionLlmConfig(config));
-      if (Object.keys(sessionLlmEnv).length) {
-        config.local.env = { ...sessionLlmEnv, ...config.local.env };
-      }
     }
 
     // Create transport (HTTP for cloud, MCP stdio for local)
@@ -1376,6 +1441,8 @@ export default {
       async stop(_ctx) {
         startPromise = null;
         runtimeStatusLogged = false;
+        resolveLatestHostLlm = null;
+        baseLocalEnv = {};
         clearDreamStateTimer();
         clearIdleTimer();
         // In local mode, gracefully shut down the Python process
