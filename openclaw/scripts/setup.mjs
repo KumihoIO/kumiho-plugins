@@ -607,6 +607,7 @@ const openClawPluginConfig = {
     : {}),
   local: {
     pythonPath: VENV_PYTHON,
+    command: "kumiho.mcp_server",
   },
 };
 
@@ -702,7 +703,8 @@ if (dreamModelChoice.provider === "openai" || consolidationModelChoice.provider 
 }
 configLines.push(
   { text: `      ${c.cyan}"local"${c.reset}: {`, comma: false },
-  { text: `        ${c.cyan}"pythonPath"${c.reset}: "${configPython}"`, comma: false },
+  { text: `        ${c.cyan}"pythonPath"${c.reset}: "${configPython}",`, comma: false },
+  { text: `        ${c.cyan}"command"${c.reset}: "kumiho.mcp_server"`, comma: false },
   { text: `      }`, comma: true },
 );
 if (finalCron && scheduleChoice.key !== "off") {

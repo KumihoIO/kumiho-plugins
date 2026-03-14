@@ -144,11 +144,22 @@ export function resolvePythonPath(
   configured: { pythonPath: string; command: string },
   logger?: { info: (msg: string) => void; warn: (msg: string) => void }
 ): PythonResolution {
-  const isDefault =
-    configured.pythonPath === "python" && configured.command === "kumiho-mcp";
+  const hasExplicitPythonPath = configured.pythonPath !== "python";
+  const hasExplicitCommand = configured.command !== "kumiho-mcp";
 
-  if (!isDefault) {
-    // User explicitly configured — trust it unconditionally
+  if (hasExplicitPythonPath && !hasExplicitCommand) {
+    logger?.info(
+      `[kumiho] Using configured Python interpreter for MCP module: ` +
+      `${configured.pythonPath} -m kumiho.mcp_server`
+    );
+    return {
+      pythonPath: configured.pythonPath,
+      command: "kumiho.mcp_server",
+    };
+  }
+
+  if (hasExplicitPythonPath || hasExplicitCommand) {
+    // User explicitly configured both values or explicitly overrode the command.
     return { pythonPath: configured.pythonPath, command: configured.command };
   }
 

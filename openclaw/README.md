@@ -425,7 +425,10 @@ python -c "from kumiho.mcp_server import main; print('kumiho-mcp OK')"
 If `kumiho-mcp` is in a virtualenv, point the plugin at it:
 
 ```json5
-"local": { "pythonPath": "/path/to/venv/bin/python" }
+"local": {
+  "pythonPath": "/path/to/venv/bin/python",
+  "command": "kumiho.mcp_server"
+}
 ```
 
 ### Plugin not loading / no memory injected
