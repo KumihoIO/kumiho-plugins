@@ -698,6 +698,58 @@ function resolveDreamStateModelConfig(
   };
 }
 
+function resolveSessionLlmConfig(
+  cfg: ResolvedConfig,
+): { provider?: string; model?: string; apiKey?: string } | undefined {
+  const cm = cfg.consolidationModel ?? {};
+  const explicitProvider = cm.provider || cfg.llm.provider;
+  const explicitApiKey = cm.apiKey || cfg.llm.apiKey;
+  if (
+    explicitProvider &&
+    !explicitApiKey &&
+    cfg.hostLlmProvider &&
+    explicitProvider !== cfg.hostLlmProvider
+  ) {
+    return undefined;
+  }
+
+  const provider = explicitProvider || cfg.hostLlmProvider;
+  const model = cm.model || cfg.llm.model;
+  const apiKey = explicitApiKey || cfg.hostLlmApiKey;
+  if (!provider || !apiKey) return undefined;
+
+  return {
+    provider,
+    model,
+    apiKey,
+  };
+}
+
+function buildLlmEnv(
+  modelConfig?: { provider?: string; model?: string; apiKey?: string },
+): Record<string, string> {
+  if (!modelConfig?.provider || !modelConfig.apiKey) {
+    return {};
+  }
+
+  const env: Record<string, string> = {
+    KUMIHO_LLM_PROVIDER: modelConfig.provider,
+    KUMIHO_LLM_API_KEY: modelConfig.apiKey,
+  };
+
+  if (modelConfig.model) {
+    env.KUMIHO_LLM_MODEL = modelConfig.model;
+  }
+
+  if (modelConfig.provider === "openai") {
+    env.OPENAI_API_KEY = modelConfig.apiKey;
+  } else if (modelConfig.provider === "anthropic") {
+    env.ANTHROPIC_API_KEY = modelConfig.apiKey;
+  }
+
+  return env;
+}
+
 /**
  * Run Dream State via the standalone Python CLI as a fallback.
  * Spawns `python -m kumiho_memory dream` using the resolved Python path.
@@ -714,10 +766,7 @@ function execDreamStateCli(
 
     // Inject model config as env vars for the CLI subprocess
     const env = { ...process.env };
-    const dm = resolveDreamStateModelConfig(cfg);
-    if (dm?.provider) env.KUMIHO_LLM_PROVIDER = dm.provider;
-    if (dm?.model) env.KUMIHO_LLM_MODEL = dm.model;
-    if (dm?.apiKey) env.KUMIHO_LLM_API_KEY = dm.apiKey;
+    Object.assign(env, buildLlmEnv(resolveDreamStateModelConfig(cfg)));
 
     execFile(pythonPath, args, { timeout: 300_000, env }, (err, stdout, stderr) => {
       if (err) {
@@ -807,6 +856,15 @@ async function ensureRuntimeStarted(
               state.transport.addEnv({ KUMIHO_AUTH_TOKEN: authToken });
             } catch (err) {
               logger.warn(`Could not inject KUMIHO_AUTH_TOKEN: ${(err as Error).message}`);
+            }
+
+            const sessionLlmEnv = buildLlmEnv(resolveSessionLlmConfig(state.config));
+            const alreadyConfigured = state.config.local.env ?? {};
+            const missingSessionLlmEnv = Object.fromEntries(
+              Object.entries(sessionLlmEnv).filter(([key]) => !alreadyConfigured[key]),
+            );
+            if (Object.keys(missingSessionLlmEnv).length > 0) {
+              state.transport.addEnv(missingSessionLlmEnv);
             }
           }
 
@@ -923,18 +981,12 @@ export default {
     }
 
     // Forward the resolved LLM credentials to the MCP subprocess so the Python
-    // side (MemorySummarizer, Dream State) can use the same runtime config.
+    // side (MemorySummarizer, generate_implications, Dream State) can use the
+    // same runtime config.
     if (config.mode === "local") {
-      const dreamModelConfig = resolveDreamStateModelConfig(config);
-      const extra: Record<string, string> = {};
-      if (dreamModelConfig?.apiKey && !process.env.KUMIHO_LLM_API_KEY) {
-        extra.KUMIHO_LLM_API_KEY = dreamModelConfig.apiKey;
-      }
-      if (dreamModelConfig?.provider && !process.env.KUMIHO_LLM_PROVIDER) {
-        extra.KUMIHO_LLM_PROVIDER = dreamModelConfig.provider;
-      }
-      if (Object.keys(extra).length) {
-        config.local.env = { ...config.local.env, ...extra };
+      const sessionLlmEnv = buildLlmEnv(resolveSessionLlmConfig(config));
+      if (Object.keys(sessionLlmEnv).length) {
+        config.local.env = { ...sessionLlmEnv, ...config.local.env };
       }
     }
 
