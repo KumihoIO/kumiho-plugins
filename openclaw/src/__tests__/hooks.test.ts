@@ -215,6 +215,73 @@ describe("consolidateSession", () => {
   });
 });
 
+describe("consolidateSession — backend local consolidation", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("prefers the backend consolidator over the legacy plugin summary path", async () => {
+    const mockFetch = vi.fn();
+    vi.stubGlobal("fetch", mockFetch);
+
+    const client = {
+      consolidateSession: vi.fn().mockResolvedValue({ success: true, summary: "Semantic summary" }),
+      getDiscoveredTools: vi.fn().mockReturnValue([{ name: "kumiho_memory_consolidate" }]),
+      chatGet: vi.fn(),
+      memoryStore: vi.fn(),
+      chatClear: vi.fn(),
+    } as unknown as KumihoClient;
+    const artifacts = makeArtifacts();
+    const redactor = makeRedactor();
+    const state = createHookState();
+    state.sessionId = "session-backend-001";
+    state.messageCount = 12;
+
+    const result = await consolidateSession(client, baseConfig, state, redactor, artifacts);
+
+    expect(result).toBe(true);
+    expect(vi.mocked(client.consolidateSession)).toHaveBeenCalledWith("session-backend-001");
+    expect(vi.mocked(client.chatGet)).not.toHaveBeenCalled();
+    expect(vi.mocked(client.memoryStore)).not.toHaveBeenCalled();
+    expect(vi.mocked(client.chatClear)).not.toHaveBeenCalled();
+    expect(artifacts.saveConversation).not.toHaveBeenCalled();
+    expect(redactor.reset).toHaveBeenCalledOnce();
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(state.sessionId).not.toBe("session-backend-001");
+    expect(state.messageCount).toBe(0);
+  });
+
+  it("returns false instead of storing a generic fallback when backend consolidation fails", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const client = {
+      consolidateSession: vi.fn().mockResolvedValue({
+        success: false,
+        error: "The api_key client option must be set",
+      }),
+      getDiscoveredTools: vi.fn().mockReturnValue([{ name: "kumiho_memory_consolidate" }]),
+      chatGet: vi.fn(),
+      memoryStore: vi.fn(),
+      chatClear: vi.fn(),
+    } as unknown as KumihoClient;
+    const state = createHookState();
+    state.sessionId = "session-backend-002";
+    state.messageCount = 9;
+
+    const result = await consolidateSession(client, baseConfig, state, makeRedactor(), makeArtifacts());
+
+    expect(result).toBe(false);
+    expect(vi.mocked(client.consolidateSession)).toHaveBeenCalledWith("session-backend-002");
+    expect(vi.mocked(client.memoryStore)).not.toHaveBeenCalled();
+    expect(vi.mocked(client.chatGet)).not.toHaveBeenCalled();
+    expect(vi.mocked(client.chatClear)).not.toHaveBeenCalled();
+    expect(state.sessionId).toBe("session-backend-002");
+    expect(state.messageCount).toBe(9);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining("The api_key client option must be set"),
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // autoRecall — spacePaths scoping
 // ---------------------------------------------------------------------------

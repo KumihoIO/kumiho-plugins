@@ -519,39 +519,24 @@ export async function handleMemoryConsolidate(
     return "No active session to consolidate.";
   }
 
-  // Fetch working memory
-  const working = await ctx.client.chatGet(sessionId, 200);
-  if (working.messages.length === 0) {
-    return "Session is empty, nothing to consolidate.";
+  const result = await ctx.client.consolidateSession(sessionId);
+  if (!result.success) {
+    if ((result.error ?? "").includes("No messages to consolidate")) {
+      return "Session is empty, nothing to consolidate.";
+    }
+    return `Session consolidation failed: ${result.error ?? "unknown error"}`;
   }
 
-  // Build summary from messages (the cloud-side will handle LLM summarization)
-  const conversationText = working.messages
-    .map((m) => `${m.role}: ${m.content}`)
-    .join("\n");
+  if (!result.store_result) {
+    return "Session consolidated, but no store result was returned.";
+  }
 
-  const result = await ctx.client.memoryStore({
-    type: "summary",
-    title: `Session consolidation: ${sessionId}`,
-    summary: `Consolidated ${working.message_count} messages from session ${sessionId}`,
-    userText: conversationText,
-    tags: ["consolidated", "summary"],
-    metadata: {
-      session_id: sessionId,
-      message_count: working.message_count,
-    },
-  });
-
-  // Clear working memory after consolidation
-  await ctx.client.chatClear(sessionId);
-
-  ctx.logger.info(`Consolidated session ${sessionId}: ${result.item_kref}`);
+  ctx.logger.info(`Consolidated session ${sessionId}: ${result.store_result.item_kref}`);
 
   return (
     `Session consolidated successfully.\n` +
-    `Messages: ${working.message_count}\n` +
-    `Kref: ${result.item_kref}\n` +
-    `Space: ${result.space_path}`
+    `Kref: ${result.store_result.item_kref}\n` +
+    `Space: ${result.store_result.space_path}`
   );
 }
 

@@ -273,6 +273,24 @@ export class KumihoClient {
     });
   }
 
+  async consolidateSession(sessionId: string): Promise<{
+    success: boolean;
+    summary?: string;
+    error?: string;
+    store_result?: MemoryStoreResult;
+  }> {
+    return this.transport.call<{
+      success: boolean;
+      summary?: string;
+      error?: string;
+      store_result?: MemoryStoreResult;
+    }>(
+      "kumiho_memory_consolidate",
+      { session_id: sessionId },
+      5 * 60 * 1000,
+    );
+  }
+
   // -----------------------------------------------------------------------
   // Long-term memory storage
   // -----------------------------------------------------------------------

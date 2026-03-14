@@ -544,6 +544,28 @@ async function generateConsolidationSummary(
   };
 }
 
+function hasBackendConsolidationTool(client: KumihoClient): boolean {
+  const maybeClient = client as {
+    consolidateSession?: unknown;
+    getDiscoveredTools?: () => Array<{ name?: string }>;
+  };
+  const discoveredTools = maybeClient.getDiscoveredTools?.() ?? [];
+  if (discoveredTools.length > 0) {
+    return discoveredTools.some((tool) => tool.name === "kumiho_memory_consolidate");
+  }
+  return typeof maybeClient.consolidateSession === "function";
+}
+
+function isUnavailableBackendConsolidationError(err: unknown): boolean {
+  const message = (err as Error).message?.toLowerCase() ?? "";
+  return (
+    message.includes("unknown tool") ||
+    message.includes("tool not found") ||
+    message.includes("method not found") ||
+    message.includes("kumiho_memory_consolidate")
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Session consolidation
 // ---------------------------------------------------------------------------
@@ -568,15 +590,48 @@ export async function consolidateSession(
 ): Promise<boolean> {
   if (!state.sessionId) return false;
 
+  const sessionId = state.sessionId;
+
+  // Prefer the backend consolidator in local mode so auto-consolidation uses
+  // the same Python summarization pipeline as the manual memory_consolidate tool.
+  if (config.mode === "local" && hasBackendConsolidationTool(client)) {
+    try {
+      const result = await client.consolidateSession(sessionId);
+      if (!result.success) {
+        const error = result.error?.trim() || "unknown backend consolidation failure";
+        if (/no messages/i.test(error)) return false;
+        console.error(`[kumiho] backend consolidateSession failed for ${sessionId}: ${error}`);
+        return false;
+      }
+
+      state.sessionId = await generateSessionId(config.userId, "personal", true);
+      state.messageCount = 0;
+      redactor.reset();
+      return true;
+    } catch (err) {
+      if (!isUnavailableBackendConsolidationError(err)) {
+        console.error(
+          `[kumiho] backend consolidateSession failed for ${sessionId}: ${(err as Error).message}`,
+        );
+        return false;
+      }
+
+      console.warn(
+        `[kumiho] backend consolidation unavailable for ${sessionId}; falling back to legacy ` +
+          `plugin summarization: ${(err as Error).message}`,
+      );
+    }
+  }
+
   try {
     // 1. Fetch all messages
-    const working = await client.chatGet(state.sessionId, 500);
+    const working = await client.chatGet(sessionId, 500);
     if (working.messages.length === 0) return false;
 
     // 2. Save raw conversation locally
     const artifact = await artifacts.saveConversation(
       config.project,
-      state.sessionId,
+      sessionId,
       working.messages,
     );
 
@@ -593,10 +648,10 @@ export async function consolidateSession(
     // 4. Generate LLM summary (falls back to static if localSummarization is off or LLM unavailable)
     const { summary: llmSummary, reason: summaryFallbackReason } =
       await generateConsolidationSummary(config, working.messages);
-    let summaryText = llmSummary ?? `Consolidated ${working.message_count} messages from session ${state.sessionId}`;
+    let summaryText = llmSummary ?? `Consolidated ${working.message_count} messages from session ${sessionId}`;
     if (!llmSummary && config.localSummarization) {
       console.warn(
-        `[kumiho] consolidation for ${state.sessionId} fell back to static summary: ` +
+        `[kumiho] consolidation for ${sessionId} fell back to static summary: ` +
           `${summaryFallbackReason ?? "unknown reason"}`,
       );
     }
@@ -613,7 +668,7 @@ export async function consolidateSession(
     // 6. Store structured summary in Kumiho Cloud
     await client.memoryStore({
       type: "summary",
-      title: `Session consolidation: ${state.sessionId}`,
+      title: `Session consolidation: ${sessionId}`,
       summary: summaryText,
       userText: config.privacy.uploadSummariesOnly ? summaryText : userText,
       assistantText: config.privacy.uploadSummariesOnly ? "" : assistantText,
@@ -621,7 +676,7 @@ export async function consolidateSession(
       spaceHint,
       tags: ["consolidated", "summary"],
       metadata: {
-        session_id: state.sessionId,
+        session_id: sessionId,
         message_count: working.message_count,
         channels_used: channel ? [channel.platform] : [],
         artifact_hash: artifact.hash,
@@ -629,7 +684,7 @@ export async function consolidateSession(
     });
 
     // 7. Clear working memory
-    await client.chatClear(state.sessionId);
+    await client.chatClear(sessionId);
 
     // 8. Start new session
     state.sessionId = await generateSessionId(config.userId, "personal", true);
