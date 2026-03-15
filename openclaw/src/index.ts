@@ -785,8 +785,8 @@ function syncLocalProcessEnv(cfg: ResolvedConfig): boolean {
   if (cfg.mode !== "local") return false;
 
   const desiredEnv = {
-    ...buildManagedLocalEnv(cfg),
     ...baseLocalEnv,
+    ...buildManagedLocalEnv(cfg),
   };
 
   const currentEnv = cfg.local.env ?? (cfg.local.env = {});

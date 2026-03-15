@@ -378,6 +378,62 @@ describe("OpenClaw prompt hooks", () => {
     });
   });
 
+  it("overrides stale local env LLM keys with the resolved host OpenAI credential", async () => {
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      return {
+        ...actual,
+        existsSync: vi.fn((path: string) => path.endsWith("auth-profiles.json")),
+        readFileSync: vi.fn(() =>
+          JSON.stringify({
+            profiles: {
+              "openai-codex:default": {
+                type: "oauth",
+                provider: "openai-codex",
+                access: "openai-oauth-access-token",
+                refresh: "openai-oauth-refresh-token",
+                expires: Date.now() + 60 * 60 * 1000,
+              },
+            },
+            lastGood: {
+              "openai-codex": "openai-codex:default",
+            },
+          }),
+        ),
+      };
+    });
+
+    const { default: plugin } = await import("../index.js");
+    const api = makeApi();
+    api.pluginConfig = {
+      ...api.pluginConfig,
+      consolidationModel: { provider: "openai", model: "gpt-5-codex" },
+      local: {
+        ...(api.pluginConfig.local as Record<string, unknown>),
+        env: {
+          OPENAI_API_KEY: "",
+          KUMIHO_LLM_API_KEY: "",
+          KUMIHO_LLM_PROVIDER: "anthropic",
+          CUSTOM_ENV: "preserve-me",
+        },
+      },
+    };
+
+    plugin.register(api as never);
+
+    const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
+    expect(resolvedConfig.local).toMatchObject({
+      env: {
+        KUMIHO_LLM_PROVIDER: "openai",
+        KUMIHO_LLM_MODEL: "gpt-5-codex",
+        KUMIHO_LLM_LIGHT_MODEL: "gpt-5-codex",
+        KUMIHO_LLM_API_KEY: "openai-oauth-access-token",
+        OPENAI_API_KEY: "openai-oauth-access-token",
+        CUSTOM_ENV: "preserve-me",
+      },
+    });
+  });
+
   it("treats openai-codex config provider as an alias for host OpenAI credentials", async () => {
     vi.doMock("node:fs", async () => {
       const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
