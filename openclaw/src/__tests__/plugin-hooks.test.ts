@@ -253,7 +253,7 @@ describe("OpenClaw prompt hooks", () => {
     );
   });
 
-  it("prefers the matching OpenAI OAuth auth-profile over an unrelated runtime Anthropic credential", async () => {
+  it("does not treat host-only OpenAI OAuth as a usable direct OpenAI credential", async () => {
     vi.doMock("node:fs", async () => {
       const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
       return {
@@ -309,17 +309,10 @@ describe("OpenClaw prompt hooks", () => {
     plugin.register(api as never);
 
     const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
-    expect(resolvedConfig.hostLlmProvider).toBe("openai");
-    expect(resolvedConfig.hostLlmApiKey).toBe("openai-oauth-access-token");
-    expect(resolvedConfig.local).toMatchObject({
-      env: {
-        KUMIHO_LLM_PROVIDER: "openai",
-        KUMIHO_LLM_MODEL: "gpt-5.1-codex-mini",
-        KUMIHO_LLM_LIGHT_MODEL: "gpt-5.1-codex-mini",
-        KUMIHO_LLM_API_KEY: "openai-oauth-access-token",
-        OPENAI_API_KEY: "openai-oauth-access-token",
-      },
-    });
+    expect(resolvedConfig.hostLlmProvider).toBe("anthropic");
+    expect(resolvedConfig.hostLlmApiKey).toBe("host-anthropic-key");
+    expect((resolvedConfig.local as { env?: Record<string, string> }).env).not.toHaveProperty("KUMIHO_LLM_PROVIDER");
+    expect((resolvedConfig.local as { env?: Record<string, string> }).env).not.toHaveProperty("OPENAI_API_KEY");
   });
 
   it("parses the current auth-profiles schema under auth.profiles", async () => {
@@ -359,7 +352,7 @@ describe("OpenClaw prompt hooks", () => {
     expect(resolvedConfig.hostLlmApiKey).toBe("sk-ant-host-profile");
   });
 
-  it("uses an unexpired openai-codex oauth access token as the host OpenAI credential", async () => {
+  it("classifies openai-codex oauth as host-only auth instead of inheriting it", async () => {
     vi.doMock("node:fs", async () => {
       const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
       return {
@@ -395,11 +388,14 @@ describe("OpenClaw prompt hooks", () => {
     plugin.register(api as never);
 
     const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
-    expect(resolvedConfig.hostLlmProvider).toBe("openai");
-    expect(resolvedConfig.hostLlmApiKey).toBe("openai-oauth-access-token");
+    expect(resolvedConfig.hostLlmProvider).toBe("");
+    expect(resolvedConfig.hostLlmApiKey).toBe("");
+    expect(api.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("active OpenClaw OpenAI OAuth is host-only"),
+    );
   });
 
-  it("exports host OpenAI credentials into the MCP subprocess env for manual consolidation", async () => {
+  it("does not export host-only OpenAI OAuth into the MCP subprocess env", async () => {
     vi.doMock("node:fs", async () => {
       const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
       return {
@@ -434,20 +430,13 @@ describe("OpenClaw prompt hooks", () => {
     plugin.register(api as never);
 
     const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
-    expect(resolvedConfig.hostLlmProvider).toBe("openai");
-    expect(resolvedConfig.hostLlmApiKey).toBe("openai-oauth-access-token");
-    expect(resolvedConfig.local).toMatchObject({
-      env: {
-        KUMIHO_LLM_PROVIDER: "openai",
-        KUMIHO_LLM_MODEL: "gpt-5-codex",
-        KUMIHO_LLM_LIGHT_MODEL: "gpt-5-codex",
-        KUMIHO_LLM_API_KEY: "openai-oauth-access-token",
-        OPENAI_API_KEY: "openai-oauth-access-token",
-      },
-    });
+    expect(resolvedConfig.hostLlmProvider).toBe("");
+    expect(resolvedConfig.hostLlmApiKey).toBe("");
+    expect((resolvedConfig.local as { env?: Record<string, string> }).env).not.toHaveProperty("KUMIHO_LLM_PROVIDER");
+    expect((resolvedConfig.local as { env?: Record<string, string> }).env).not.toHaveProperty("OPENAI_API_KEY");
   });
 
-  it("overrides stale local env LLM keys with the resolved host OpenAI credential", async () => {
+  it("strips stale local env LLM keys when no usable direct host credential exists", async () => {
     vi.doMock("node:fs", async () => {
       const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
       return {
@@ -493,17 +482,70 @@ describe("OpenClaw prompt hooks", () => {
     const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
     expect(resolvedConfig.local).toMatchObject({
       env: {
-        KUMIHO_LLM_PROVIDER: "openai",
-        KUMIHO_LLM_MODEL: "gpt-5-codex",
-        KUMIHO_LLM_LIGHT_MODEL: "gpt-5-codex",
-        KUMIHO_LLM_API_KEY: "openai-oauth-access-token",
-        OPENAI_API_KEY: "openai-oauth-access-token",
         CUSTOM_ENV: "preserve-me",
       },
     });
+    expect((resolvedConfig.local as { env?: Record<string, string> }).env).not.toHaveProperty("KUMIHO_LLM_PROVIDER");
+    expect((resolvedConfig.local as { env?: Record<string, string> }).env).not.toHaveProperty("OPENAI_API_KEY");
   });
 
-  it("treats openai-codex config provider as an alias for host OpenAI credentials", async () => {
+  it("merges prefs-backed gemini credentials with raw model config and exports base URL", async () => {
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      return {
+        ...actual,
+        existsSync: vi.fn((path: string) => path.endsWith("preferences.json")),
+        readFileSync: vi.fn((path: string, encoding?: BufferEncoding) => {
+          if (path.endsWith("preferences.json")) {
+            return JSON.stringify({
+              llm: {
+                provider: "gemini",
+                apiKey: "gemini-direct-key",
+                baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
+              },
+            });
+          }
+          return actual.readFileSync(path, encoding as never);
+        }),
+      };
+    });
+
+    const { default: plugin } = await import("../index.js");
+    const api = makeApi();
+    api.pluginConfig = {
+      ...api.pluginConfig,
+      consolidationModel: { provider: "gemini", model: "gemini-2.5-flash" },
+      local: {
+        ...(api.pluginConfig.local as Record<string, unknown>),
+        env: {
+          CUSTOM_ENV: "preserve-me",
+        },
+      },
+    };
+
+    plugin.register(api as never);
+
+    const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
+    expect(resolvedConfig).toMatchObject({
+      llm: {
+        provider: "gemini",
+        apiKey: "gemini-direct-key",
+        baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
+      },
+      local: {
+        env: {
+          CUSTOM_ENV: "preserve-me",
+          KUMIHO_LLM_PROVIDER: "gemini",
+          KUMIHO_LLM_MODEL: "gemini-2.5-flash",
+          KUMIHO_LLM_API_KEY: "gemini-direct-key",
+          KUMIHO_LLM_BASE_URL: "https://generativelanguage.googleapis.com/v1beta/openai/",
+        },
+      },
+    });
+    expect((resolvedConfig.local as { env?: Record<string, string> }).env).not.toHaveProperty("OPENAI_API_KEY");
+  });
+
+  it("keeps openai-codex config normalized without inheriting host-only oauth", async () => {
     vi.doMock("node:fs", async () => {
       const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
       return {
@@ -538,19 +580,11 @@ describe("OpenClaw prompt hooks", () => {
     plugin.register(api as never);
 
     const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
-    expect(resolvedConfig.hostLlmProvider).toBe("openai");
-    expect(resolvedConfig.local).toMatchObject({
-      env: {
-        KUMIHO_LLM_PROVIDER: "openai",
-        KUMIHO_LLM_MODEL: "gpt-5-codex",
-        KUMIHO_LLM_LIGHT_MODEL: "gpt-5-codex",
-        KUMIHO_LLM_API_KEY: "openai-oauth-access-token",
-        OPENAI_API_KEY: "openai-oauth-access-token",
-      },
-    });
+    expect(resolvedConfig.hostLlmProvider).toBe("");
+    expect((resolvedConfig.local as { env?: Record<string, string> }).env).not.toHaveProperty("KUMIHO_LLM_PROVIDER");
   });
 
-  it("refreshes host OpenAI credentials before the first MCP start when auth appears later", async () => {
+  it("does not promote late host-only OpenAI OAuth into the MCP env", async () => {
     let authEnabled = false;
     vi.doMock("node:fs", async () => {
       const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -597,25 +631,16 @@ describe("OpenClaw prompt hooks", () => {
     await api.service?.start({});
 
     expect(mockState.transports[0].startCalls).toBe(1);
-    expect(resolvedConfig.hostLlmApiKey).toBe("late-openai-oauth-token");
-    expect(resolvedConfig.local).toMatchObject({
-      env: {
-        KUMIHO_LLM_PROVIDER: "openai",
-        KUMIHO_LLM_MODEL: "gpt-5-codex",
-        KUMIHO_LLM_LIGHT_MODEL: "gpt-5-codex",
-        KUMIHO_LLM_API_KEY: "late-openai-oauth-token",
-        OPENAI_API_KEY: "late-openai-oauth-token",
-      },
-    });
-    expect(mockState.transports[0].addEnv).toHaveBeenCalledWith(
+    expect(resolvedConfig.hostLlmApiKey).toBe("");
+    expect((resolvedConfig.local as { env?: Record<string, string> }).env).not.toHaveProperty("OPENAI_API_KEY");
+    expect(mockState.transports[0].addEnv).not.toHaveBeenCalledWith(
       expect.objectContaining({
-        OPENAI_API_KEY: "late-openai-oauth-token",
-        KUMIHO_LLM_API_KEY: "late-openai-oauth-token",
+        OPENAI_API_KEY: expect.any(String),
       }),
     );
   });
 
-  it("restarts the MCP subprocess when host OpenAI credentials appear after startup", async () => {
+  it("does not restart the MCP subprocess for host-only OpenAI OAuth refreshes", async () => {
     let authEnabled = false;
     vi.doMock("node:fs", async () => {
       const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -668,11 +693,8 @@ describe("OpenClaw prompt hooks", () => {
       {},
     );
 
-    expect(mockState.transports[0].closeCalls).toBe(1);
-    expect(mockState.transports[0].startCalls).toBe(2);
-    expect(api.logger.info).toHaveBeenCalledWith(
-      expect.stringContaining("Restarting kumiho-mcp subprocess to apply refreshed local credentials"),
-    );
+    expect(mockState.transports[0].closeCalls).toBe(0);
+    expect(mockState.transports[0].startCalls).toBe(1);
   });
 
   it("warns when dreamStateModel requests a different provider than the only host credential", async () => {

@@ -96,7 +96,7 @@
     "llm": {
       "label": "Summarization LLM",
       "advanced": true,
-      "help": "LLM configuration for local summarization. Uses agent's default model if not set."
+      "help": "LLM configuration for local summarization. Auto-loaded from ~/.kumiho/preferences.json if omitted."
     },
     "privacy": {
       "label": "Privacy Settings",
@@ -195,18 +195,20 @@
         "type": "object",
         "description": "LLM for Dream State. Auto-loaded from ~/.kumiho/preferences.json if omitted.",
         "properties": {
-          "provider": { "type": "string", "enum": ["openai", "openai-codex", "anthropic"] },
+          "provider": { "type": "string", "enum": ["openai", "openai-codex", "anthropic", "gemini"] },
           "model": { "type": "string" },
-          "apiKey": { "type": "string" }
+          "apiKey": { "type": "string" },
+          "baseUrl": { "type": "string" }
         }
       },
       "consolidationModel": {
         "type": "object",
         "description": "LLM for session consolidation. Auto-loaded from ~/.kumiho/preferences.json if omitted.",
         "properties": {
-          "provider": { "type": "string", "enum": ["openai", "openai-codex", "anthropic"] },
+          "provider": { "type": "string", "enum": ["openai", "openai-codex", "anthropic", "gemini"] },
           "model": { "type": "string" },
-          "apiKey": { "type": "string" }
+          "apiKey": { "type": "string" },
+          "baseUrl": { "type": "string" }
         }
       },
       "llm": {
@@ -214,7 +216,7 @@
         "properties": {
           "provider": {
             "type": "string",
-            "enum": ["openai", "openai-codex", "anthropic"],
+            "enum": ["openai", "openai-codex", "anthropic", "gemini"],
             "description": "LLM provider for summarization"
           },
           "model": {
@@ -224,6 +226,10 @@
           "apiKey": {
             "type": "string",
             "description": "API key for summarization LLM (if different from agent)"
+          },
+          "baseUrl": {
+            "type": "string",
+            "description": "Base URL for OpenAI-compatible providers such as Gemini"
           }
         }
       },

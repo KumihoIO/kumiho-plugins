@@ -19,6 +19,7 @@ export interface KumihoLLMConfig {
   provider?: SupportedLlmProvider;
   model?: string;
   apiKey?: string;
+  baseUrl?: string;
 }
 
 export interface KumihoPrivacyConfig {
@@ -149,7 +150,7 @@ export interface ResolvedConfig {
   /** LLM for session consolidation. Empty provider = use agent default. */
   consolidationModel: KumihoLLMConfig;
   llm: KumihoLLMConfig;
-  /** LLM API key inherited from the host gateway's model provider config. */
+  /** Direct-call-capable LLM API key inherited from the host gateway when available. */
   hostLlmApiKey: string;
   /** LLM provider name corresponding to hostLlmApiKey ("anthropic" | "openai" | ""). */
   hostLlmProvider: string;

@@ -16,9 +16,9 @@
  */
 
 import type { KumihoClient } from "./client.js";
-import type { ResolvedConfig, MemoryScope, MemoryType, MemoryEntry } from "./types.js";
+import type { ResolvedConfig, MemoryScope, MemoryType, MemoryEntry, KumihoLLMConfig } from "./types.js";
 import { creativeCaptureHandler, creativeJobStatusHandler, creativeRecallHandler } from "./creative.js";
-import { normalizeConfiguredLlmProvider } from "./llm.js";
+import { GEMINI_OPENAI_BASE_URL, normalizeConfiguredLlmProvider } from "./llm.js";
 
 // ---------------------------------------------------------------------------
 // LLM key resolution for Dream State
@@ -31,10 +31,12 @@ import { normalizeConfiguredLlmProvider } from "./llm.js";
  */
 function resolveDreamModelConfig(
   cfg: ResolvedConfig,
-): { provider?: string; model?: string; apiKey?: string } | undefined {
+): Pick<KumihoLLMConfig, "provider" | "model" | "apiKey" | "baseUrl"> | undefined {
   const dm = cfg.dreamStateModel ?? {};
   const explicitProvider = normalizeConfiguredLlmProvider(dm.provider || cfg.llm.provider);
+  const inheritedProvider = normalizeConfiguredLlmProvider(cfg.hostLlmProvider);
   const explicitApiKey = dm.apiKey || cfg.llm.apiKey;
+  const explicitBaseUrl = dm.baseUrl || cfg.llm.baseUrl;
   if (
     explicitProvider &&
     !explicitApiKey &&
@@ -44,14 +46,16 @@ function resolveDreamModelConfig(
     return undefined;
   }
 
-  const provider = explicitProvider || cfg.hostLlmProvider;
+  const provider = explicitProvider || inheritedProvider;
   const model = dm.model || cfg.llm.model;
   const apiKey = explicitApiKey || cfg.hostLlmApiKey;
   if (!provider || !apiKey) return undefined;
+  const baseUrl = explicitBaseUrl || (provider === "gemini" ? GEMINI_OPENAI_BASE_URL : "");
   return {
     provider,
     model,
     apiKey,
+    ...(baseUrl ? { baseUrl } : {}),
   };
 }
 

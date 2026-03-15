@@ -27,14 +27,15 @@ import { execFile } from "node:child_process";
 // ---------------------------------------------------------------------------
 
 interface KumihoPreferences {
+  llm?: import("./types.js").KumihoLLMConfig;
   dreamState?: {
     schedule?: string;
-    // API keys must NOT be stored in preferences.json — use the host gateway's
-    // model provider config (hostLlmApiKey) or the plugin's llm.apiKey field.
-    model?: { provider?: string; model?: string };
+    scheduleKey?: string;
+    timezone?: string;
+    model?: import("./types.js").KumihoLLMConfig;
   };
   consolidation?: {
-    model?: { provider?: string; model?: string };
+    model?: import("./types.js").KumihoLLMConfig;
   };
 }
 
@@ -42,21 +43,20 @@ function loadPreferences(): KumihoPreferences {
   try {
     const path = join(homedir(), ".kumiho", "preferences.json");
     if (existsSync(path)) {
-      const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-      // Strip any API key fields that may have been manually added — keys must
-      // come from the plugin config or the host gateway, not preferences.json.
-      for (const section of ["dreamState", "consolidation"] as const) {
-        const s = raw[section] as Record<string, unknown> | undefined;
-        if (s?.["model"] && typeof s["model"] === "object") {
-          const m = s["model"] as Record<string, unknown>;
-          delete m["apiKey"];
-          delete m["api_key"];
-        }
-      }
-      return raw as KumihoPreferences;
+      return JSON.parse(readFileSync(path, "utf8")) as KumihoPreferences;
     }
   } catch { /* ignore */ }
   return {};
+}
+
+function mergeLlmConfig(
+  base: import("./types.js").KumihoLLMConfig | undefined,
+  extra: import("./types.js").KumihoLLMConfig | undefined,
+): import("./types.js").KumihoLLMConfig {
+  return {
+    ...(base ?? {}),
+    ...(extra ?? {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -110,33 +110,6 @@ function loadAuthToken(): string {
 
 const _AUTH_PATH = join(homedir(), ".kumiho", "kumiho_authentication.json");
 
-// ---------------------------------------------------------------------------
-// OpenClaw auth-profile loader — reads ~/.openclaw/agents/main/agent/auth-profiles.json
-// ---------------------------------------------------------------------------
-
-interface OpenClawAuthProfile {
-  type?: string;
-  provider?: string;
-  token?: string;
-  access?: string;
-  refresh?: string;
-  expires?: number;
-  mode?: string;
-  [key: string]: unknown;
-}
-
-interface OpenClawAuthProfiles {
-  version?: number;
-  profiles?: Record<string, OpenClawAuthProfile>;
-  lastGood?: Record<string, string>;
-  usageStats?: Record<string, { lastUsed?: number; errorCount?: number }>;
-  auth?: {
-    profiles?: Record<string, OpenClawAuthProfile>;
-    lastGood?: Record<string, string>;
-    usageStats?: Record<string, { lastUsed?: number; errorCount?: number }>;
-  };
-}
-
 type InheritedLlmConfig = { provider: "anthropic" | "openai"; apiKey: string };
 
 function getPreferredLlmProvider(
@@ -150,144 +123,18 @@ function getPreferredLlmProvider(
   return normalizeConfiguredLlmProvider(preferred) || preferred;
 }
 
-function extractCredentialString(value: unknown, depth = 0): string | null {
-  if (!value || typeof value !== "object" || depth > 2) return null;
+function extractRuntimeProviderCredential(value: unknown, depth = 0): string {
+  if (!value || typeof value !== "object" || depth > 2) return "";
   const record = value as Record<string, unknown>;
   for (const field of ["apiKey", "api_key", "key", "token"] as const) {
     const candidate = record[field];
-    if (typeof candidate === "string" && candidate.trim()) return candidate;
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
   }
   for (const nested of Object.values(record)) {
-    const found = extractCredentialString(nested, depth + 1);
+    const found = extractRuntimeProviderCredential(nested, depth + 1);
     if (found) return found;
   }
-  return null;
-}
-
-function normalizeDirectProvider(
-  provider?: string,
-  mode?: string,
-): "anthropic" | "openai" | null {
-  if (provider === "anthropic") return "anthropic";
-  if (provider === "openai") return "openai";
-  if (provider === "openai-codex" && (mode === "token" || mode === "oauth")) return "openai";
-  return null;
-}
-
-function extractOpenClawProfileCredential(
-  profile: OpenClawAuthProfile,
-  provider: "anthropic" | "openai" | null,
-): string | null {
-  if (!provider) return null;
-
-  const authMode =
-    typeof profile.mode === "string"
-      ? profile.mode
-      : typeof profile.type === "string"
-        ? profile.type
-        : "";
-
-  // Best-effort support for OpenClaw's cached OpenAI Codex OAuth access token.
-  // We only use the current access token if it is still valid; refresh logic
-  // stays with OpenClaw because this plugin does not own the OAuth client.
-  if (provider === "openai" && authMode === "oauth") {
-    const access = typeof profile.access === "string" ? profile.access.trim() : "";
-    const expires = typeof profile.expires === "number" ? profile.expires : 0;
-    if (!access) return null;
-    if (expires && expires <= Date.now() + 60_000) return null;
-    return access;
-  }
-
-  return extractCredentialString(profile);
-}
-
-/**
- * Load the best LLM API key from OpenClaw's auth-profiles.json.
- * Uses `lastGood` to pick the preferred profile per provider.
- * If `preferredProvider` is given, tries that provider first.
- * Falls back to whichever profile was used most recently.
- */
-function loadOpenClawAuthProfile(
-  preferredProvider?: string,
-): InheritedLlmConfig | null {
-  try {
-    const path = join(homedir(), ".openclaw", "agents", "main", "agent", "auth-profiles.json");
-    if (!existsSync(path)) return null;
-    const data = JSON.parse(readFileSync(path, "utf8")) as OpenClawAuthProfiles;
-    const profiles = data.auth?.profiles ?? data.profiles ?? {};
-    const lastGood = data.auth?.lastGood ?? data.lastGood ?? {};
-    const stats = data.auth?.usageStats ?? data.usageStats ?? {};
-
-    const candidates = Object.entries(profiles)
-      .map(([profileKey, profile]) => {
-        const rawProvider =
-          typeof profile.provider === "string"
-            ? profile.provider
-            : profileKey.split(":")[0];
-        const authMode =
-          typeof profile.mode === "string"
-            ? profile.mode
-            : typeof profile.type === "string"
-              ? profile.type
-              : undefined;
-        const provider = normalizeDirectProvider(rawProvider, authMode);
-        const apiKey = extractOpenClawProfileCredential(profile, provider);
-        return {
-          profileKey,
-          provider,
-          apiKey,
-          lastUsed: stats[profileKey]?.lastUsed ?? 0,
-          errorCount: stats[profileKey]?.errorCount ?? 0,
-        };
-      })
-      .filter((entry): entry is {
-        profileKey: string;
-        provider: "anthropic" | "openai";
-        apiKey: string;
-        lastUsed: number;
-        errorCount: number;
-      } => {
-        return !!entry.provider && typeof entry.apiKey === "string" && entry.apiKey.length > 0;
-      });
-
-    // Try the preferred provider first via lastGood when present.
-    if (preferredProvider) {
-      const preferredProfileKey = lastGood[preferredProvider];
-      if (preferredProfileKey) {
-        const preferred = candidates.find((entry) => entry.profileKey === preferredProfileKey);
-        if (preferred) {
-          return { provider: preferred.provider, apiKey: preferred.apiKey };
-        }
-      }
-
-      const preferred = candidates
-        .filter((entry) => entry.provider === preferredProvider)
-        .sort((a, b) => b.lastUsed - a.lastUsed || a.errorCount - b.errorCount)[0];
-      if (preferred) {
-        return { provider: preferred.provider, apiKey: preferred.apiKey };
-      }
-    }
-
-    // Try any lastGood entry, preferring the one with the highest lastUsed.
-    const rankedLastGood = Object.values(lastGood)
-      .map((profileKey) => candidates.find((entry) => entry.profileKey === profileKey))
-      .filter((entry): entry is typeof candidates[number] => !!entry)
-      .sort((a, b) => b.lastUsed - a.lastUsed);
-    if (rankedLastGood[0]) {
-      return {
-        provider: rankedLastGood[0].provider,
-        apiKey: rankedLastGood[0].apiKey,
-      };
-    }
-
-    // Last resort: pick the healthiest usable direct-call profile.
-    const best = [...candidates]
-      .sort((a, b) => a.errorCount - b.errorCount || b.lastUsed - a.lastUsed)[0];
-    if (best) {
-      return { provider: best.provider, apiKey: best.apiKey };
-    }
-  } catch { /* ignore */ }
-  return null;
+  return "";
 }
 
 function loadHostLlmFromPluginApi(
@@ -316,13 +163,19 @@ function loadHostLlmFromPluginApi(
           : typeof record.type === "string"
             ? record.type
             : undefined;
-      const provider = normalizeDirectProvider(
+      const provider = normalizeHostAuthProvider(
         typeof record.provider === "string" ? record.provider : name,
         authMode,
       );
+      let apiKey = "";
+      if (provider === "openai" && authMode === "oauth") {
+        apiKey = "";
+      } else {
+        apiKey = extractRuntimeProviderCredential(record);
+      }
       return {
         provider,
-        apiKey: extractOpenClawProfileCredential(record as OpenClawAuthProfile, provider),
+        apiKey,
       };
     })
     .filter((entry): entry is InheritedLlmConfig => {
@@ -424,10 +277,16 @@ import {
   TOOL_HANDLERS,
   type ToolContext,
 } from "./tools.js";
-import { normalizeConfiguredLlmProvider } from "./llm.js";
+import {
+  detectOpenClawHostAuth,
+  normalizeHostAuthProvider,
+  resolveOpenClawDirectHostLlm,
+} from "./host-auth.js";
+import { GEMINI_OPENAI_BASE_URL, normalizeConfiguredLlmProvider } from "./llm.js";
 import { generateSessionId } from "./session.js";
 import { ensureUserIdentity } from "./identity.js";
 import type {
+  KumihoLLMConfig,
   KumihoPluginConfig,
   ResolvedConfig,
   ChannelInfo,
@@ -480,7 +339,7 @@ function resolveConfig(
   let hostLlmApiKey = "";
   let hostLlmProvider = "";
   const preferredProvider = getPreferredLlmProvider(raw);
-  const inheritedLlm = inheritedHostLlm ?? loadOpenClawAuthProfile(preferredProvider);
+  const inheritedLlm = inheritedHostLlm ?? resolveOpenClawDirectHostLlm(preferredProvider);
   if (inheritedLlm) {
     hostLlmApiKey = inheritedLlm.apiKey;
     hostLlmProvider = inheritedLlm.provider;
@@ -506,6 +365,9 @@ function resolveConfig(
 
   // Fall back to ~/.kumiho/preferences.json written by kumiho-setup
   const prefs = loadPreferences();
+  const mergedDreamStateModel = mergeLlmConfig(prefs.dreamState?.model, raw.dreamStateModel);
+  const mergedConsolidationModel = mergeLlmConfig(prefs.consolidation?.model, raw.consolidationModel);
+  const mergedSharedLlm = mergeLlmConfig(prefs.llm, raw.llm);
 
   return {
     mode,
@@ -526,9 +388,9 @@ function resolveConfig(
       raw.artifactDir || process.env.KUMIHO_MEMORY_ARTIFACT_ROOT || join(homedir(), ".kumiho", "artifacts"),
     piiRedaction: raw.piiRedaction ?? true,
     dreamStateSchedule: raw.dreamStateSchedule ?? prefs.dreamState?.schedule ?? "",
-    dreamStateModel: raw.dreamStateModel ?? (prefs.dreamState?.model as import("./types.js").KumihoLLMConfig | undefined) ?? {},
-    consolidationModel: raw.consolidationModel ?? (prefs.consolidation?.model as import("./types.js").KumihoLLMConfig | undefined) ?? {},
-    llm: raw.llm ?? {},
+    dreamStateModel: mergedDreamStateModel,
+    consolidationModel: mergedConsolidationModel,
+    llm: mergedSharedLlm,
     hostLlmApiKey,
     hostLlmProvider,
     privacy: {
@@ -675,10 +537,12 @@ function msUntilNextCron(cron: string): number {
  */
 function resolveDreamStateModelConfig(
   cfg: ResolvedConfig,
-): { provider?: string; model?: string; apiKey?: string } | undefined {
+): Pick<KumihoLLMConfig, "provider" | "model" | "apiKey" | "baseUrl"> | undefined {
   const dm = cfg.dreamStateModel ?? {};
   const explicitProvider = normalizeConfiguredLlmProvider(dm.provider || cfg.llm.provider);
+  const inheritedProvider = normalizeConfiguredLlmProvider(cfg.hostLlmProvider);
   const explicitApiKey = dm.apiKey || cfg.llm.apiKey;
+  const explicitBaseUrl = dm.baseUrl || cfg.llm.baseUrl;
   if (
     explicitProvider &&
     !explicitApiKey &&
@@ -688,7 +552,7 @@ function resolveDreamStateModelConfig(
     return undefined;
   }
 
-  const provider = explicitProvider || cfg.hostLlmProvider;
+  const provider = explicitProvider || inheritedProvider;
   const model = dm.model || cfg.llm.model;
   const apiKey = explicitApiKey || cfg.hostLlmApiKey;
   if (!provider || !apiKey) return undefined;
@@ -697,15 +561,18 @@ function resolveDreamStateModelConfig(
     provider,
     model,
     apiKey,
+    ...(explicitBaseUrl ? { baseUrl: explicitBaseUrl } : {}),
   };
 }
 
 function resolveSessionLlmConfig(
   cfg: ResolvedConfig,
-): { provider?: string; model?: string; apiKey?: string } | undefined {
+): Pick<KumihoLLMConfig, "provider" | "model" | "apiKey" | "baseUrl"> | undefined {
   const cm = cfg.consolidationModel ?? {};
   const explicitProvider = normalizeConfiguredLlmProvider(cm.provider || cfg.llm.provider);
+  const inheritedProvider = normalizeConfiguredLlmProvider(cfg.hostLlmProvider);
   const explicitApiKey = cm.apiKey || cfg.llm.apiKey;
+  const explicitBaseUrl = cm.baseUrl || cfg.llm.baseUrl;
   if (
     explicitProvider &&
     !explicitApiKey &&
@@ -715,7 +582,7 @@ function resolveSessionLlmConfig(
     return undefined;
   }
 
-  const provider = explicitProvider || cfg.hostLlmProvider;
+  const provider = explicitProvider || inheritedProvider;
   const model = cm.model || cfg.llm.model;
   const apiKey = explicitApiKey || cfg.hostLlmApiKey;
   if (!provider || !apiKey) return undefined;
@@ -724,20 +591,29 @@ function resolveSessionLlmConfig(
     provider,
     model,
     apiKey,
+    ...(explicitBaseUrl ? { baseUrl: explicitBaseUrl } : {}),
   };
 }
 
 function buildLlmEnv(
-  modelConfig?: { provider?: string; model?: string; apiKey?: string },
+  modelConfig?: Pick<KumihoLLMConfig, "provider" | "model" | "apiKey" | "baseUrl">,
 ): Record<string, string> {
   if (!modelConfig?.provider || !modelConfig.apiKey) {
     return {};
   }
 
+  const baseUrl =
+    modelConfig.baseUrl ||
+    (modelConfig.provider === "gemini" ? GEMINI_OPENAI_BASE_URL : "");
+
   const env: Record<string, string> = {
     KUMIHO_LLM_PROVIDER: modelConfig.provider,
     KUMIHO_LLM_API_KEY: modelConfig.apiKey,
   };
+
+  if (baseUrl) {
+    env.KUMIHO_LLM_BASE_URL = baseUrl;
+  }
 
   if (modelConfig.model) {
     env.KUMIHO_LLM_MODEL = modelConfig.model;
@@ -757,6 +633,15 @@ function buildLlmEnv(
 
 let baseLocalEnv: Record<string, string> = {};
 let resolveLatestHostLlm: (() => InheritedLlmConfig | null) | null = null;
+const MANAGED_LOCAL_ENV_KEYS = new Set([
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "KUMIHO_LLM_PROVIDER",
+  "KUMIHO_LLM_API_KEY",
+  "KUMIHO_LLM_MODEL",
+  "KUMIHO_LLM_LIGHT_MODEL",
+  "KUMIHO_LLM_BASE_URL",
+]);
 
 function envMapsEqual(
   left: Record<string, string> | undefined,
@@ -781,11 +666,21 @@ function buildManagedLocalEnv(cfg: ResolvedConfig): Record<string, string> {
   return env;
 }
 
+function buildUnmanagedLocalEnv(env: Record<string, string>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (!MANAGED_LOCAL_ENV_KEYS.has(key)) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 function syncLocalProcessEnv(cfg: ResolvedConfig): boolean {
   if (cfg.mode !== "local") return false;
 
   const desiredEnv = {
-    ...baseLocalEnv,
+    ...buildUnmanagedLocalEnv(baseLocalEnv),
     ...buildManagedLocalEnv(cfg),
   };
 
@@ -1006,16 +901,19 @@ export default {
 
     const rawConfig = (api.pluginConfig ?? {}) as KumihoPluginConfig;
     const preferredHostLlmProvider = getPreferredLlmProvider(rawConfig);
+    const preferredProfileHostAuth =
+      detectOpenClawHostAuth(preferredHostLlmProvider) ??
+      detectOpenClawHostAuth();
     const resolveInheritedHostLlm = () => {
       const runtimePreferred = loadHostLlmFromPluginApi(api, preferredHostLlmProvider);
       if (runtimePreferred) return runtimePreferred;
 
-      const profilePreferred = loadOpenClawAuthProfile(preferredHostLlmProvider);
+      const profilePreferred = resolveOpenClawDirectHostLlm(preferredHostLlmProvider);
       if (profilePreferred) return profilePreferred;
 
       return (
         loadHostLlmFromPluginApi(api) ||
-        loadOpenClawAuthProfile()
+        resolveOpenClawDirectHostLlm()
       );
     };
     resolveLatestHostLlm = resolveInheritedHostLlm;
@@ -1041,14 +939,26 @@ export default {
       !config.llm.apiKey &&
       !config.hostLlmApiKey
     ) {
-      api.logger.warn(
-        "Kumiho: no host LLM credentials were resolved from " +
-          "api.config.models.providers or " +
-          "~/.openclaw/agents/main/agent/auth-profiles.json. " +
-          "Session consolidation will fall back to the static " +
-          "\"Consolidated N messages...\" summary until the plugin can access " +
-          "the OpenClaw host LLM configuration.",
-      );
+      if (
+        preferredProfileHostAuth &&
+        preferredProfileHostAuth.normalizedProvider === "openai" &&
+        !preferredProfileHostAuth.directCallCapable
+      ) {
+        api.logger.warn(
+          "Kumiho: active OpenClaw OpenAI OAuth is host-only and cannot be reused " +
+            "for Dream State or session consolidation direct API calls. Configure " +
+            "an explicit memory provider/API key in kumiho-setup or plugin prefs.",
+        );
+      } else {
+        api.logger.warn(
+          "Kumiho: no host LLM credentials were resolved from " +
+            "api.config.models.providers or " +
+            "~/.openclaw/agents/main/agent/auth-profiles.json. " +
+            "Session consolidation will fall back to the static " +
+            "\"Consolidated N messages...\" summary until the plugin can access " +
+            "the OpenClaw host LLM configuration.",
+        );
+      }
     }
 
     const dreamProviderHint =

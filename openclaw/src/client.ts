@@ -13,6 +13,7 @@ import type {
   ChatMessage,
   CreativeCaptureParams,
   CreativeCaptureResult,
+  KumihoLLMConfig,
   MemoryEntry,
   MemoryStoreResult,
   MemoryType,
@@ -624,15 +625,12 @@ export class KumihoClient {
   // Dream State
   // -----------------------------------------------------------------------
 
-  async triggerDreamState(modelConfig?: {
-    provider?: string;
-    model?: string;
-    apiKey?: string;
-  }): Promise<DreamStateStats> {
+  async triggerDreamState(modelConfig?: Pick<KumihoLLMConfig, "provider" | "model" | "apiKey" | "baseUrl">): Promise<DreamStateStats> {
     const params: Record<string, unknown> = { project: this.project };
     if (modelConfig?.provider) params.provider = modelConfig.provider;
     if (modelConfig?.model) params.model = modelConfig.model;
     if (modelConfig?.apiKey) params.api_key = modelConfig.apiKey;
+    if (modelConfig?.baseUrl) params.base_url = modelConfig.baseUrl;
     // Dream State can take minutes (event collection + LLM assessment).
     // Use a 5-minute timeout instead of the default 30s.
     return this.transport.call<DreamStateStats>(

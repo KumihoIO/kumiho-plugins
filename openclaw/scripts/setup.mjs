@@ -24,6 +24,34 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import readline from "node:readline";
 
+let detectOpenClawHostAuth;
+let buildMemoryPreferences;
+let buildOpenClawPluginConfig;
+let getConsolidationModelOptions;
+let getDreamStateModelOptions;
+let getExplicitMemoryProviderOptions;
+let getMemoryProviderBaseUrl;
+let getSuggestedApiEnvVars;
+let requiresExplicitMemoryProvider;
+
+try {
+  ({ detectOpenClawHostAuth } = await import(new URL("../dist/host-auth.js", import.meta.url)));
+  ({
+    buildMemoryPreferences,
+    buildOpenClawPluginConfig,
+    getConsolidationModelOptions,
+    getDreamStateModelOptions,
+    getExplicitMemoryProviderOptions,
+    getMemoryProviderBaseUrl,
+    getSuggestedApiEnvVars,
+    requiresExplicitMemoryProvider,
+  } = await import(new URL("../dist/setup-support.js", import.meta.url)));
+} catch (error) {
+  console.error("kumiho-setup requires the built dist files. Run npm run build first.");
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+
 const IS_WIN = platform() === "win32";
 const VENV_DIR = join(homedir(), ".kumiho", "venv");
 const BIN = IS_WIN ? "Scripts" : "bin";
@@ -85,6 +113,15 @@ async function askFreeText(rl, prompt, placeholder) {
   return new Promise((resolve) => {
     rl.question(`  ${prompt} [${c.dim}${placeholder}${c.reset}]: `, (answer) => {
       resolve(answer.trim() || placeholder);
+    });
+  });
+}
+
+async function askInput(rl, prompt, placeholder = "") {
+  const suffix = placeholder ? ` [${c.dim}${placeholder}${c.reset}]` : "";
+  return new Promise((resolve) => {
+    rl.question(`  ${prompt}${suffix}: `, (answer) => {
+      resolve(answer.trim());
     });
   });
 }
@@ -172,14 +209,14 @@ const DREAM_MODELS = [
     recommended: true,
   },
   {
-    label: "gpt-5-mini (OpenAI)",
-    note: "small GPT-5 general-purpose model",
-    provider: "openai", model: "gpt-5-mini",
+    label: "gpt-5-nano (OpenAI)",
+    note: "recommended lightweight OpenAI Dream State preset",
+    provider: "openai", model: "gpt-5-nano",
   },
   {
-    label: "gpt-5-nano (OpenAI)",
-    note: "cheapest GPT-5 option",
-    provider: "openai", model: "gpt-5-nano",
+    label: "gpt-5-mini (OpenAI)",
+    note: "quality upgrade for Dream State",
+    provider: "openai", model: "gpt-5-mini",
   },
   {
     label: "claude-sonnet-4-6 (Anthropic)",
@@ -188,7 +225,7 @@ const DREAM_MODELS = [
   },
   {
     label: "Custom OpenAI model",
-    note: "type any model id, e.g. gpt-5.3-codex-spark",
+    note: "type any OpenAI model id",
     provider: "openai", model: "__custom__",
   },
   {
@@ -201,39 +238,29 @@ const DREAM_MODELS = [
 
 const CONSOLIDATION_MODELS = [
   {
-    label: "claude-sonnet-4-6 (Anthropic)",
-    note: "recommended — richest summaries",
-    provider: "anthropic", model: "claude-sonnet-4-6",
+    label: "claude-haiku-4-5 (Anthropic)",
+    note: "recommended — lightweight direct summary model",
+    provider: "anthropic", model: "claude-haiku-4-5-20251001",
     recommended: true,
   },
   {
-    label: "claude-haiku-4-5 (Anthropic)",
-    note: "budget — ~$0.18/month",
-    provider: "anthropic", model: "claude-haiku-4-5-20251001",
-  },
-  {
-    label: "gpt-5-codex (OpenAI)",
-    note: "best OpenAI coding-focused summary model",
-    provider: "openai", model: "gpt-5-codex",
-  },
-  {
-    label: "gpt-5.1-codex-mini (OpenAI)",
-    note: "smaller Codex option",
-    provider: "openai", model: "gpt-5.1-codex-mini",
+    label: "claude-sonnet-4-6 (Anthropic)",
+    note: "quality upgrade for richer summaries",
+    provider: "anthropic", model: "claude-sonnet-4-6",
   },
   {
     label: "gpt-5-mini (OpenAI)",
-    note: "small general-purpose GPT-5 model",
+    note: "recommended — lightweight OpenAI summary model",
     provider: "openai", model: "gpt-5-mini",
   },
   {
     label: "gpt-5-nano (OpenAI)",
-    note: "smallest GPT-5 option",
+    note: "cheaper OpenAI summary model",
     provider: "openai", model: "gpt-5-nano",
   },
   {
     label: "Custom OpenAI model",
-    note: "type any model id, e.g. gpt-5.3-codex-spark",
+    note: "type any OpenAI model id",
     provider: "openai", model: "__custom__",
   },
   {
@@ -257,9 +284,9 @@ function showDreamStateCostTable() {
   console.log();
   console.log(`  ${c.dim}Recommended presets:${c.reset}`);
   console.log(`  Haiku           cheapest Anthropic option`);
-  console.log(`  GPT-5-mini      small OpenAI general-purpose model`);
-  console.log(`  GPT-5-nano      smallest OpenAI preset`);
-  console.log(`  Custom OpenAI   type any model id (e.g. gpt-5.3-codex-spark)`);
+  console.log(`  GPT-5-nano      cheapest OpenAI Dream State preset`);
+  console.log(`  GPT-5-mini      quality upgrade for OpenAI Dream State`);
+  console.log(`  Custom OpenAI   type any direct OpenAI model id`);
   console.log();
 }
 
@@ -271,11 +298,11 @@ function showConsolidationCostTable() {
   console.log(`  ${c.dim}Preset guidance (average user: ~4-6 sessions/night):${c.reset}`);
   console.log();
   console.log(`  ${c.dim}Recommended presets:${c.reset}`);
-  console.log(`  Sonnet          richest Anthropic summaries`);
-  console.log(`  GPT-5-codex     strongest OpenAI coding-focused summary model`);
-  console.log(`  GPT-5.1-codex-mini  smaller Codex option`);
-  console.log(`  GPT-5-mini      cheaper general-purpose OpenAI option`);
-  console.log(`  Custom OpenAI   type any model id (e.g. gpt-5.3-codex-spark)`);
+  console.log(`  Haiku           cheapest Anthropic summary option`);
+  console.log(`  Sonnet          richer Anthropic summaries`);
+  console.log(`  GPT-5-mini      lightweight OpenAI summary model`);
+  console.log(`  GPT-5-nano      cheaper OpenAI summary option`);
+  console.log(`  Custom OpenAI   type any direct OpenAI model id`);
   console.log();
 }
 
@@ -487,9 +514,14 @@ try {
 console.log();
 console.log(`${c.bold}${c.cyan}── Kumiho Configuration Wizard ────────────────────────────${c.reset}`);
 
+const activeHostAuth = detectOpenClawHostAuth();
+const forceExplicitMemoryProvider = requiresExplicitMemoryProvider(activeHostAuth);
+const totalWizardSteps = forceExplicitMemoryProvider ? 12 : 11;
+let wizardStep = 7;
+
 // 7. Dream State schedule -----------------------------------------------------
 console.log();
-console.log(`${c.bold}Step 7 / 10  —  Dream State Schedule${c.reset}`);
+console.log(`${c.bold}Step ${wizardStep++} / ${totalWizardSteps}  —  Dream State Schedule${c.reset}`);
 
 const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
@@ -508,16 +540,57 @@ if (scheduleChoice.key !== "off") {
   warn("Dream State scheduling skipped — you can configure it later in openclaw.json.");
 }
 
-// 8. Dream State LLM model ---------------------------------------------------
-console.log();
-console.log(`${c.bold}Step 8 / 10  —  LLM Model for Dream State${c.reset}`);
-showDreamStateCostTable();
+let selectedMemoryProvider = null;
+let selectedMemoryBaseUrl = "";
+if (forceExplicitMemoryProvider) {
+  console.log();
+  console.log(`${c.bold}Step ${wizardStep++} / ${totalWizardSteps}  —  Memory LLM Provider${c.reset}`);
+  console.log();
+  console.log(`  OpenClaw is currently using host-only OpenAI OAuth for its own model access.`);
+  console.log(`  Kumiho Dream State and session consolidation call providers directly, so they cannot reuse that host auth.`);
+  if (activeHostAuth?.profileKey) {
+    console.log(`  ${c.dim}Detected profile: ${activeHostAuth.profileKey} (${activeHostAuth.rawProvider}, ${activeHostAuth.authMode || "unknown"})${c.reset}`);
+  }
+  if (activeHostAuth?.modelBaseUrl || activeHostAuth?.modelApi) {
+    const details = [activeHostAuth.modelBaseUrl, activeHostAuth.modelApi].filter(Boolean).join(" / ");
+    console.log(`  ${c.dim}Host model path: ${details}${c.reset}`);
+  }
+  console.log();
 
+  const providerChoice = await selectOption(
+    rl,
+    "Which direct LLM provider should Kumiho use for Dream State and Consolidation?",
+    getExplicitMemoryProviderOptions(),
+  );
+  selectedMemoryProvider = providerChoice.key;
+  selectedMemoryBaseUrl = getMemoryProviderBaseUrl(selectedMemoryProvider);
+  ok(`Memory provider: ${selectedMemoryProvider}`);
+}
+
+// Dream State LLM model ------------------------------------------------------
+console.log();
+console.log(`${c.bold}Step ${wizardStep++} / ${totalWizardSteps}  —  LLM Model for Dream State${c.reset}`);
+if (selectedMemoryProvider) {
+  console.log();
+  console.log(`  ${c.bold}Dream State${c.reset} classifies and enriches existing memories.`);
+  console.log(`  It processes structured data — a lightweight model is more than enough.`);
+  console.log();
+} else {
+  showDreamStateCostTable();
+}
+
+const dreamModelOptions = selectedMemoryProvider
+  ? getDreamStateModelOptions(selectedMemoryProvider)
+  : DREAM_MODELS;
+const defaultDreamModel =
+  dreamModelOptions.find((option) => option.recommended)?.model ||
+  dreamModelOptions[0]?.model ||
+  "gpt-5-nano";
 const dreamModelChoice = await resolveModelChoice(
   rl,
   "Which model should Dream State use?",
-  DREAM_MODELS,
-  "gpt-5-mini",
+  dreamModelOptions,
+  defaultDreamModel,
 );
 
 if (dreamModelChoice.provider) {
@@ -526,16 +599,30 @@ if (dreamModelChoice.provider) {
   ok("Dream State: using agent default model");
 }
 
-// 9. Consolidation LLM model -------------------------------------------------
+// Consolidation LLM model ----------------------------------------------------
 console.log();
-console.log(`${c.bold}Step 9 / 10  —  LLM Model for Consolidation${c.reset}`);
-showConsolidationCostTable();
+console.log(`${c.bold}Step ${wizardStep++} / ${totalWizardSteps}  —  LLM Model for Consolidation${c.reset}`);
+if (selectedMemoryProvider) {
+  console.log();
+  console.log(`  ${c.bold}Consolidation${c.reset} summarizes conversations into long-term memories.`);
+  console.log(`  A lightweight direct model is the safest default; upgrade only if you want richer summaries.`);
+  console.log();
+} else {
+  showConsolidationCostTable();
+}
 
+const consolidationModelOptions = selectedMemoryProvider
+  ? getConsolidationModelOptions(selectedMemoryProvider)
+  : CONSOLIDATION_MODELS;
+const defaultConsolidationModel =
+  consolidationModelOptions.find((option) => option.recommended)?.model ||
+  consolidationModelOptions[0]?.model ||
+  "gpt-5-mini";
 const consolidationModelChoice = await resolveModelChoice(
   rl,
   "Which model should Consolidation use?",
-  CONSOLIDATION_MODELS,
-  "gpt-5.3-codex-spark",
+  consolidationModelOptions,
+  defaultConsolidationModel,
 );
 
 if (consolidationModelChoice.provider) {
@@ -544,28 +631,71 @@ if (consolidationModelChoice.provider) {
   ok("Consolidation: using agent default model");
 }
 
-// 10. Collect LLM API key for Dream State -------------------------------------
-// Dream State needs a stored API key — it runs standalone via cron without a
-// host gateway, so it can't inherit the agent's key.  This applies regardless
-// of which model is chosen (including "agent default" — the cron runner still
-// needs a key to call the LLM).
-// Consolidation always runs in-session and inherits the host gateway's LLM key
-// automatically, so it never needs one stored here.
+// Collect LLM API key(s) -----------------------------------------------------
 let dreamStateApiKey = "";
+let sharedMemoryApiKey = "";
 
-if (scheduleChoice.key !== "off") {
-  // Determine provider: explicit choice or fall back to anthropic (most common agent default)
+if (forceExplicitMemoryProvider && selectedMemoryProvider) {
+  const envVars = getSuggestedApiEnvVars(selectedMemoryProvider);
+  const existingEnvVar = envVars.find((name) => typeof process.env[name] === "string" && process.env[name].trim());
+  const existingEnv = existingEnvVar ? process.env[existingEnvVar].trim() : "";
+  const existingPref =
+    existingPrefs?.llm?.provider === selectedMemoryProvider &&
+    typeof existingPrefs?.llm?.apiKey === "string"
+      ? existingPrefs.llm.apiKey
+      : "";
+
+  console.log();
+  console.log(`${c.bold}Step ${wizardStep++} / ${totalWizardSteps}  —  Memory Provider API Key${c.reset}`);
+  console.log();
+  console.log(`  Dream State and Consolidation will both use this direct provider credential.`);
+  console.log(`  The API key is stored in ~/.kumiho/preferences.json for the local MCP process and Dream State runner.`);
+  if (selectedMemoryProvider === "gemini") {
+    console.log(`  ${c.dim}Gemini base URL will be set to ${selectedMemoryBaseUrl}.${c.reset}`);
+  }
+  console.log();
+
+  if (existingPref) {
+    const masked = existingPref.slice(0, 8) + "..." + existingPref.slice(-4);
+    ok(`${selectedMemoryProvider} API key already saved: ${masked}`);
+    sharedMemoryApiKey = existingPref;
+  } else {
+    if (existingEnv) {
+      const masked = existingEnv.slice(0, 8) + "..." + existingEnv.slice(-4);
+      console.log(`  ${c.dim}Found ${existingEnvVar} in environment: ${masked}${c.reset}`);
+    }
+
+    while (!sharedMemoryApiKey) {
+      const key = await askInput(
+        rl,
+        `${selectedMemoryProvider} API key`,
+        existingEnv ? "press Enter to use detected env var" : "required",
+      );
+
+      if (key) {
+        sharedMemoryApiKey = key;
+      } else if (existingEnv) {
+        sharedMemoryApiKey = existingEnv;
+      } else {
+        warn(`A direct ${selectedMemoryProvider} API key is required for Dream State and Consolidation.`);
+      }
+    }
+
+    ok(`${selectedMemoryProvider} API key saved for Kumiho memory.`);
+  }
+} else if (scheduleChoice.key !== "off") {
   const provider = dreamModelChoice.provider || "anthropic";
-  const envVar = provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
-  const existingEnv = process.env[envVar] || process.env.KUMIHO_LLM_API_KEY;
+  const envVars = getSuggestedApiEnvVars(provider);
+  const existingEnvVar = envVars.find((name) => typeof process.env[name] === "string" && process.env[name].trim());
+  const existingEnv = existingEnvVar ? process.env[existingEnvVar].trim() : "";
   const existingPref = existingPrefs?.dreamState?.model?.apiKey;
 
   console.log();
-  console.log(`${c.bold}Step 10 / 10  —  LLM API Key for Dream State${c.reset}`);
+  console.log(`${c.bold}Step ${wizardStep++} / ${totalWizardSteps}  —  LLM API Key for Dream State${c.reset}`);
   console.log();
   console.log(`  Dream State runs standalone via cron — it can't inherit the host's LLM key.`);
   console.log(`  The API key is stored in ~/.kumiho/preferences.json for the cron runner.`);
-  console.log(`  ${c.dim}(Consolidation runs in-session and inherits the host key automatically.)${c.reset}`);
+  console.log(`  ${c.dim}(Consolidation may use the active host credential when available.)${c.reset}`);
   console.log();
 
   if (existingPref) {
@@ -575,95 +705,96 @@ if (scheduleChoice.key !== "off") {
   } else {
     if (existingEnv) {
       const masked = existingEnv.slice(0, 8) + "..." + existingEnv.slice(-4);
-      console.log(`  ${c.dim}Found ${envVar} in environment: ${masked}${c.reset}`);
+      console.log(`  ${c.dim}Found ${existingEnvVar} in environment: ${masked}${c.reset}`);
     }
 
-    const key = await askFreeText(
+    const key = await askInput(
       rl,
       `${provider} API key`,
-      existingEnv ? "(press Enter to use env var)" : "sk-...",
+      existingEnv ? "press Enter to use detected env var" : "optional",
     );
 
-    if (key && key !== "(press Enter to use env var)") {
+    if (key) {
       dreamStateApiKey = key;
       ok(`${provider} API key saved for Dream State.`);
     } else if (existingEnv) {
-      ok(`Dream State: will use ${envVar} environment variable at runtime.`);
+      dreamStateApiKey = existingEnv;
+      ok(`${provider} API key saved from ${existingEnvVar}.`);
     } else {
-      warn(`No ${provider} API key provided. Set ${envVar} before running Dream State standalone.`);
+      warn(`No ${provider} API key provided. Set ${envVars[0]} before running Dream State standalone.`);
     }
   }
 } else {
   console.log();
+  console.log(`${c.bold}Step ${wizardStep++} / ${totalWizardSteps}  —  LLM API Key for Dream State${c.reset}`);
+  console.log();
   console.log(`  ${c.dim}Dream State scheduling is off — skipping API key setup.${c.reset}`);
-  console.log(`  ${c.dim}If you enable it later, re-run kumiho-setup or set the env var.${c.reset}`);
+  if (forceExplicitMemoryProvider) {
+    console.log(`  ${c.dim}Explicit provider credentials are still required for session consolidation.${c.reset}`);
+  } else {
+    console.log(`  ${c.dim}If you enable it later, re-run kumiho-setup or set the env var.${c.reset}`);
+  }
 }
 
-// 11. Write preferences.json --------------------------------------------------
-const prefs = {
-  ...existingPrefs,
-  dreamState: {
-    schedule: finalCron ?? "off",
-    scheduleKey: scheduleChoice.key,
-    timezone: tz,
-    model: {
-      ...(dreamModelChoice.provider
-        ? { provider: dreamModelChoice.provider, model: dreamModelChoice.model }
-        : {}),
-      ...(dreamStateApiKey ? { apiKey: dreamStateApiKey } : {}),
-    },
-  },
-  consolidation: {
-    ...(consolidationModelChoice.provider
-      ? {
-          model: {
-            provider: consolidationModelChoice.provider,
-            model: consolidationModelChoice.model,
-            // No apiKey here — consolidation runs in-session and inherits
-            // the host gateway's LLM key automatically.
-          },
-        }
-      : {}),
-  },
-};
+// Write preferences.json -----------------------------------------------------
+const { llm: _unusedSharedLlm, ...existingPrefsWithoutLlm } = existingPrefs ?? {};
+const prefs = forceExplicitMemoryProvider && selectedMemoryProvider
+  ? buildMemoryPreferences({
+      existingPrefs,
+      schedule: finalCron ?? "off",
+      scheduleKey: scheduleChoice.key,
+      timezone: tz,
+      provider: selectedMemoryProvider,
+      apiKey: sharedMemoryApiKey,
+      baseUrl: selectedMemoryBaseUrl || undefined,
+      dreamModelChoice,
+      consolidationModelChoice,
+    })
+  : {
+      ...existingPrefsWithoutLlm,
+      dreamState: {
+        ...(existingPrefs?.dreamState ?? {}),
+        schedule: finalCron ?? "off",
+        scheduleKey: scheduleChoice.key,
+        timezone: tz,
+        model: {
+          ...(dreamModelChoice.provider
+            ? { provider: dreamModelChoice.provider, model: dreamModelChoice.model }
+            : {}),
+          ...(dreamStateApiKey ? { apiKey: dreamStateApiKey } : {}),
+        },
+      },
+      consolidation: {
+        ...(existingPrefs?.consolidation ?? {}),
+        ...(consolidationModelChoice.provider
+          ? {
+              model: {
+                provider: consolidationModelChoice.provider,
+                model: consolidationModelChoice.model,
+              },
+            }
+          : {}),
+      },
+    };
 
 mkdirSync(join(homedir(), ".kumiho"), { recursive: true });
 writeFileSync(PREFS_PATH, JSON.stringify(prefs, null, 2), "utf8");
 ok(`Preferences saved to ~/.kumiho/preferences.json`);
 
-// 12. Offer to update openclaw.json ------------------------------------------
-const openClawPluginConfig = {
-  mode: "local",
-  ...(finalCron && scheduleChoice.key !== "off"
-    ? { dreamStateSchedule: finalCron }
-    : {}),
-  ...(dreamModelChoice.provider
-    ? {
-        dreamStateModel: {
-          provider: dreamModelChoice.provider,
-          model: dreamModelChoice.model,
-        },
-      }
-    : {}),
-  ...(consolidationModelChoice.provider
-    ? {
-        consolidationModel: {
-          provider: consolidationModelChoice.provider,
-          model: consolidationModelChoice.model,
-        },
-      }
-    : {}),
-  local: {
-    pythonPath: VENV_PYTHON,
-    command: "kumiho.mcp_server",
-  },
-};
+// Offer to update openclaw.json ----------------------------------------------
+const openClawPluginConfig = buildOpenClawPluginConfig({
+  pythonPath: VENV_PYTHON,
+  ...(finalCron && scheduleChoice.key !== "off" ? { dreamStateSchedule: finalCron } : {}),
+  dreamModelChoice,
+  consolidationModelChoice,
+});
 
 let openClawConfigUpdated = false;
 let openClawConfigUpdateError = "";
+const openClawConfigStep = wizardStep++;
 
 console.log();
-console.log(`${c.bold}Step 11 / 11  —  OpenClaw Config${c.reset}`);
+console.log(`${c.bold}Step ${openClawConfigStep} / ${totalWizardSteps}  —  OpenClaw Config${c.reset}`);
 console.log();
 console.log(`  Config path: ${c.cyan}${OPENCLAW_CONFIG_PATH}${c.reset}`);
 console.log(`  kumiho-setup can merge the plugin entry automatically if that file exists.`);
@@ -744,6 +875,11 @@ const configLines = [
   { text: `      ${c.dim}// Optional: set userId if you want a fixed identity override${c.reset}`, comma: false },
   { text: `      ${c.dim}// "userId": "your-user-id",${c.reset}`, comma: false },
 ];
+if (forceExplicitMemoryProvider) {
+  configLines.push(
+    { text: `      ${c.dim}// Direct memory-provider credentials live in ~/.kumiho/preferences.json${c.reset}`, comma: false },
+  );
+}
 if (dreamModelChoice.provider === "openai" || consolidationModelChoice.provider === "openai") {
   configLines.push(
     { text: `      ${c.dim}// OpenClaw OAuth / Codex users: keep provider as "openai" here.${c.reset}`, comma: false },
