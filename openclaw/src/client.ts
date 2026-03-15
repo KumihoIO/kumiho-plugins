@@ -23,6 +23,83 @@ import type {
 } from "./types.js";
 import { McpBridge, type McpToolDefinition } from "./mcp-bridge.js";
 
+function coerceString(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
+function coerceMemoryType(value: unknown): MemoryType {
+  switch (value) {
+    case "summary":
+    case "fact":
+    case "decision":
+    case "action":
+    case "error":
+      return value;
+    default:
+      return "summary";
+  }
+}
+
+function parseTopics(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((topic) => coerceString(topic).trim())
+      .filter(Boolean);
+  }
+
+  if (typeof value !== "string") return [];
+
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((topic) => coerceString(topic).trim())
+        .filter(Boolean);
+    }
+  } catch {
+    // Fall back to the legacy comma-delimited metadata format.
+  }
+
+  return trimmed
+    .split(",")
+    .map((topic) => topic.trim())
+    .filter(Boolean);
+}
+
+function coerceMetadata(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+}
+
+function mapMemoryEntry(
+  value: Record<string, unknown>,
+  fallback?: { kref?: string; score?: number; space?: string },
+): MemoryEntry {
+  const metadata = coerceMetadata(value.metadata);
+  const space =
+    coerceString(value.space) ||
+    coerceString(metadata.space) ||
+    fallback?.space;
+  return {
+    kref: coerceString(value.kref) || fallback?.kref || "",
+    type: coerceMemoryType(value.type ?? metadata.type),
+    title: coerceString(value.title) || coerceString(metadata.title),
+    summary: coerceString(value.summary) || coerceString(metadata.summary),
+    topics: parseTopics(value.topics ?? metadata.topics),
+    score: typeof value.score === "number" ? value.score : fallback?.score,
+    timestamp: coerceString(value.timestamp) || coerceString(value.created_at),
+    space,
+    metadata,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -338,10 +415,11 @@ export class KumihoClient {
     memoryTypes?: MemoryType[];
   }): Promise<MemoryEntry[]> {
     const raw = await this.transport.call<{
-      item_krefs: string[];
-      revision_krefs: string[];
-      spaces_used: string[];
+      item_krefs?: string[];
+      revision_krefs?: string[];
+      spaces_used?: string[];
       scores?: number[];
+      results?: Array<Record<string, unknown>>;
     }>("kumiho_memory_retrieve", {
       project: this.project,
       query: params.query,
@@ -349,6 +427,12 @@ export class KumihoClient {
       space_paths: params.spacePaths,
       memory_types: params.memoryTypes,
     });
+
+    if (Array.isArray(raw.results) && raw.results.length > 0) {
+      return raw.results
+        .map((result) => mapMemoryEntry(result))
+        .filter((entry) => Boolean(entry.kref));
+    }
 
     // Resolve each revision_kref via getRevision() which maps metadata
     // fields (title, summary, type) into MemoryEntry shape.
@@ -395,23 +479,20 @@ export class KumihoClient {
     const raw = await this.transport.call<{
       kref: string;
       item_kref: string;
-      metadata?: Record<string, string>;
+      metadata?: Record<string, unknown>;
       tags?: string[];
       created_at?: string;
       default_artifact?: string;
     }>("kumiho_get_revision", { kref });
 
-    const meta = raw.metadata ?? {};
-    const entry: MemoryEntry = {
-      kref: raw.kref,
-      type: (meta.type as MemoryEntry["type"]) ?? "summary",
-      title: meta.title ?? "",
-      summary: meta.summary ?? "",
-      topics: meta.topics ? JSON.parse(meta.topics) : [],
-      timestamp: raw.created_at,
-      space: meta.space,
-      metadata: meta,
-    };
+    const entry = mapMemoryEntry(
+      {
+        kref: raw.kref,
+        created_at: raw.created_at,
+        metadata: raw.metadata,
+      },
+      { kref: raw.kref },
+    );
 
     if (includeArtifact && raw.default_artifact) {
       try {
