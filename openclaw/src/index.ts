@@ -335,7 +335,7 @@ function loadHostLlmFromPluginApi(
 
   if (preferredProvider) {
     const preferred = candidates.find((entry) => entry.provider === preferredProvider);
-    if (preferred) return preferred;
+    return preferred ?? null;
   }
 
   return candidates[0] ?? null;
@@ -1006,9 +1006,18 @@ export default {
 
     const rawConfig = (api.pluginConfig ?? {}) as KumihoPluginConfig;
     const preferredHostLlmProvider = getPreferredLlmProvider(rawConfig);
-    const resolveInheritedHostLlm = () =>
-      loadHostLlmFromPluginApi(api, preferredHostLlmProvider) ||
-      loadOpenClawAuthProfile(preferredHostLlmProvider);
+    const resolveInheritedHostLlm = () => {
+      const runtimePreferred = loadHostLlmFromPluginApi(api, preferredHostLlmProvider);
+      if (runtimePreferred) return runtimePreferred;
+
+      const profilePreferred = loadOpenClawAuthProfile(preferredHostLlmProvider);
+      if (profilePreferred) return profilePreferred;
+
+      return (
+        loadHostLlmFromPluginApi(api) ||
+        loadOpenClawAuthProfile()
+      );
+    };
     resolveLatestHostLlm = resolveInheritedHostLlm;
     const inheritedHostLlm = resolveInheritedHostLlm();
 

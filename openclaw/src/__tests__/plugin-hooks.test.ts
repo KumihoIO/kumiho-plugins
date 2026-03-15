@@ -253,6 +253,75 @@ describe("OpenClaw prompt hooks", () => {
     );
   });
 
+  it("prefers the matching OpenAI OAuth auth-profile over an unrelated runtime Anthropic credential", async () => {
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+      return {
+        ...actual,
+        existsSync: vi.fn((path: string) => path.endsWith("auth-profiles.json")),
+        readFileSync: vi.fn(() =>
+          JSON.stringify({
+            version: 1,
+            profiles: {
+              "anthropic:linux-dev": {
+                type: "token",
+                provider: "anthropic",
+                token: "sk-ant-live-ish",
+              },
+              "openai-codex:default": {
+                type: "oauth",
+                provider: "openai-codex",
+                access: "openai-oauth-access-token",
+                refresh: "openai-oauth-refresh-token",
+                expires: Date.now() + 60 * 60 * 1000,
+              },
+            },
+            lastGood: {
+              "openai-codex": "openai-codex:default",
+            },
+          }),
+        ),
+      };
+    });
+
+    const { default: plugin } = await import("../index.js");
+    const api = makeApi() as FakeApi & {
+      config?: {
+        models?: {
+          providers?: Record<string, unknown>;
+        };
+      };
+    };
+    api.pluginConfig = {
+      ...api.pluginConfig,
+      dreamStateModel: { provider: "openai", model: "gpt-5-mini" },
+      consolidationModel: { provider: "openai", model: "gpt-5.1-codex-mini" },
+    };
+    api.config = {
+      models: {
+        providers: {
+          anthropic: { apiKey: "host-anthropic-key" },
+          "openai-codex": { provider: "openai-codex", type: "oauth" },
+        },
+      },
+    };
+
+    plugin.register(api as never);
+
+    const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
+    expect(resolvedConfig.hostLlmProvider).toBe("openai");
+    expect(resolvedConfig.hostLlmApiKey).toBe("openai-oauth-access-token");
+    expect(resolvedConfig.local).toMatchObject({
+      env: {
+        KUMIHO_LLM_PROVIDER: "openai",
+        KUMIHO_LLM_MODEL: "gpt-5.1-codex-mini",
+        KUMIHO_LLM_LIGHT_MODEL: "gpt-5.1-codex-mini",
+        KUMIHO_LLM_API_KEY: "openai-oauth-access-token",
+        OPENAI_API_KEY: "openai-oauth-access-token",
+      },
+    });
+  });
+
   it("parses the current auth-profiles schema under auth.profiles", async () => {
     vi.doMock("node:fs", async () => {
       const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
