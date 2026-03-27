@@ -122,6 +122,8 @@ const MEMORY_AGENT_INSTRUCTIONS = [
   "You have Kumiho long-term memory — a persistent graph of the user's preferences, decisions, facts, and past work across conversations.",
   "",
   "Use `memory_search` proactively when the user asks about past decisions, preferences, prior work, or anything discussed before — never say \"I don't remember\" without searching first. Use `memory_store` when the user states a preference, decision, or correction, or when you produce a significant deliverable. Weave recalled context naturally without narrating the lookup. Use absolute dates when storing (\"on Mar 8\", not \"today\").",
+  "",
+  "Skill Discovery: When you need specialized behavioral guidance (creative output tracking, graph traversal, privacy rules, session management), search for skills: `memory_search` with query about what you need and space_path \"CognitiveMemory/Skills\". Cache discovered skills in your working context for the session.",
   "</kumiho_instructions>",
 ].join("\n");
 

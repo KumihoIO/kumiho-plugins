@@ -3,7 +3,7 @@
 Persistent graph-native memory plugin for Claude. Runs a local Kumiho MCP
 server with `kumiho-memory` so Claude **remembers you across sessions**.
 
-Version: **0.8.1** | Requires: `kumiho>=0.9.7`, `kumiho-memory>=0.3.1`
+Version: **0.9.0** | Requires: `kumiho>=0.9.16`, `kumiho-memory>=0.3.16`
 
 ## What it does
 
@@ -26,6 +26,25 @@ Version: **0.8.1** | Requires: `kumiho>=0.9.7`, `kumiho-memory>=0.3.1`
 | `/dream-state` command | Yes | Yes |
 | Auto-approve memory ops | Yes | No (Desktop manages permissions differently) |
 | `.claude/settings.json` env | Yes | No (use `.env.local` instead) |
+
+## Cross-Agent Compatibility
+
+All three Kumiho plugins share the same Neo4j + Redis backend, `CognitiveMemory` graph, and skill-ingestion pipeline. Memories stored by one agent are recallable by any other. Cross-agent parity exists at the data model and discoverable-skill layer; host-side automation still differs by platform.
+
+| Capability        | Claude Code                                 | ZeroClaw                                  | OpenClaw                                      |
+| ----------------- | ------------------------------------------- | ----------------------------------------- | --------------------------------------------- |
+| Tool syntax       | `kumiho_memory_recall(...)`                 | `kumiho_memory__recall(...)`              | `memory_search(...)` / `creative_capture(...)` |
+| Behavioral rules  | Discovery-first SKILL.md + SessionStart context | Discovery-first SKILL.md               | TypeScript hooks + injected memory instructions |
+| Session bootstrap | SessionStart hook + SKILL bootstrap         | Inline SKILL bootstrap                    | TypeScript identity bootstrap in `before_prompt_build` |
+| Recall behavior   | Agent-triggered recall guided by SKILL      | Agent-triggered recall guided by SKILL    | Automatic `before_prompt_build` hook           |
+| Capture behavior  | Agent-triggered `store` / `add_response`    | Agent-triggered `store` / `add_response`  | Automatic `agent_end` buffering + capture      |
+| Consolidation     | Agent-triggered                             | Agent-triggered                           | Threshold + idle timer + manual tool           |
+| Dream State       | `/dream-state` command                      | `SKILL.toml` cron                         | Config schedule + manual tool                  |
+| Setup wizard      | `python scripts/setup.py`                   | `python scripts/setup.py`                 | `npx kumiho-setup`                             |
+| Skill ingestion   | Local SKILL + bundled references            | Claude canonical SKILL + bundled references | Claude canonical SKILL + bundled references |
+| Privacy model     | Raw transcripts stay local                  | Graph summaries only                      | Raw transcripts stay local + PII redaction     |
+| Creative memory   | Via graph skills                            | Via graph skills                          | Built-in `creative_capture` / `creative_recall` |
+| Local artifacts   | SessionEnd hook                             | Via graph skills (no built-in hook)       | Built-in artifact manager                      |
 
 ## Installation
 
@@ -89,7 +108,7 @@ gRPC endpoint via control-plane discovery, and launches the MCP server.
 Default package spec:
 
 ```text
-kumiho[mcp]>=0.9.7 kumiho-memory[all]>=0.3.1
+kumiho[mcp]>=0.9.16 kumiho-memory[all]>=0.3.16
 ```
 
 ## Authentication
@@ -209,7 +228,7 @@ YAML frontmatter (session_id, date, topics, summary) and structured
 | `KUMIHO_CLAUDE_HOME` | *(platform default)* | Override runtime/venv directory |
 | `KUMIHO_CLAUDE_PACKAGE_SPEC` | *(see above)* | Override pip install spec |
 | `KUMIHO_CLAUDE_DISABLE_LLM_FALLBACK` | *(unset)* | Set to `1` to disable local no-key LLM fallback |
-| `KUMIHO_CLAUDE_DISCOVERY_USER_AGENT` | `kumiho-claude/0.8.1` | Override discovery HTTP User-Agent |
+| `KUMIHO_CLAUDE_DISCOVERY_USER_AGENT` | `kumiho-claude/0.9.0` | Override discovery HTTP User-Agent |
 | `KUMIHO_ARTIFACT_DIR` | `~/.kumiho/artifacts/` | Override conversation artifact directory |
 
 `KUMIHO_SERVER_ENDPOINT` and `KUMIHO_SERVER_ADDRESS` are intentionally
@@ -313,7 +332,9 @@ python ./kumiho-claude/scripts/test_discovery_env.py --env-file .env.local
 │   ├── auto-approve-memory.py    # PermissionRequest hook
 │   ├── cache_auth_token.py       # CLI token caching utility
 │   ├── patch_mcp_json_token.py   # Write resolved token into .mcp.json
-│   └── test_discovery_env.py     # Discovery smoke test
+│   ├── test_discovery_env.py     # Discovery smoke test
+│   ├── setup.py                  # Interactive setup wizard
+│   └── ingest-skills.py          # Skill ingestion into CognitiveMemory/Skills graph
 ├── CONNECTORS.md                 # MCP connector details and env reference
 └── README.md
 ```

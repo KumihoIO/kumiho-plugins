@@ -2,7 +2,7 @@
 
 ## Graph-augmented recall
 
-`kumiho_memory_recall(query=..., graph_augmented=true)` enables multi-query reformulation + edge traversal + semantic fallback.
+`kumiho_memory_engage(query=..., graph_augmented=true)` enables multi-query reformulation + edge traversal + semantic fallback.
 
 **Use when**: indirect questions, decision chains, few/no standard recall results.
 **Skip when**: direct lookups, obvious keyword overlap, just-discussed topics.

@@ -26,8 +26,7 @@ Run after delivering the file to the user. Steps compose existing tools — no s
 2. **Create revision** — `kumiho_create_revision(item_kref=<item>, metadata={session_date, platform:"cowork", description})`
 3. **Attach artifact** — `kumiho_create_artifact(revision_kref=<rev>, name="<filename>", location="<cowork output path>")`. The location is the full output path, e.g. `/sessions/.../mnt/outputs/report.docx`
 4. **Link lineage** — if the output was shaped by a recalled cognitive memory: `kumiho_create_edge(source_kref=<rev>, target_kref=<cognitive kref>, edge_type="DERIVED_FROM")`
-5. **Action record** — `kumiho_memory_store(user_text=<request>, assistant_text=<what was produced + path>, title="Created <name> on <date>", memory_type="summary", tags=["creative-output","<kind>"], source_revision_krefs=[<rev>])`
-6. **Discover edges** — `kumiho_memory_discover_edges(revision_kref=<rev>, summary=<summary>)`
+5. **Action record + edges** — capture via `kumiho_memory_reflect(session_id=<id>, response=<what was produced>, captures=[{type:"summary", title:"Created <name> on <date>", content:<what was produced + path>, tags:["creative-output","<kind>"]}], source_krefs=[<rev>])`
 
 ---
 

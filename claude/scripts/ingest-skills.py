@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Ingest discoverable skills into CognitiveMemory/Skills.
 
-Uses the generic skill ingest pipeline from kumiho-memory to parse the
-Claude plugin's SKILL.md (the source of truth) and reference docs, then
-ingest non-inline sections into the Kumiho graph.
+Uses the generic skill ingest pipeline from kumiho-memory to parse this
+plugin's SKILL.md and reference docs, then ingest non-inline sections into
+the Kumiho graph.
 
 All three agents (Claude, ZeroClaw, OpenClaw) share the same graph — skills
 ingested here are discoverable by any agent via the Skill Discovery Protocol.
@@ -22,10 +22,9 @@ import sys
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PLUGIN_ROOT = SCRIPT_DIR.parent.parent  # kumiho-plugins/
-CLAUDE_SKILL_DIR = PLUGIN_ROOT / "claude" / "skills" / "kumiho-memory"
-CLAUDE_SKILL_MD = CLAUDE_SKILL_DIR / "SKILL.md"
-CLAUDE_REFS_DIR = CLAUDE_SKILL_DIR / "references"
+PLUGIN_DIR = SCRIPT_DIR.parent  # kumiho-plugins/claude/
+SKILL_MD = PLUGIN_DIR / "skills" / "kumiho-memory" / "SKILL.md"
+REFS_DIR = PLUGIN_DIR / "skills" / "kumiho-memory" / "references"
 
 
 def main() -> int:
@@ -42,13 +41,13 @@ def main() -> int:
     dry_run = "--dry-run" in sys.argv or "-n" in sys.argv
     list_only = "--list" in sys.argv
 
-    if not CLAUDE_SKILL_MD.exists():
-        print(f"ERROR: Claude SKILL.md not found at {CLAUDE_SKILL_MD}", file=sys.stderr)
+    if not SKILL_MD.exists():
+        print(f"ERROR: SKILL.md not found at {SKILL_MD}", file=sys.stderr)
         return 1
 
     # List mode — show sections and exit
     if list_only:
-        parsed = parse_skill(CLAUDE_SKILL_MD)
+        parsed = parse_skill(SKILL_MD)
         print(f"Skill: {parsed.name}")
         print(f"Sections ({len(parsed.sections)}):\n")
         for s in parsed.sections:
@@ -57,25 +56,25 @@ def main() -> int:
         graph_count = sum(1 for s in parsed.sections if not s.inline)
         print(f"\n{graph_count} sections would be ingested")
 
-        if CLAUDE_REFS_DIR.is_dir():
-            refs = sorted(CLAUDE_REFS_DIR.glob("*.md"))
+        if REFS_DIR.is_dir():
+            refs = sorted(REFS_DIR.glob("*.md"))
             print(f"\nReference docs ({len(refs)}):\n")
             for f in refs:
                 print(f"  [graph]  {f.stem}: {f.name}")
         return 0
 
     # Ingest SKILL.md sections
-    print(f"Ingesting SKILL.md sections from {CLAUDE_SKILL_MD}...")
-    section_results = ingest_skill(CLAUDE_SKILL_MD, dry_run=dry_run)
+    print(f"Ingesting SKILL.md sections from {SKILL_MD}...")
+    section_results = ingest_skill(SKILL_MD, dry_run=dry_run)
     for r in section_results:
         tag = "[NEW]" if r.created_new_item else "[REV]"
         print(f"  {tag} {r.item_name} -> {r.revision_kref}")
 
     # Ingest reference docs
     ref_results = []
-    if CLAUDE_REFS_DIR.is_dir():
-        print(f"\nIngesting reference docs from {CLAUDE_REFS_DIR}...")
-        ref_results = ingest_batch(CLAUDE_REFS_DIR, dry_run=dry_run)
+    if REFS_DIR.is_dir():
+        print(f"\nIngesting reference docs from {REFS_DIR}...")
+        ref_results = ingest_batch(REFS_DIR, dry_run=dry_run)
         for r in ref_results:
             tag = "[NEW]" if r.created_new_item else "[REV]"
             print(f"  {tag} {r.item_name} -> {r.revision_kref}")

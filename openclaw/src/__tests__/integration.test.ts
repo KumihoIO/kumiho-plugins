@@ -15,8 +15,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
-import { execSync } from "node:child_process";
+import { homedir, platform } from "node:os";
 import { KumihoClient, McpTransport } from "../client.js";
 import { consolidateSession, createHookState } from "../hooks.js";
 import { PIIRedactor } from "../privacy.js";
@@ -29,35 +28,28 @@ import type { ResolvedConfig } from "../types.js";
 
 const AUTH_PATH = join(homedir(), ".kumiho", "kumiho_authentication.json");
 const hasAuth = existsSync(AUTH_PATH);
+const hasLlmKey = Boolean(
+  process.env.KUMIHO_LLM_API_KEY ||
+  process.env.OPENAI_API_KEY ||
+  process.env.ANTHROPIC_API_KEY,
+);
 
-function hasMcpCommand(): boolean {
-  try {
-    execSync("kumiho-mcp --version", { stdio: "ignore", timeout: 5000 });
-    return true;
-  } catch {
-    // --version not available; try a no-op check
-    try {
-      execSync("kumiho-mcp --help", { stdio: "ignore", timeout: 5000 });
-      return true;
-    } catch {
-      return false;
-    }
-  }
+function commandOnPath(command: string): boolean {
+  const pathSeparator = platform() === "win32" ? ";" : ":";
+  const pathEntries = (process.env.PATH ?? "").split(pathSeparator).filter(Boolean);
+  const candidates =
+    platform() === "win32"
+      ? [command, `${command}.cmd`, `${command}.exe`, `${command}.bat`]
+      : [command];
+
+  return pathEntries.some((entry) =>
+    candidates.some((candidate) => existsSync(join(entry, candidate))),
+  );
 }
 
 // Pre-check once at module load (fast, no subprocess)
 const mcpAvailable = (() => {
-  try {
-    execSync("where kumiho-mcp", { stdio: "ignore", timeout: 3000 });
-    return true;
-  } catch {
-    try {
-      execSync("which kumiho-mcp", { stdio: "ignore", timeout: 3000 });
-      return true;
-    } catch {
-      return false;
-    }
-  }
+  return commandOnPath("kumiho-mcp");
 })();
 
 const canRunLive = hasAuth && mcpAvailable;
@@ -229,7 +221,7 @@ describe.skipIf(!canRunLive)("Live API — long-term memory", () => {
 // End-to-end — full consolidation flow
 // ---------------------------------------------------------------------------
 
-describe.skipIf(!canRunLive)("Live API — consolidation end-to-end", () => {
+describe.skipIf(!canRunLive || !hasLlmKey)("Live API — consolidation end-to-end", () => {
   let client: KumihoClient;
   const config: ResolvedConfig = makeLocalConfig();
 

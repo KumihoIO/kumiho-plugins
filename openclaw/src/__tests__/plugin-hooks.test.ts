@@ -131,6 +131,15 @@ interface FakeApi {
   on: ReturnType<typeof vi.fn>;
 }
 
+type ResolvedConfigSnapshot = Record<string, unknown> & {
+  hostLlmProvider?: string;
+  hostLlmApiKey?: string;
+  llm?: Record<string, unknown>;
+  local?: {
+    env?: Record<string, string>;
+  };
+};
+
 function makeApi(): FakeApi {
   const events = new Map<string, (event: unknown, ctx: unknown) => unknown>();
 
@@ -167,6 +176,14 @@ function makeApi(): FakeApi {
   };
 
   return api;
+}
+
+function getResolvedConfig(): ResolvedConfigSnapshot {
+  const firstCall = mockState.createTransport.mock.calls.at(0) as
+    | [ResolvedConfigSnapshot]
+    | undefined;
+  expect(firstCall).toBeDefined();
+  return (firstCall?.[0] ?? {}) as ResolvedConfigSnapshot;
 }
 
 describe("OpenClaw prompt hooks", () => {
@@ -245,7 +262,7 @@ describe("OpenClaw prompt hooks", () => {
 
     plugin.register(api as never);
 
-    const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
+    const resolvedConfig = getResolvedConfig();
     expect(resolvedConfig.hostLlmProvider).toBe("anthropic");
     expect(resolvedConfig.hostLlmApiKey).toBe("host-anthropic-key");
     expect(api.logger.warn).not.toHaveBeenCalledWith(
@@ -308,7 +325,7 @@ describe("OpenClaw prompt hooks", () => {
 
     plugin.register(api as never);
 
-    const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
+    const resolvedConfig = getResolvedConfig();
     expect(resolvedConfig.hostLlmProvider).toBe("anthropic");
     expect(resolvedConfig.hostLlmApiKey).toBe("host-anthropic-key");
     expect((resolvedConfig.local as { env?: Record<string, string> }).env).not.toHaveProperty("KUMIHO_LLM_PROVIDER");
@@ -347,7 +364,7 @@ describe("OpenClaw prompt hooks", () => {
 
     plugin.register(api as never);
 
-    const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
+    const resolvedConfig = getResolvedConfig();
     expect(resolvedConfig.hostLlmProvider).toBe("anthropic");
     expect(resolvedConfig.hostLlmApiKey).toBe("sk-ant-host-profile");
   });
@@ -387,7 +404,7 @@ describe("OpenClaw prompt hooks", () => {
 
     plugin.register(api as never);
 
-    const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
+    const resolvedConfig = getResolvedConfig();
     expect(resolvedConfig.hostLlmProvider).toBe("");
     expect(resolvedConfig.hostLlmApiKey).toBe("");
     expect(api.logger.warn).toHaveBeenCalledWith(
@@ -429,7 +446,7 @@ describe("OpenClaw prompt hooks", () => {
 
     plugin.register(api as never);
 
-    const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
+    const resolvedConfig = getResolvedConfig();
     expect(resolvedConfig.hostLlmProvider).toBe("");
     expect(resolvedConfig.hostLlmApiKey).toBe("");
     expect((resolvedConfig.local as { env?: Record<string, string> }).env).not.toHaveProperty("KUMIHO_LLM_PROVIDER");
@@ -479,7 +496,7 @@ describe("OpenClaw prompt hooks", () => {
 
     plugin.register(api as never);
 
-    const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
+    const resolvedConfig = getResolvedConfig();
     expect(resolvedConfig.local).toMatchObject({
       env: {
         CUSTOM_ENV: "preserve-me",
@@ -495,7 +512,7 @@ describe("OpenClaw prompt hooks", () => {
       return {
         ...actual,
         existsSync: vi.fn((path: string) => path.endsWith("preferences.json")),
-        readFileSync: vi.fn((path: string, encoding?: BufferEncoding) => {
+        readFileSync: vi.fn((path: string, encoding?: unknown) => {
           if (path.endsWith("preferences.json")) {
             return JSON.stringify({
               llm: {
@@ -525,7 +542,7 @@ describe("OpenClaw prompt hooks", () => {
 
     plugin.register(api as never);
 
-    const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
+    const resolvedConfig = getResolvedConfig();
     expect(resolvedConfig).toMatchObject({
       llm: {
         provider: "gemini",
@@ -579,7 +596,7 @@ describe("OpenClaw prompt hooks", () => {
 
     plugin.register(api as never);
 
-    const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
+    const resolvedConfig = getResolvedConfig();
     expect(resolvedConfig.hostLlmProvider).toBe("");
     expect((resolvedConfig.local as { env?: Record<string, string> }).env).not.toHaveProperty("KUMIHO_LLM_PROVIDER");
   });
@@ -594,7 +611,7 @@ describe("OpenClaw prompt hooks", () => {
           if (path.endsWith("auth-profiles.json")) return authEnabled;
           return actual.existsSync(path);
         }),
-        readFileSync: vi.fn((path: string, encoding?: BufferEncoding) => {
+        readFileSync: vi.fn((path: string, encoding?: unknown) => {
           if (path.endsWith("auth-profiles.json")) {
             return JSON.stringify({
               profiles: {
@@ -624,7 +641,7 @@ describe("OpenClaw prompt hooks", () => {
 
     plugin.register(api as never);
 
-    const [resolvedConfig] = mockState.createTransport.mock.calls[0] as [Record<string, unknown>];
+    const resolvedConfig = getResolvedConfig();
     expect(resolvedConfig.hostLlmApiKey).toBe("");
 
     authEnabled = true;
@@ -650,7 +667,7 @@ describe("OpenClaw prompt hooks", () => {
           if (path.endsWith("auth-profiles.json")) return authEnabled;
           return actual.existsSync(path);
         }),
-        readFileSync: vi.fn((path: string, encoding?: BufferEncoding) => {
+        readFileSync: vi.fn((path: string, encoding?: unknown) => {
           if (path.endsWith("auth-profiles.json")) {
             return JSON.stringify({
               profiles: {

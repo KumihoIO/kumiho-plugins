@@ -1,6 +1,6 @@
 [skill]
 name = "kumiho-memory"
-version = "0.1.0"
+version = "0.2.0"
 description = "Persistent graph-native cognitive memory — recalls context across sessions, stores decisions and preferences, discovers behavioral skills dynamically from the memory graph."
 
 [skill.author]

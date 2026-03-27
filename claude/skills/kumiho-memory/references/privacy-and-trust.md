@@ -13,7 +13,7 @@ Credentials, API keys, tokens, passwords, payment details, anything marked off-r
 Sensitive personal context (health, finances, relationships, legal), info about other people.
 
 ## User control
-- **"What do you know about me?"** → `kumiho_memory_recall` with broad query, share transparently
+- **"What do you know about me?"** → `kumiho_memory_engage` with broad query, share transparently
 - **"Forget X"** → `kumiho_deprecate_item(item_kref, deprecated=true)` immediately
 - **"Show everything including forgotten"** → search with `include_deprecated=true`
 - **"Don't remember this session"** → skip artifact/consolidation, `kumiho_chat_clear`

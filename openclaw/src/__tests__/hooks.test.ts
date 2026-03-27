@@ -307,7 +307,7 @@ describe("autoRecall — spacePaths scoping", () => {
     const memoryRetrieve = vi.fn().mockResolvedValue([]);
     const client = makeRecallClient(memoryRetrieve);
     const state = createHookState();
-    const channel: ChannelInfo = { channelType: "personal_dm", channelId: "tg:123" };
+    const channel: ChannelInfo = { platform: "telegram", channelType: "personal_dm" };
 
     await autoRecall(client, recallConfig, state, "what did we work on?", channel);
 
@@ -320,7 +320,7 @@ describe("autoRecall — spacePaths scoping", () => {
     const memoryRetrieve = vi.fn().mockResolvedValue([]);
     const client = makeRecallClient(memoryRetrieve);
     const state = createHookState();
-    const channel: ChannelInfo = { channelType: "team_channel", channelId: "slack:C123", teamSlug: "eng" };
+    const channel: ChannelInfo = { platform: "slack", channelType: "team_channel", teamSlug: "eng" };
 
     await autoRecall(client, recallConfig, state, "deploy status?", channel);
 
@@ -333,7 +333,7 @@ describe("autoRecall — spacePaths scoping", () => {
     const memoryRetrieve = vi.fn().mockResolvedValue([]);
     const client = makeRecallClient(memoryRetrieve);
     const state = createHookState();
-    const channel: ChannelInfo = { channelType: "group_dm", channelId: "tg:group:456", groupId: "456" };
+    const channel: ChannelInfo = { platform: "telegram", channelType: "group_dm", groupId: "456" };
 
     await autoRecall(client, recallConfig, state, "hey", channel);
 

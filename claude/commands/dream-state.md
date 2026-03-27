@@ -55,6 +55,30 @@ conservative safety guards.
    > something's off. I capped it and kept the rest. You may want to review
    > manually."
 
+## Automated scheduling
+
+Dream State runs best on a schedule (nightly or weekly). Claude Code doesn't
+have built-in cron, but you can set it up at the OS level:
+
+**macOS/Linux (crontab)**:
+
+```bash
+# Run nightly at 3 AM
+0 3 * * * KUMIHO_AUTH_TOKEN=kh_live_... python -m kumiho_memory dream
+```
+
+**Windows (Task Scheduler)**:
+
+```powershell
+schtasks /create /tn "Kumiho DreamState" /tr "python -m kumiho_memory dream" /sc daily /st 03:00
+```
+
+**ZeroClaw** and **OpenClaw** have built-in scheduling via SKILL.toml cron and
+plugin config respectively. For Claude, OS-level scheduling is the recommended
+approach.
+
+You can also use `python -m kumiho_memory dream` from the CLI at any time.
+
 ## Safety reminders
 
 - **Published protection**: Items tagged `published` (like your agent

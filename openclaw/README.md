@@ -15,7 +15,7 @@ Your agent forgets everything between sessions. This plugin fixes that — it wa
 │    ├── Auto-Recall / Auto-Capture hooks                 │
 │    ├── Idle consolidation timer                         │
 │    ├── Dream State scheduler                            │
-│    ├── 9 agent tools                                    │
+│    ├── 10 agent tools                                   │
 │    └── McpBridge ──stdin/stdout──► kumiho-mcp (Python)  │
 │                                       ├── kumiho-memory │
 │                                       ├── Redis buffer  │
@@ -35,7 +35,10 @@ openclaw plugins install @kumiho/openclaw-kumiho
 # 2. Set up the Python backend and authenticate
 npx --package=@kumiho/openclaw-kumiho kumiho-setup
 
-# 3. Let kumiho-setup update openclaw.json, or paste the printed snippet
+# 3. (Optional) Populate shared behavioral skills
+python scripts/ingest-skills.py
+
+# 4. Let kumiho-setup update openclaw.json, or paste the printed snippet
 ```
 
 ```json5
@@ -72,7 +75,7 @@ The setup wizard now includes GPT-5-sized OpenAI presets for Dream State and Con
 | **Cross-Channel** | Memories follow the user across WhatsApp, Slack, Telegram, etc. |
 | **Privacy-First** | Raw conversations and media stay local; only summaries go to graph DB |
 | **PII Redaction** | Emails, phone numbers, SSNs redacted before upload |
-| **9 Agent Tools** | Explicit memory operations the AI can invoke |
+| **10 Agent Tools** | Explicit memory operations the AI can invoke |
 | **Dream State** | Scheduled memory maintenance and edge discovery |
 | **Local Artifacts** | Conversation logs and media stored on your filesystem |
 | **Local-first** | Everything runs on your machine — no server to deploy |
@@ -294,7 +297,7 @@ export KUMIHO_MEMORY_ARTIFACT_ROOT="~/.kumiho/artifacts"
 
 ## Agent Tools
 
-The plugin exposes 9 tools the AI can invoke during conversations:
+The plugin exposes 10 tools the AI can invoke during conversations:
 
 | Tool | Description |
 |------|-------------|
@@ -306,6 +309,7 @@ The plugin exposes 9 tools the AI can invoke during conversations:
 | `memory_consolidate` | Trigger session consolidation immediately |
 | `memory_dream` | Trigger Dream State maintenance |
 | `creative_capture` | Save a creative output (doc, code, plan) with graph lineage |
+| `creative_job_status` | Check the status and resulting krefs of an async creative capture |
 | `creative_recall` | List creative outputs for a project space |
 
 ### Example Interactions
@@ -407,6 +411,37 @@ console.log(`Deprecated: ${stats.deprecated}, Edges: ${stats.edges_created}`);
 await memory.close();
 ```
 
+## Cross-Agent Compatibility
+
+All three Kumiho plugins share the same Neo4j + Redis backend, `CognitiveMemory` graph, and skill-ingestion pipeline. Memories stored by one agent are recallable by any other. Cross-agent parity exists at the data model and discoverable-skill layer; host-side automation still differs by platform.
+
+| Capability        | Claude Code                                 | ZeroClaw                                  | OpenClaw                                      |
+| ----------------- | ------------------------------------------- | ----------------------------------------- | --------------------------------------------- |
+| Tool syntax       | `kumiho_memory_recall(...)`                 | `kumiho_memory__recall(...)`              | `memory_search(...)` / `creative_capture(...)` |
+| Behavioral rules  | Discovery-first SKILL.md + SessionStart context | Discovery-first SKILL.md               | TypeScript hooks + injected memory instructions |
+| Session bootstrap | SessionStart hook + SKILL bootstrap         | Inline SKILL bootstrap                    | TypeScript identity bootstrap in `before_prompt_build` |
+| Recall behavior   | Agent-triggered recall guided by SKILL      | Agent-triggered recall guided by SKILL    | Automatic `before_prompt_build` hook           |
+| Capture behavior  | Agent-triggered `store` / `add_response`    | Agent-triggered `store` / `add_response`  | Automatic `agent_end` buffering + capture      |
+| Consolidation     | Agent-triggered                             | Agent-triggered                           | Threshold + idle timer + manual tool           |
+| Dream State       | `/dream-state` command                      | `SKILL.toml` cron                         | Config schedule + manual tool                  |
+| Setup wizard      | `python scripts/setup.py`                   | `python scripts/setup.py`                 | `npx kumiho-setup`                             |
+| Skill ingestion   | Local SKILL + bundled references            | Claude canonical SKILL + bundled references | Claude canonical SKILL + bundled references |
+| Privacy model     | Raw transcripts stay local                  | Graph summaries only                      | Raw transcripts stay local + PII redaction     |
+| Creative memory   | Via graph skills                            | Via graph skills                          | Built-in `creative_capture` / `creative_recall` |
+| Local artifacts   | SessionEnd hook                             | Via graph skills (no built-in hook)       | Built-in artifact manager                      |
+
+### Skill Ingestion
+
+Populate the shared `CognitiveMemory/Skills` graph with behavioral skills (one-time, after setup):
+
+```bash
+python scripts/ingest-skills.py          # ingest all
+python scripts/ingest-skills.py --dry-run  # preview only
+python scripts/ingest-skills.py --list     # list sections
+```
+
+This uses the Claude plugin's SKILL.md as the canonical source. All three agents discover the same skills.
+
 ## Troubleshooting
 
 ### `kumiho-mcp` not found / Python process fails to start
@@ -501,6 +536,9 @@ npm run setup
 # Manual
 pip install "kumiho[mcp]" "kumiho-memory[all]"
 python -c "from kumiho.mcp_server import main; print('kumiho-mcp OK')"
+
+# Ingest shared behavioral skills (one-time)
+python scripts/ingest-skills.py
 ```
 
 ## Related Packages

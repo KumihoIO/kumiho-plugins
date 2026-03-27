@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Kumiho Memory setup wizard for ZeroClaw.
+"""Kumiho Memory setup wizard for Claude Code / Claude Desktop.
 
 Interactive setup that:
   1. Finds or creates a Python venv with kumiho packages
   2. Authenticates with Kumiho Cloud (paste API token or use existing)
-  3. Detects ZeroClaw config.toml and patches MCP server config
-  4. Copies the skill into ZeroClaw's skills directory
-  5. Runs the skill ingestion script to populate CognitiveMemory/Skills
+  3. Patches .mcp.json with auth token (triggers MCP server restart)
+  4. Ingests discoverable skills into CognitiveMemory/Skills graph
+  5. Verifies the MCP server can connect
 
 Usage:
     python scripts/setup.py
@@ -19,7 +19,6 @@ import getpass
 import json
 import os
 import platform
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -29,7 +28,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PLUGIN_DIR = SCRIPT_DIR.parent  # kumiho-plugins/zeroclaw/
+PLUGIN_DIR = SCRIPT_DIR.parent  # kumiho-plugins/claude/
 IS_WIN = platform.system() == "Windows"
 KUMIHO_DIR = Path.home() / ".kumiho"
 VENV_DIR = KUMIHO_DIR / "venv"
@@ -37,13 +36,14 @@ BIN = "Scripts" if IS_WIN else "bin"
 EXT = ".exe" if IS_WIN else ""
 VENV_PYTHON = VENV_DIR / BIN / f"python{EXT}"
 CRED_PATH = KUMIHO_DIR / "kumiho_authentication.json"
-PREFS_PATH = KUMIHO_DIR / "preferences.json"
-ZEROCLAW_DIR = Path.home() / ".zeroclaw"
-ZEROCLAW_CONFIG = ZEROCLAW_DIR / "config.toml"
-ZEROCLAW_SKILLS = ZEROCLAW_DIR / "skills"
+MCP_JSON = PLUGIN_DIR / ".mcp.json"
+ENV_LOCAL = PLUGIN_DIR / ".env.local"
+SKILL_MD = PLUGIN_DIR / "skills" / "kumiho-memory" / "SKILL.md"
+REFS_DIR = PLUGIN_DIR / "skills" / "kumiho-memory" / "references"
+INGEST_SCRIPT = SCRIPT_DIR / "ingest-skills.py"
 
 # ---------------------------------------------------------------------------
-# Console helpers
+# Console helpers (same as ZeroClaw setup for consistency)
 # ---------------------------------------------------------------------------
 
 RESET = "\033[0m"
@@ -98,7 +98,6 @@ def ask_yes_no(prompt: str, default_yes: bool = True) -> bool:
 
 
 def ask_secret(prompt: str) -> str:
-    """Prompt for sensitive input without echoing."""
     try:
         return getpass.getpass(f"  {prompt}: ").strip()
     except (EOFError, KeyboardInterrupt):
@@ -131,12 +130,43 @@ def ask_choice(question: str, options: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# JWT helpers
+# ---------------------------------------------------------------------------
+
+
+def decode_jwt_payload(token: str) -> dict | None:
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    payload = parts[1]
+    padding = "=" * (-len(payload) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode((payload + padding).encode("utf-8"))
+        claims = json.loads(decoded.decode("utf-8"))
+        return claims if isinstance(claims, dict) else None
+    except Exception:
+        return None
+
+
+def clean_token(raw: str) -> str:
+    token = raw.strip()
+    for q in ('"', "'"):
+        if token.startswith(q) and token.endswith(q):
+            token = token[1:-1].strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    return token
+
+
+# ---------------------------------------------------------------------------
 # Step 1: Python & venv
 # ---------------------------------------------------------------------------
 
 
 def find_python() -> str | None:
     """Find a Python 3.10+ on PATH."""
+    import re
+
     for cmd in ["python3", "python"]:
         try:
             r = subprocess.run(
@@ -146,7 +176,6 @@ def find_python() -> str | None:
             if r.returncode != 0:
                 continue
             ver = (r.stdout or r.stderr).strip()
-            import re
             m = re.match(r"Python (\d+)\.(\d+)", ver)
             if m and (int(m.group(1)), int(m.group(2))) >= (3, 10):
                 return cmd
@@ -201,30 +230,6 @@ def setup_venv(base_python: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def decode_jwt_payload(token: str) -> dict | None:
-    parts = token.split(".")
-    if len(parts) != 3:
-        return None
-    payload = parts[1]
-    padding = "=" * (-len(payload) % 4)
-    try:
-        decoded = base64.urlsafe_b64decode((payload + padding).encode("utf-8"))
-        claims = json.loads(decoded.decode("utf-8"))
-        return claims if isinstance(claims, dict) else None
-    except Exception:
-        return None
-
-
-def clean_token(raw: str) -> str:
-    token = raw.strip()
-    for q in ('"', "'"):
-        if token.startswith(q) and token.endswith(q):
-            token = token[1:-1].strip()
-    if token.lower().startswith("bearer "):
-        token = token[7:].strip()
-    return token
-
-
 def check_existing_auth() -> str | None:
     """Check for existing credentials. Returns email if found."""
     if not CRED_PATH.exists():
@@ -236,7 +241,7 @@ def check_existing_auth() -> str | None:
             return None
         claims = decode_jwt_payload(token)
         if claims:
-            return claims.get("email") or claims.get("sub") or "unknown"
+            return claims.get("email") or claims.get("created_by") or claims.get("sub") or "unknown"
         return "unknown"
     except Exception:
         return None
@@ -274,7 +279,6 @@ def setup_auth() -> str | None:
     if existing_email:
         ok(f"Already authenticated as {existing_email}")
         if not ask_yes_no("Re-authenticate with a new token?", default_yes=False):
-            # Return existing token
             try:
                 creds = json.loads(CRED_PATH.read_text(encoding="utf-8"))
                 return creds.get("api_token") or creds.get("id_token")
@@ -301,7 +305,7 @@ def setup_auth() -> str | None:
     ])
 
     if choice["value"] == "skip":
-        warn("Authentication skipped — set KUMIHO_AUTH_TOKEN before using the skill")
+        warn("Authentication skipped — set KUMIHO_AUTH_TOKEN before using the plugin")
         return None
 
     if choice["value"] == "cli":
@@ -342,7 +346,7 @@ def setup_auth() -> str | None:
             return None
 
     if cache_token(token):
-        email = claims.get("email", "unknown") if claims else "unknown"
+        email = (claims.get("email") or claims.get("created_by") or "unknown") if claims else "unknown"
         ok(f"Token cached at {CRED_PATH}")
         if email != "unknown":
             ok(f"Authenticated as {email}")
@@ -353,160 +357,74 @@ def setup_auth() -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Step 3: ZeroClaw config.toml
+# Step 3: Patch .mcp.json with token
 # ---------------------------------------------------------------------------
 
 
-MCP_CONFIG_BLOCK = """\
-
-# Kumiho Memory MCP Server (added by kumiho-setup)
-[mcp_servers.kumiho_memory]
-transport = "stdio"
-command = "{python_path}"
-args = ["-m", "kumiho.mcp_server"]
-tool_timeout_secs = 30
-
-[mcp_servers.kumiho_memory.env]
-KUMIHO_AUTH_TOKEN = "${{KUMIHO_AUTH_TOKEN}}"
-"""
-
-
-def upsert_kumiho_mcp_config(config_text: str, block: str) -> tuple[str, bool]:
-    """Insert or replace the managed kumiho_memory MCP block."""
-    lines = config_text.splitlines()
-    start = None
-
-    for index, line in enumerate(lines):
-        if line.strip() == "[mcp_servers.kumiho_memory]":
-            start = index
-            break
-
-    if start is None:
-        text = config_text.rstrip()
-        if text:
-            text += "\n\n"
-        return text + block.strip("\n") + "\n", False
-
-    end = len(lines)
-    for index in range(start + 1, len(lines)):
-        stripped = lines[index].strip()
-        if stripped.startswith("[") and not stripped.startswith("[mcp_servers.kumiho_memory"):
-            end = index
-            break
-
-    updated_lines = lines[:start]
-    if updated_lines and updated_lines[-1].strip():
-        updated_lines.append("")
-    updated_lines.extend(block.strip("\n").splitlines())
-    if end < len(lines) and updated_lines and updated_lines[-1].strip():
-        updated_lines.append("")
-    updated_lines.extend(lines[end:])
-
-    return "\n".join(updated_lines).rstrip() + "\n", True
-
-
-def setup_zeroclaw_config(venv_python: Path) -> None:
-    """Detect and optionally patch ZeroClaw's config.toml."""
-    if not ZEROCLAW_DIR.exists():
-        warn(f"ZeroClaw config dir not found: {ZEROCLAW_DIR}")
-        warn("Skipping config.toml patching — add MCP config manually (see config.toml.example)")
+def patch_mcp_json(token: str | None) -> None:
+    """Write token into .mcp.json so Claude discovers the MCP server."""
+    if not MCP_JSON.exists():
+        warn(f".mcp.json not found at {MCP_JSON} — skipping")
         return
 
-    if not ZEROCLAW_CONFIG.exists():
-        log(f"Creating {ZEROCLAW_CONFIG}...")
-        ZEROCLAW_CONFIG.write_text(
-            "# ZeroClaw configuration\n# See: https://github.com/zeroclaw-labs/zeroclaw\n",
-            encoding="utf-8",
-        )
+    try:
+        config = json.loads(MCP_JSON.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        fail(f"Failed to read .mcp.json: {e}")
+        return
 
-    # Check if already configured
-    config_text = ZEROCLAW_CONFIG.read_text(encoding="utf-8")
-    has_existing_config = "[mcp_servers.kumiho_memory]" in config_text
-    if has_existing_config:
-        ok("MCP server already configured in config.toml")
-        if not ask_yes_no("Overwrite existing kumiho_memory config?", default_yes=False):
-            return
+    servers = config.get("mcpServers", {})
+    server = servers.get("kumiho-memory")
+    if not server:
+        warn("No 'kumiho-memory' entry in .mcp.json — skipping token patch")
+        return
 
-    python_path = str(venv_python).replace("\\", "/")
-    block = MCP_CONFIG_BLOCK.format(python_path=python_path)
+    env = server.setdefault("env", {})
+    current = env.get("KUMIHO_AUTH_TOKEN", "")
 
-    if ask_yes_no(f"Add kumiho_memory MCP server to {ZEROCLAW_CONFIG}?"):
-        updated_text, replaced = upsert_kumiho_mcp_config(config_text, block)
-        ZEROCLAW_CONFIG.write_text(updated_text, encoding="utf-8")
-        if replaced:
-            ok(f"MCP server config updated in {ZEROCLAW_CONFIG}")
-        else:
-            ok(f"MCP server config added to {ZEROCLAW_CONFIG}")
+    # Check if it has a hardcoded token (not a template)
+    is_template = current.startswith("${") and current.endswith("}")
+    has_real_token = current.startswith("eyJ") and len(current) > 50
+
+    if token:
+        env["KUMIHO_AUTH_TOKEN"] = token
+        MCP_JSON.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+        ok("Token written to .mcp.json (MCP server will restart)")
+    elif has_real_token:
+        # No new token provided but there's already one — leave it
+        ok(".mcp.json already has an auth token")
+    elif is_template:
+        ok(".mcp.json uses env var template — set KUMIHO_AUTH_TOKEN in your environment")
     else:
-        warn("Skipped — add the config manually from config.toml.example")
+        warn(".mcp.json has no auth token — run /kumiho-auth or set KUMIHO_AUTH_TOKEN")
+
+    # Also write .env.local for the run_kumiho_mcp.py bootstrap script
+    if token:
+        try:
+            ENV_LOCAL.write_text(
+                f"# Kumiho API token (written by setup wizard)\n"
+                f"KUMIHO_AUTH_TOKEN={token}\n",
+                encoding="utf-8",
+            )
+            ok(f"Token written to {ENV_LOCAL.name}")
+        except OSError:
+            pass  # Non-critical if plugin dir is read-only
 
 
 # ---------------------------------------------------------------------------
-# Step 4: Copy skill into ZeroClaw skills directory
+# Step 4: Ingest skills into the graph
 # ---------------------------------------------------------------------------
 
 
-def setup_skill_copy() -> None:
-    """Copy the skill files into ZeroClaw's skills directory."""
-    target = ZEROCLAW_SKILLS / "kumiho-memory"
-
-    if target.exists():
-        ok(f"Skill already installed: {target}")
-        if not ask_yes_no("Overwrite with latest version?", default_yes=True):
-            return
-
-    if not ZEROCLAW_SKILLS.exists():
-        ZEROCLAW_SKILLS.mkdir(parents=True, exist_ok=True)
-
-    # Copy SKILL.toml and SKILL.md
-    target.mkdir(parents=True, exist_ok=True)
-    for filename in ("SKILL.toml", "SKILL.md"):
-        src = PLUGIN_DIR / filename
-        if src.exists():
-            shutil.copy2(src, target / filename)
-
-    ok(f"Skill installed: {target}")
-
-
-# ---------------------------------------------------------------------------
-# Step 5: Set KUMIHO_AUTH_TOKEN in environment
-# ---------------------------------------------------------------------------
-
-
-def setup_env_token(token: str | None) -> None:
-    """Write KUMIHO_AUTH_TOKEN to .env file for ZeroClaw."""
-    if not token:
+def run_ingestion(venv_python: Path, token: str | None) -> None:
+    """Run the ingest-skills.py script to populate CognitiveMemory/Skills."""
+    if not INGEST_SCRIPT.exists():
+        warn(f"Ingestion script not found: {INGEST_SCRIPT}")
+        warn("Run: python -m kumiho_memory ingest-skill <SKILL.md>")
         return
 
-    # Write to ~/.kumiho/.env (shared)
-    env_path = KUMIHO_DIR / ".env"
-    env_path.write_text(
-        f"KUMIHO_AUTH_TOKEN={token}\n",
-        encoding="utf-8",
-    )
-    ok(f"Token written to {env_path}")
-
-    # Also write to zeroclaw .env if directory exists
-    if ZEROCLAW_DIR.exists():
-        zc_env = ZEROCLAW_DIR / ".env"
-        zc_env.write_text(
-            f"# Kumiho API token (added by kumiho-setup)\n"
-            f"KUMIHO_AUTH_TOKEN={token}\n",
-            encoding="utf-8",
-        )
-        ok(f"Token written to {zc_env}")
-
-
-# ---------------------------------------------------------------------------
-# Step 6: Run skill ingestion
-# ---------------------------------------------------------------------------
-
-
-def run_ingestion(venv_python: Path) -> None:
-    """Run the ingest-skills.py script to populate CognitiveMemory/Skills."""
-    ingest_script = SCRIPT_DIR / "ingest-skills.py"
-    if not ingest_script.exists():
-        warn(f"Ingestion script not found: {ingest_script}")
+    if not token:
+        warn("Skipping skill ingestion (no auth token) — run later after authenticating")
         return
 
     if not ask_yes_no("Ingest skills into Kumiho graph? (populates CognitiveMemory/Skills)"):
@@ -514,15 +432,48 @@ def run_ingestion(venv_python: Path) -> None:
         return
 
     log("Ingesting skills into the graph...")
+    env = {**os.environ, "KUMIHO_AUTH_TOKEN": token}
     r = subprocess.run(
-        [str(venv_python), str(ingest_script)],
+        [str(venv_python), str(INGEST_SCRIPT)],
         timeout=60,
-        env={**os.environ, "KUMIHO_AUTH_TOKEN": os.getenv("KUMIHO_AUTH_TOKEN", "")},
+        env=env,
     )
     if r.returncode == 0:
         ok("Skills ingested into CognitiveMemory/Skills")
     else:
         fail("Ingestion failed — run manually: python scripts/ingest-skills.py")
+
+
+# ---------------------------------------------------------------------------
+# Step 5: Verify MCP connection
+# ---------------------------------------------------------------------------
+
+
+def verify_connection(venv_python: Path, token: str | None) -> None:
+    """Quick self-test of the MCP server."""
+    if not token:
+        return
+
+    test_script = SCRIPT_DIR / "test_discovery_env.py"
+    if not test_script.exists():
+        return
+
+    log("Verifying Kumiho Cloud connection...")
+    env = {**os.environ, "KUMIHO_AUTH_TOKEN": token}
+
+    # Write a temp env file for the test
+    temp_env = PLUGIN_DIR / ".env.local"
+    r = subprocess.run(
+        [str(venv_python), str(test_script), "--env-file", str(temp_env)],
+        capture_output=True, text=True, timeout=15,
+        env=env,
+    )
+    if r.returncode == 0:
+        ok("Connection to Kumiho Cloud verified")
+    else:
+        warn("Connection test inconclusive — the MCP server may still work")
+        if r.stderr:
+            warn(f"  {r.stderr.strip()[:200]}")
 
 
 # ---------------------------------------------------------------------------
@@ -532,7 +483,7 @@ def run_ingestion(venv_python: Path) -> None:
 
 def main() -> int:
     print()
-    print(f"  {BOLD}Kumiho Memory Setup for ZeroClaw{RESET}")
+    print(f"  {BOLD}Kumiho Memory Setup for Claude{RESET}")
     print(f"  {DIM}Persistent graph-native cognitive memory{RESET}")
     hr()
     print()
@@ -552,27 +503,22 @@ def main() -> int:
     log("Step 2/5: Authentication")
     token = setup_auth()
     if token:
-        # Set in current environment for subsequent steps
         os.environ["KUMIHO_AUTH_TOKEN"] = token
     print()
 
-    # Step 3: ZeroClaw config
-    log("Step 3/5: ZeroClaw configuration")
-    setup_zeroclaw_config(venv_python)
+    # Step 3: Patch .mcp.json
+    log("Step 3/5: MCP server configuration")
+    patch_mcp_json(token)
     print()
 
-    # Step 4: Copy skill
-    log("Step 4/5: Install skill")
-    setup_skill_copy()
+    # Step 4: Skill ingestion
+    log("Step 4/5: Skill ingestion")
+    run_ingestion(venv_python, token)
     print()
 
-    # Step 5: Environment token + ingestion
-    log("Step 5/5: Finalize")
-    setup_env_token(token)
-    if token:
-        run_ingestion(venv_python)
-    else:
-        warn("Skipping skill ingestion (no auth token) — run later after authenticating")
+    # Step 5: Verify
+    log("Step 5/5: Verify connection")
+    verify_connection(venv_python, token)
     print()
 
     # Summary
@@ -581,16 +527,18 @@ def main() -> int:
     print(f"  {GREEN}{BOLD}Setup complete!{RESET}")
     print()
     if token:
-        print(f"  ZeroClaw will discover kumiho_memory tools via MCP.")
-        print(f"  Use {BOLD}tool_search(\"kumiho\"){RESET} in a session to see available tools.")
+        print(f"  Claude will connect to Kumiho memory automatically.")
+        print(f"  Start a new session — the plugin bootstraps on first message.")
     else:
-        print(f"  {YELLOW}Remaining:{RESET} Set KUMIHO_AUTH_TOKEN and run:")
-        print(f"    python scripts/ingest-skills.py")
+        print(f"  {YELLOW}Remaining:{RESET} Authenticate with one of:")
+        print(f"    1. Run this setup again with a token")
+        print(f"    2. Use /kumiho-auth in Claude Code")
+        print(f"    3. Set KUMIHO_AUTH_TOKEN environment variable")
     print()
-    print(f"  {DIM}Config:  {ZEROCLAW_CONFIG}{RESET}")
-    print(f"  {DIM}Skill:   {ZEROCLAW_SKILLS / 'kumiho-memory'}{RESET}")
+    print(f"  {DIM}Plugin:  {PLUGIN_DIR}{RESET}")
     print(f"  {DIM}Creds:   {CRED_PATH}{RESET}")
     print(f"  {DIM}Venv:    {VENV_DIR}{RESET}")
+    print(f"  {DIM}MCP:     {MCP_JSON}{RESET}")
     print()
 
     return 0

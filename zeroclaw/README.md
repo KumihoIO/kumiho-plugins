@@ -17,7 +17,7 @@ Neo4j + Redis (Kumiho Cloud)
 
 ### Discovery-first SKILL.md
 
-Unlike the Claude and OpenClaw plugins which list all behavioral rules inline, this plugin uses a **discovery-first** approach:
+Like the Claude plugin, this plugin uses a **discovery-first** approach:
 
 - **Inline** (~100 lines): Hard constraints, session bootstrap, per-turn memory protocol, store-link protocol, and the Skill Discovery Protocol itself
 - **In the graph** (`CognitiveMemory/Skills/*`): Everything else — creative memory, edges & traversal, privacy rules, onboarding, artifacts, etc.
@@ -126,32 +126,42 @@ This populates `CognitiveMemory/Skills` with 9 discoverable skill items. Use `--
 
 ZeroClaw prefixes MCP tools with the server name and double underscore:
 
-| Tool | ZeroClaw syntax |
-|------|----------------|
-| recall | `kumiho_memory__recall` |
-| store | `kumiho_memory__store` |
-| retrieve | `kumiho_memory__retrieve` |
-| discover_edges | `kumiho_memory__discover_edges` |
-| consolidate | `kumiho_memory__consolidate` |
-| dream_state | `kumiho_memory__memory_dream_state` |
+| Tool | ZeroClaw syntax | Notes |
+|------|----------------|-------|
+| **engage** | `kumiho_memory__engage` | Composite: recall + context building |
+| **reflect** | `kumiho_memory__reflect` | Composite: buffer response + store captures + edge discovery |
+| recall | `kumiho_memory__recall` | Low-level — prefer engage |
+| store | `kumiho_memory__store` | Low-level — prefer reflect |
+| retrieve | `kumiho_memory__retrieve` | |
+| consolidate | `kumiho_memory__consolidate` | |
+| dream_state | `kumiho_memory__memory_dream_state` | |
 
 If tools aren't loaded yet, use `tool_search("kumiho")` in-session.
 
-## Cross-agent compatibility
+## Cross-Agent Compatibility
 
-| Agent | Tool syntax | Integration |
-|-------|-----------|-------------|
-| Claude Code | `kumiho_memory_recall(...)` | Hooks (Python) + SKILL.md + MCP |
-| ZeroClaw | `kumiho_memory__recall(...)` | SKILL.md + MCP |
-| OpenClaw | `memory_search(...)` | Hooks (TypeScript) + wrapped tools |
+All three Kumiho plugins share the same Neo4j + Redis backend, `CognitiveMemory` graph, and skill-ingestion pipeline. Memories stored by one agent are recallable by any other. Cross-agent parity exists at the data model and discoverable-skill layer; host-side automation still differs by platform.
 
-All agents share the same `CognitiveMemory` graph. Skills stored by any agent are discoverable by all others.
+| Capability        | Claude Code                                 | ZeroClaw                                  | OpenClaw                                      |
+| ----------------- | ------------------------------------------- | ----------------------------------------- | --------------------------------------------- |
+| Tool syntax       | `kumiho_memory_recall(...)`                 | `kumiho_memory__recall(...)`              | `memory_search(...)` / `creative_capture(...)` |
+| Behavioral rules  | Discovery-first SKILL.md + SessionStart context | Discovery-first SKILL.md               | TypeScript hooks + injected memory instructions |
+| Session bootstrap | SessionStart hook + SKILL bootstrap         | Inline SKILL bootstrap                    | TypeScript identity bootstrap in `before_prompt_build` |
+| Recall behavior   | Agent-triggered recall guided by SKILL      | Agent-triggered recall guided by SKILL    | Automatic `before_prompt_build` hook           |
+| Capture behavior  | Agent-triggered `store` / `add_response`    | Agent-triggered `store` / `add_response`  | Automatic `agent_end` buffering + capture      |
+| Consolidation     | Agent-triggered                             | Agent-triggered                           | Threshold + idle timer + manual tool           |
+| Dream State       | `/dream-state` command                      | `SKILL.toml` cron                         | Config schedule + manual tool                  |
+| Setup wizard      | `python scripts/setup.py`                   | `python scripts/setup.py`                 | `npx kumiho-setup`                             |
+| Skill ingestion   | Local SKILL + bundled references            | Claude canonical SKILL + bundled references | Claude canonical SKILL + bundled references |
+| Privacy model     | Raw transcripts stay local                  | Graph summaries only                      | Raw transcripts stay local + PII redaction     |
+| Creative memory   | Via graph skills                            | Via graph skills                          | Built-in `creative_capture` / `creative_recall` |
+| Local artifacts   | SessionEnd hook                             | Via graph skills (no built-in hook)       | Built-in artifact manager                      |
 
-## Relationship to other plugins
+### Related plugins
 
-- **kumiho-plugins/claude/** — Claude Code plugin with Python hooks for SessionStart/End and auto-approve. Source of truth for behavioral rules.
-- **kumiho-plugins/openclaw/** — OpenClaw plugin with TypeScript hooks for auto-recall and auto-capture. 9 wrapped agent tools.
-- **FoxClaw** (on hold) — Planned soft fork of ZeroClaw with Kumiho memory baked into the Rust core. When shipped, the graph-stored skills from this plugin carry over directly.
+- **kumiho-plugins/claude/** — Claude Code plugin with Python hooks for SessionStart/End and auto-approve. Source of truth for behavioral rules and SKILL.md.
+- **kumiho-plugins/openclaw/** — OpenClaw plugin with TypeScript hooks for auto-recall and auto-capture. 10 wrapped agent tools.
+- **FoxClaw** (on hold) — Planned soft fork of ZeroClaw with Kumiho memory baked into the Rust core. Graph-stored skills carry over directly.
 
 ## Troubleshooting
 
