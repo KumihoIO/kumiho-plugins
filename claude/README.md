@@ -21,7 +21,7 @@ Version: **0.9.0** | Requires: `kumiho>=0.9.16`, `kumiho-memory>=0.3.16`
 | MCP memory tools | Yes | Yes |
 | Session bootstrap hook | Yes | Yes |
 | Session-end artifact hook | Yes | Yes |
-| `/kumiho-auth` command | Yes | Yes |
+| `/kumiho-onboard` command | Yes | Yes |
 | `/memory-capture` command | Yes | Yes |
 | `/dream-state` command | Yes | Yes |
 | Auto-approve memory ops | Yes | No (Desktop manages permissions differently) |
@@ -68,7 +68,7 @@ claude --plugin-dir ./kumiho-claude
 
 1. **Sign up** at [kumiho.io](https://kumiho.io) (free tier available)
 2. **Mint an API token** from the dashboard under **API Keys**
-3. **Run `/kumiho-auth`** inside Claude and paste your token
+3. **Run `/kumiho-onboard`** inside Claude — the wizard handles auth, setup, and skill ingestion
 4. **Start chatting** — Claude now remembers you across sessions
 
 On your first session the plugin will ask a few questions (name, language,
@@ -89,7 +89,7 @@ The plugin registers three hooks that run automatically:
 
 | Command | Description |
 |---------|-------------|
-| `/kumiho-auth` | Interactive auth setup — paste a dashboard API token or use CLI login |
+| `/kumiho-onboard` | Onboarding wizard — venv setup, auth, MCP config, skill ingestion |
 | `/memory-capture` | Capture a specific fact or preference into long-term memory |
 | `/dream-state` | Run Dream State consolidation (review, enrich, prune stored memories) |
 
@@ -113,27 +113,25 @@ kumiho[mcp]>=0.9.16 kumiho-memory[all]>=0.3.16
 
 ## Authentication
 
-There are two ways to authenticate. Use whichever fits your workflow — or
-run `/kumiho-auth` and it will walk you through both options.
+Run `/kumiho-onboard` inside Claude — the wizard walks you through authentication
+as part of the full onboarding flow. Alternatively, authenticate manually:
 
 ### Method A — Dashboard API token (recommended)
 
 Mint a long-lived API token from the [kumiho.io dashboard](https://kumiho.io)
-under **API Keys**. Then either:
+under **API Keys**. Then run the onboarding wizard:
 
-1. Run the interactive command inside Claude:
+```text
+/kumiho-onboard
+```
 
-   ```text
-   /kumiho-auth
-   ```
+Or cache it from the command line:
 
-2. Or cache it from the command line:
+```bash
+python ./kumiho-claude/scripts/setup.py
+```
 
-   ```bash
-   echo 'eyJ...' | python ./kumiho-claude/scripts/cache_auth_token.py --stdin
-   ```
-
-Both store the token under the `api_token` key in
+The token is stored under the `api_token` key in
 `~/.kumiho/kumiho_authentication.json`. It does **not** overwrite session
 tokens from `kumiho-cli login`.
 
@@ -244,10 +242,10 @@ If the bootstrap logs:
 [kumiho-claude] Searched N settings paths; none contained a usable env block.
 ```
 
-Use `/kumiho-auth` to cache the token directly, or run:
+Run `/kumiho-onboard` to set up authentication, or run:
 
 ```bash
-echo 'YOUR_JWT' | python ./kumiho-claude/scripts/cache_auth_token.py --stdin
+python ./kumiho-claude/scripts/setup.py
 ```
 
 ### Auth error (401)
@@ -260,7 +258,7 @@ Memory proxy error 401: {"error":"invalid_id_token"}
 
 Fix options:
 
-1. Use a fresh dashboard-minted token via `/kumiho-auth`.
+1. Use a fresh dashboard-minted token via `/kumiho-onboard`.
 2. Ensure control-plane `/api/memory/redis` is deployed with control-plane token verification.
 
 ### Connection refused
@@ -311,7 +309,7 @@ python ./kumiho-claude/scripts/test_discovery_env.py --env-file .env.local
 ├── .mcp.json                  # MCP server definition (kumiho-memory stdio)
 ├── .env.local.example         # Template for local auth config
 ├── commands/
-│   ├── kumiho-auth.md         # /kumiho-auth slash command
+│   ├── kumiho-onboard.md      # /kumiho-onboard slash command (setup wizard)
 │   ├── memory-capture.md      # /memory-capture slash command
 │   └── dream-state.md         # /dream-state slash command
 ├── hooks/
@@ -330,8 +328,6 @@ python ./kumiho-claude/scripts/test_discovery_env.py --env-file .env.local
 │   ├── session-bootstrap.py      # SessionStart hook
 │   ├── save-session-artifact.py  # SessionEnd hook
 │   ├── auto-approve-memory.py    # PermissionRequest hook
-│   ├── cache_auth_token.py       # CLI token caching utility
-│   ├── patch_mcp_json_token.py   # Write resolved token into .mcp.json
 │   ├── test_discovery_env.py     # Discovery smoke test
 │   ├── setup.py                  # Interactive setup wizard
 │   └── ingest-skills.py          # Skill ingestion into CognitiveMemory/Skills graph

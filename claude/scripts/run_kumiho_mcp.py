@@ -276,7 +276,7 @@ def _plugin_root() -> Path:
 def _hydrate_env_from_dotenv() -> None:
     """Read KEY=VALUE pairs from .env.local at the plugin root.
 
-    This lets users (and the /kumiho-auth command) drop a simple dotenv file
+    This lets users (and the /kumiho-onboard wizard) drop a simple dotenv file
     next to the plugin without touching .mcp.json.  On Claude Desktop the
     host cannot resolve shell-style ``${VAR:-}`` templates in the env block,
     so .env.local serves as a reliable local override.
@@ -388,7 +388,7 @@ def _hydrate_env_from_claude_settings() -> None:
         print(
             f"[kumiho-claude] Searched {len(candidates)} settings paths; "
             "none contained a usable env block. "
-            "Use /kumiho-auth or set KUMIHO_AUTH_TOKEN in ~/.kumiho/kumiho_authentication.json.",
+            "Use /kumiho-onboard or set KUMIHO_AUTH_TOKEN in ~/.kumiho/kumiho_authentication.json.",
             file=sys.stderr,
         )
 
@@ -519,7 +519,7 @@ def _bootstrap_desktop_server_entries() -> None:
         },
     }
     # Include the resolved token if one is available so Claude Desktop picks
-    # it up immediately on the next restart (no extra /kumiho-auth step needed).
+    # it up immediately on the next restart (no extra /kumiho-onboard step needed).
     token = _clean_token_candidate((os.getenv("KUMIHO_AUTH_TOKEN", "") or "").strip())
     if token and not _looks_like_placeholder(token):
         server_entry["env"]["KUMIHO_AUTH_TOKEN"] = token
@@ -816,7 +816,7 @@ def main() -> int:
         os.environ["KUMIHO_SERVER_ENDPOINT"] = "needs-auth.kumiho.invalid:443"
         print(
             "[kumiho-claude] Discovery bootstrap failed. "
-            "Run /kumiho-auth to set up authentication. "
+            "Run /kumiho-onboard to set up authentication. "
             f"Error: {exc}",
             file=sys.stderr,
         )

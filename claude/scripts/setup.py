@@ -248,7 +248,7 @@ def check_existing_auth() -> str | None:
 
 
 def cache_token(token: str) -> bool:
-    """Store API token in ~/.kumiho/kumiho_authentication.json."""
+    """Merge API token into ~/.kumiho/kumiho_authentication.json, preserving existing credentials."""
     KUMIHO_DIR.mkdir(parents=True, exist_ok=True)
 
     existing: dict = {}
@@ -396,7 +396,7 @@ def patch_mcp_json(token: str | None) -> None:
     elif is_template:
         ok(".mcp.json uses env var template — set KUMIHO_AUTH_TOKEN in your environment")
     else:
-        warn(".mcp.json has no auth token — run /kumiho-auth or set KUMIHO_AUTH_TOKEN")
+        warn(".mcp.json has no auth token — run /kumiho-onboard or set KUMIHO_AUTH_TOKEN")
 
     # Also write .env.local for the run_kumiho_mcp.py bootstrap script
     if token:
@@ -532,7 +532,7 @@ def main() -> int:
     else:
         print(f"  {YELLOW}Remaining:{RESET} Authenticate with one of:")
         print(f"    1. Run this setup again with a token")
-        print(f"    2. Use /kumiho-auth in Claude Code")
+        print(f"    2. Use /kumiho-onboard in Claude Code")
         print(f"    3. Set KUMIHO_AUTH_TOKEN environment variable")
     print()
     print(f"  {DIM}Plugin:  {PLUGIN_DIR}{RESET}")
