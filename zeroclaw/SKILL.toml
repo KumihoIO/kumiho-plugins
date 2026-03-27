@@ -1,0 +1,26 @@
+[skill]
+name = "kumiho-memory"
+version = "0.1.0"
+description = "Persistent graph-native cognitive memory — recalls context across sessions, stores decisions and preferences, discovers behavioral skills dynamically from the memory graph."
+
+[skill.author]
+name = "Kumiho"
+url = "https://kumiho.io"
+
+[tools]
+# All tools are provided by the kumiho_memory MCP server.
+# ZeroClaw discovers them via tools/list handshake and indexes them
+# as kumiho_memory__<tool_name> (double underscore prefix).
+
+[mcp_servers.kumiho_memory]
+transport = "stdio"
+command = "python"
+args = ["-m", "kumiho.mcp_server"]
+env = { KUMIHO_AUTH_TOKEN = "${KUMIHO_AUTH_TOKEN}" }
+
+# DreamState: nightly memory consolidation and enrichment.
+# ZeroClaw's cron system runs this as a scheduled agent task.
+[cron.dream_state]
+schedule = "0 3 * * *"
+command = "kumiho_memory__memory_dream_state"
+description = "Nightly Dream State — review, enrich, and clean stored memories"
