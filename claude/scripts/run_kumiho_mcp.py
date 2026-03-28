@@ -273,39 +273,48 @@ def _plugin_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _hydrate_env_from_dotenv() -> None:
-    """Read KEY=VALUE pairs from .env.local at the plugin root.
+def _read_dotenv_file(dotenv_path: Path) -> None:
+    """Parse and apply KEY=VALUE pairs from a single dotenv file."""
+    try:
+        for line in dotenv_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if len(value) >= 2 and (
+                (value[0] == '"' and value[-1] == '"')
+                or (value[0] == "'" and value[-1] == "'")
+            ):
+                value = value[1:-1]
+            _set_env_if_absent(key, value, str(dotenv_path))
+    except Exception:
+        pass
 
-    This lets users (and the /kumiho-onboard wizard) drop a simple dotenv file
-    next to the plugin without touching .mcp.json.  On Claude Desktop the
-    host cannot resolve shell-style ``${VAR:-}`` templates in the env block,
-    so .env.local serves as a reliable local override.
+
+def _hydrate_env_from_dotenv() -> None:
+    """Read KEY=VALUE pairs from .env.local files.
+
+    Checks in priority order:
+      1. Plugin root (.env.local, .env) — standard location for Claude Code
+      2. ~/.kumiho/.env.local — fallback written by setup wizard when the
+         plugin directory is read-only (e.g. in Cowork / Claude Desktop)
     """
+    # 1. Plugin root
     root = _plugin_root()
     for name in (".env.local", ".env"):
         dotenv_path = root / name
-        if not dotenv_path.exists():
-            continue
-        try:
-            for line in dotenv_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                key = key.strip()
-                value = value.strip()
-                # Strip optional surrounding quotes
-                if len(value) >= 2 and (
-                    (value[0] == '"' and value[-1] == '"')
-                    or (value[0] == "'" and value[-1] == "'")
-                ):
-                    value = value[1:-1]
-                _set_env_if_absent(key, value, str(dotenv_path))
-        except Exception:
-            pass
-        return  # stop after the first file found
+        if dotenv_path.exists():
+            _read_dotenv_file(dotenv_path)
+            return  # stop after first found at plugin root
+
+    # 2. ~/.kumiho/.env.local fallback
+    kumiho_env = Path.home() / ".kumiho" / ".env.local"
+    if kumiho_env.exists():
+        _read_dotenv_file(kumiho_env)
 
 
 def _hydrate_env_from_plugin_mcp() -> None:

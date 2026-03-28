@@ -23,6 +23,7 @@ import os
 import platform
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # Ensure stdout can handle Unicode (em dashes, box drawing, etc.)
@@ -48,6 +49,7 @@ VENV_PYTHON = VENV_DIR / BIN / f"python{EXT}"
 CRED_PATH = KUMIHO_DIR / "kumiho_authentication.json"
 MCP_JSON = PLUGIN_DIR / ".mcp.json"
 ENV_LOCAL = PLUGIN_DIR / ".env.local"
+ENV_LOCAL_FALLBACK = KUMIHO_DIR / ".env.local"  # used when plugin dir is read-only
 SKILL_MD = PLUGIN_DIR / "skills" / "kumiho-memory" / "SKILL.md"
 REFS_DIR = PLUGIN_DIR / "skills" / "kumiho-memory" / "references"
 INGEST_SCRIPT = SCRIPT_DIR / "ingest-skills.py"
@@ -286,7 +288,32 @@ def cache_token(token: str) -> bool:
     else:
         existing.pop("api_token_expires_at", None)
 
-    CRED_PATH.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+    # Atomic write — write to a temp file in the same directory then rename.
+    # Prevents a 0-byte credential file if the process is interrupted or if
+    # an MCP server restart races with the write.
+    content = json.dumps(existing, indent=2) + "\n"
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=KUMIHO_DIR, prefix=".cred_tmp_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.replace(tmp_path, CRED_PATH)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+            raise
+    except Exception:
+        # Fallback to non-atomic write if temp approach fails (e.g. cross-device)
+        CRED_PATH.write_text(content, encoding="utf-8")
+
+    # Set restrictive permissions (owner read/write only)
+    try:
+        os.chmod(CRED_PATH, 0o600)
+    except Exception:
+        pass
+
     return True
 
 
@@ -582,15 +609,22 @@ def patch_mcp_json(token: str | None) -> None:
         warn("Claude Desktop config not found — restart Claude Desktop after onboarding")
 
     # 3. .env.local for Claude Code / run_kumiho_mcp.py
+    env_content = (
+        f"# Kumiho API token (written by setup wizard)\n"
+        f"KUMIHO_AUTH_TOKEN={token}\n"
+    )
     try:
-        ENV_LOCAL.write_text(
-            f"# Kumiho API token (written by setup wizard)\n"
-            f"KUMIHO_AUTH_TOKEN={token}\n",
-            encoding="utf-8",
-        )
+        ENV_LOCAL.write_text(env_content, encoding="utf-8")
         ok(f"Token written to {ENV_LOCAL.name}")
     except OSError:
-        pass  # Non-critical if plugin dir is read-only
+        # Plugin dir is read-only (e.g. Cowork) — fall back to ~/.kumiho/.env.local
+        warn(f"Plugin dir is read-only — writing .env.local to {ENV_LOCAL_FALLBACK}")
+        try:
+            KUMIHO_DIR.mkdir(parents=True, exist_ok=True)
+            ENV_LOCAL_FALLBACK.write_text(env_content, encoding="utf-8")
+            ok(f"Token written to {ENV_LOCAL_FALLBACK}")
+        except OSError as e:
+            warn(f"Could not write .env.local to fallback location: {e}")
 
 
 # ---------------------------------------------------------------------------
