@@ -464,14 +464,39 @@ def _try_write_token_to_config(config_path: Path, token: str) -> bool:
         return False
 
 
+def _upsert_shell_export(rc_path: Path, key: str, value: str) -> bool:
+    """Upsert `export KEY="value"` in a shell rc/env file."""
+    marker = f"export {key}="
+    new_line = f'export {key}="{value}"\n'
+    try:
+        existing = rc_path.read_text(encoding="utf-8") if rc_path.exists() else ""
+        lines = existing.splitlines(keepends=True)
+        updated = [new_line if l.startswith(marker) else l for l in lines]
+        if not any(l.startswith(marker) for l in lines):
+            updated.append(new_line)
+        rc_path.write_text("".join(updated), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
 def _set_os_env_var(key: str, value: str) -> bool:
     """Persist an environment variable at the OS user level.
 
-    Windows: writes to HKCU\\Environment via winreg and broadcasts
-             WM_SETTINGCHANGE so running apps (including Claude Desktop)
-             pick it up without a full reboot.
-    macOS/Linux: appends/updates an export line in ~/.zshenv (created if
-                 absent).  New Claude Desktop processes will inherit it.
+    Windows:
+      - Writes to HKCU\\Environment via winreg (persists across reboots)
+      - Broadcasts WM_SETTINGCHANGE so running apps see it immediately
+
+    macOS:
+      - Runs `launchctl setenv` to inject into the current launchd user
+        session — running Claude Desktop picks it up on next MCP restart
+      - Writes to ~/.zshenv for persistence across reboots
+
+    Linux:
+      - Runs `systemctl --user set-environment` for the current systemd
+        user session (falls back silently if systemd not available)
+      - Writes to ~/.config/environment.d/kumiho.conf (systemd env drop-in,
+        persists across reboots) and ~/.profile as a portable fallback
     """
     if IS_WIN:
         try:
@@ -482,7 +507,6 @@ def _set_os_env_var(key: str, value: str) -> bool:
             )
             winreg.SetValueEx(key_handle, key, 0, winreg.REG_SZ, value)
             winreg.CloseKey(key_handle)
-            # Broadcast so Explorer and GUI apps see the change immediately
             import ctypes
             HWND_BROADCAST = 0xFFFF
             WM_SETTINGCHANGE = 0x001A
@@ -492,21 +516,38 @@ def _set_os_env_var(key: str, value: str) -> bool:
             return True
         except Exception:
             return False
-    else:
-        # Write to ~/.zshenv — sourced by zsh for all session types
-        zshenv = Path.home() / ".zshenv"
-        marker = f"export {key}="
+
+    elif platform.system() == "Darwin":
+        # Inject into running launchd user session (immediate effect)
         try:
-            existing = zshenv.read_text(encoding="utf-8") if zshenv.exists() else ""
-            lines = existing.splitlines(keepends=True)
-            new_line = f'export {key}="{value}"\n'
-            updated = [new_line if l.startswith(marker) else l for l in lines]
-            if not any(l.startswith(marker) for l in lines):
-                updated.append(new_line)
-            zshenv.write_text("".join(updated), encoding="utf-8")
-            return True
+            subprocess.run(
+                ["launchctl", "setenv", key, value],
+                capture_output=True, timeout=5,
+            )
         except Exception:
-            return False
+            pass
+        # Persist across reboots via ~/.zshenv (zsh is macOS default shell)
+        return _upsert_shell_export(Path.home() / ".zshenv", key, value)
+
+    else:
+        # Linux — inject into systemd user session (immediate for new processes)
+        try:
+            subprocess.run(
+                ["systemctl", "--user", "set-environment", f"{key}={value}"],
+                capture_output=True, timeout=5,
+            )
+        except Exception:
+            pass
+        # Persist via systemd environment drop-in
+        env_dir = Path.home() / ".config" / "environment.d"
+        env_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            (env_dir / "kumiho.conf").write_text(f"{key}={value}\n", encoding="utf-8")
+        except Exception:
+            pass
+        # Also write ~/.profile as portable fallback for non-systemd distros
+        _upsert_shell_export(Path.home() / ".profile", key, value)
+        return True
 
 
 def patch_mcp_json(token: str | None) -> None:
