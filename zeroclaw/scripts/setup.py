@@ -274,10 +274,10 @@ def setup_auth() -> str | None:
     if existing_email:
         ok(f"Already authenticated as {existing_email}")
         if not ask_yes_no("Re-authenticate with a new token?", default_yes=False):
-            # Return existing token
+            # Return existing token — prefer id_token (JWT) over api_token
             try:
                 creds = json.loads(CRED_PATH.read_text(encoding="utf-8"))
-                return creds.get("api_token") or creds.get("id_token")
+                return creds.get("id_token") or creds.get("api_token")
             except Exception:
                 return None
 
@@ -665,27 +665,62 @@ def setup_skill_copy() -> None:
 
 
 def setup_env_token(token: str | None) -> None:
-    """Write KUMIHO_AUTH_TOKEN to .env file for ZeroClaw."""
-    if not token:
+    """Write KUMIHO_AUTH_TOKEN to .env file for ZeroClaw.
+
+    The MCP server requires a Firebase ID token (JWT with 3 dot-separated
+    parts).  This function resolves the best available JWT in priority order:
+
+    1. ``id_token`` in ``~/.kumiho/kumiho_authentication.json`` — written by
+       ``kumiho-cli login`` / ``kumiho.auth_cli login``.
+    2. The *passed* token, if it is itself a valid JWT.
+    3. ``api_token`` in credentials, if it is a valid JWT (some auth flows
+       store the Firebase token under this key).
+
+    If none of those yield a JWT the function warns and skips writing so we
+    never silently write a plain API key that the MCP server will reject.
+    """
+    # --- resolve the best JWT from credentials + passed token ---------------
+    jwt_token: str | None = None
+
+    if CRED_PATH.exists():
+        try:
+            creds = json.loads(CRED_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            creds = {}
+
+        # Prefer id_token (Firebase JWT written by CLI login)
+        for key in ("id_token", "api_token"):
+            candidate = creds.get(key, "")
+            if candidate and decode_jwt_payload(candidate) is not None:
+                jwt_token = candidate
+                break
+
+    # Fall back to the token passed in (e.g. user pasted a raw JWT)
+    if not jwt_token and token and decode_jwt_payload(token) is not None:
+        jwt_token = token
+
+    if not jwt_token:
+        fail("No valid JWT found — KUMIHO_AUTH_TOKEN not written to .env")
+        warn("API keys (kh_live_...) are rejected by the MCP server.")
+        warn("Run the setup wizard again and choose 'CLI login', or run:")
+        warn("  python -m kumiho.auth_cli login")
+        warn(f"Then copy the 'id_token' value from {CRED_PATH} into")
+        warn(f"  {ZEROCLAW_DIR / '.env'}  as  KUMIHO_AUTH_TOKEN=<token>")
         return
 
-    # Write to ~/.kumiho/.env (shared)
+    # --- write the JWT to env files -----------------------------------------
     env_path = KUMIHO_DIR / ".env"
-    env_path.write_text(
-        f"KUMIHO_AUTH_TOKEN={token}\n",
-        encoding="utf-8",
-    )
-    ok(f"Token written to {env_path}")
+    env_path.write_text(f"KUMIHO_AUTH_TOKEN={jwt_token}\n", encoding="utf-8")
+    ok(f"JWT written to {env_path}")
 
-    # Also write to zeroclaw .env if directory exists
     if ZEROCLAW_DIR.exists():
         zc_env = ZEROCLAW_DIR / ".env"
         zc_env.write_text(
-            f"# Kumiho API token (added by kumiho-setup)\n"
-            f"KUMIHO_AUTH_TOKEN={token}\n",
+            f"# Kumiho auth token (added by kumiho-setup)\n"
+            f"KUMIHO_AUTH_TOKEN={jwt_token}\n",
             encoding="utf-8",
         )
-        ok(f"Token written to {zc_env}")
+        ok(f"JWT written to {zc_env}")
 
 
 # ---------------------------------------------------------------------------
