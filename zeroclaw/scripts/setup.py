@@ -364,6 +364,7 @@ def setup_auth() -> str | None:
 
 MANAGED_COMMENT = "# Kumiho Memory MCP Server (added by kumiho-setup)"
 
+# Full block: written when no [mcp] section exists yet.
 MCP_CONFIG_BLOCK = """\
 # Kumiho Memory MCP Server (added by kumiho-setup)
 [mcp]
@@ -381,11 +382,148 @@ tool_timeout_secs = 30
 KUMIHO_AUTH_TOKEN = "${{KUMIHO_AUTH_TOKEN}}"
 """
 
-# Sections owned by our managed block — used to find where the block ends
+# Server-only block: written when [mcp] already exists to avoid duplicate key.
+MCP_SERVER_BLOCK = """\
+# Kumiho Memory MCP Server (added by kumiho-setup)
+[[mcp.servers]]
+name = "kumiho_memory"
+transport = "stdio"
+command = "{python_path}"
+args = ["-m", "kumiho.mcp_server"]
+tool_timeout_secs = 30
+
+[mcp.servers.env]
+KUMIHO_AUTH_TOKEN = "${{KUMIHO_AUTH_TOKEN}}"
+"""
+
+# Sections owned by our managed block — used to find where the block ends.
+# [mcp] is included because we may have written it as part of the full block.
 _OWN_SECTIONS = frozenset({
     "[mcp]", "[[mcp.servers]]", "[mcp.servers.env]",
     "[mcp_servers.kumiho_memory]", "[mcp_servers.kumiho_memory.env]",
 })
+
+
+def _strip_managed_block(config_text: str) -> str:
+    """Return config_text with our managed block removed (for external-section detection)."""
+    lines = config_text.splitlines()
+    result: list[str] = []
+    i = 0
+    while i < len(lines):
+        if lines[i].strip() == MANAGED_COMMENT or lines[i].strip() == "[mcp_servers.kumiho_memory]":
+            # Skip forward until we hit a non-owned top-level section or EOF
+            i += 1
+            while i < len(lines):
+                stripped = lines[i].strip()
+                if stripped.startswith("[") and stripped not in _OWN_SECTIONS:
+                    break
+                i += 1
+        else:
+            result.append(lines[i])
+            i += 1
+    return "\n".join(result)
+
+
+def _external_mcp_section_exists(config_text: str) -> bool:
+    """Return True if [mcp] exists in the config outside our managed block."""
+    import re
+    stripped = _strip_managed_block(config_text)
+    return bool(re.search(r"^\s*\[mcp\]\s*$", stripped, re.MULTILINE))
+
+
+def _patch_external_mcp_section(config_text: str) -> tuple[str, list[str]]:
+    """Fix conflicts in an existing [mcp] section before we insert [[mcp.servers]].
+
+    Handles:
+    - ``servers = [...]`` inline key → removed (conflicts with ``[[mcp.servers]]``)
+    - ``enabled = false`` → changed to ``enabled = true``
+    - ``enabled`` key missing → ``enabled = true`` inserted after ``[mcp]``
+
+    Returns ``(patched_text, list_of_human_readable_changes)``.
+    Only operates on the external [mcp] section; our managed block is left untouched.
+    """
+    import re
+
+    lines = config_text.splitlines()
+    result: list[str] = []
+    changes: list[str] = []
+    in_our_block = False
+    in_mcp_section = False
+    mcp_header_idx: int | None = None  # index in result[] where [mcp] line lives
+    found_enabled = False
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # ── Track our managed block so we never mutate it ──────────────────
+        if stripped == MANAGED_COMMENT:
+            in_our_block = True
+        if in_our_block:
+            result.append(line)
+            i += 1
+            # Leave our block when we hit the next non-owned top-level section
+            if in_our_block and stripped != MANAGED_COMMENT and stripped.startswith("[") and stripped not in _OWN_SECTIONS:
+                in_our_block = False
+            continue
+
+        # ── Entering [mcp] section ──────────────────────────────────────────
+        if stripped == "[mcp]":
+            in_mcp_section = True
+            mcp_header_idx = len(result)
+            found_enabled = False
+            result.append(line)
+            i += 1
+            continue
+
+        # ── Leaving [mcp] section ───────────────────────────────────────────
+        if in_mcp_section and stripped.startswith("["):
+            if not found_enabled and mcp_header_idx is not None:
+                result.insert(mcp_header_idx + 1, "enabled = true")
+                changes.append("added 'enabled = true' to [mcp]")
+            in_mcp_section = False
+            result.append(line)
+            i += 1
+            continue
+
+        # ── Mutations inside [mcp] ──────────────────────────────────────────
+        if in_mcp_section:
+            # Fix disabled flag
+            if re.match(r"^\s*enabled\s*=\s*false\s*$", line, re.IGNORECASE):
+                result.append(re.sub(r"(?i)false", "true", line, count=1))
+                changes.append("set 'enabled = true' in [mcp] (was false)")
+                found_enabled = True
+                i += 1
+                continue
+            if re.match(r"^\s*enabled\s*=", line):
+                found_enabled = True
+
+            # Remove inline servers key (single-line or multi-line)
+            if re.match(r"^\s*servers\s*=\s*\[", line):
+                if "]" in line:
+                    # single-line: servers = [...]
+                    changes.append("removed inline 'servers = [...]' from [mcp]")
+                    i += 1
+                else:
+                    # multi-line: servers = [\n  ...\n]
+                    i += 1
+                    while i < len(lines) and "]" not in lines[i]:
+                        i += 1
+                    if i < len(lines):
+                        i += 1  # consume closing ]
+                    changes.append("removed multi-line 'servers = [...]' from [mcp]")
+                continue
+
+        result.append(line)
+        i += 1
+
+    # Handle [mcp] as the very last section with no trailing header
+    if in_mcp_section and not found_enabled and mcp_header_idx is not None:
+        result.insert(mcp_header_idx + 1, "enabled = true")
+        changes.append("added 'enabled = true' to [mcp]")
+
+    return "\n".join(result), changes
 
 
 def upsert_kumiho_mcp_config(config_text: str, block: str) -> tuple[str, bool]:
@@ -474,7 +612,14 @@ def setup_zeroclaw_config(venv_python: Path) -> None:
             return
 
     python_path = str(venv_python).replace("\\", "/")
-    block = MCP_CONFIG_BLOCK.format(python_path=python_path)
+    # Use server-only block if [mcp] already exists externally to avoid duplicate key error.
+    if _external_mcp_section_exists(config_text):
+        config_text, patch_changes = _patch_external_mcp_section(config_text)
+        for change in patch_changes:
+            ok(f"Patched config.toml: {change}")
+        block = MCP_SERVER_BLOCK.format(python_path=python_path)
+    else:
+        block = MCP_CONFIG_BLOCK.format(python_path=python_path)
 
     if ask_yes_no(f"Add kumiho_memory MCP server to {ZEROCLAW_CONFIG}?"):
         updated_text, replaced = upsert_kumiho_mcp_config(config_text, block)
