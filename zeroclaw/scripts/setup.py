@@ -315,7 +315,9 @@ def setup_auth() -> str | None:
             ok("Authenticated via CLI login")
             try:
                 creds = json.loads(CRED_PATH.read_text(encoding="utf-8"))
-                return creds.get("api_token") or creds.get("id_token")
+                # id_token is the Firebase JWT the MCP server expects;
+                # api_token may be a non-JWT key that the MCP server rejects.
+                return creds.get("id_token") or creds.get("api_token")
             except Exception:
                 return None
         else:
@@ -338,6 +340,9 @@ def setup_auth() -> str | None:
     claims = decode_jwt_payload(token)
     if claims is None:
         fail("Token doesn't look like a valid JWT (expected 3 dot-separated base64url parts)")
+        warn("Dashboard API keys (e.g. kh_live_...) are NOT accepted by the MCP server.")
+        warn("The MCP server requires a Firebase ID token or Control Plane JWT.")
+        warn("Use 'CLI login' instead to obtain the correct token automatically.")
         if not ask_yes_no("Store it anyway?", default_yes=False):
             return None
 
@@ -357,29 +362,61 @@ def setup_auth() -> str | None:
 # ---------------------------------------------------------------------------
 
 
-MCP_CONFIG_BLOCK = """\
+MANAGED_COMMENT = "# Kumiho Memory MCP Server (added by kumiho-setup)"
 
+MCP_CONFIG_BLOCK = """\
 # Kumiho Memory MCP Server (added by kumiho-setup)
-[mcp_servers.kumiho_memory]
+[mcp]
+enabled = true
+deferred_loading = false
+
+[[mcp.servers]]
+name = "kumiho_memory"
 transport = "stdio"
 command = "{python_path}"
 args = ["-m", "kumiho.mcp_server"]
 tool_timeout_secs = 30
 
-[mcp_servers.kumiho_memory.env]
+[mcp.servers.env]
 KUMIHO_AUTH_TOKEN = "${{KUMIHO_AUTH_TOKEN}}"
 """
 
+# Sections owned by our managed block — used to find where the block ends
+_OWN_SECTIONS = frozenset({
+    "[mcp]", "[[mcp.servers]]", "[mcp.servers.env]",
+    "[mcp_servers.kumiho_memory]", "[mcp_servers.kumiho_memory.env]",
+})
+
 
 def upsert_kumiho_mcp_config(config_text: str, block: str) -> tuple[str, bool]:
-    """Insert or replace the managed kumiho_memory MCP block."""
+    """Insert or replace the managed kumiho_memory MCP block.
+
+    Detects both the new ``[[mcp.servers]]`` format and the old
+    ``[mcp_servers.kumiho_memory]`` format so re-running after a manual
+    edit or a previous install doesn't create duplicates.
+    """
     lines = config_text.splitlines()
     start = None
 
     for index, line in enumerate(lines):
-        if line.strip() == "[mcp_servers.kumiho_memory]":
+        stripped = line.strip()
+        # New format: our comment marker
+        if stripped == MANAGED_COMMENT:
             start = index
             break
+        # Old format: legacy section header
+        if stripped == "[mcp_servers.kumiho_memory]":
+            start = index
+            break
+        # New format without our comment: [[mcp.servers]] followed by name = "kumiho_memory"
+        if stripped == "[[mcp.servers]]":
+            # Look ahead up to 5 lines for the name key
+            for lookahead in range(index + 1, min(index + 6, len(lines))):
+                if lines[lookahead].strip().startswith("name") and "kumiho_memory" in lines[lookahead]:
+                    start = index
+                    break
+            if start is not None:
+                break
 
     if start is None:
         text = config_text.rstrip()
@@ -387,18 +424,23 @@ def upsert_kumiho_mcp_config(config_text: str, block: str) -> tuple[str, bool]:
             text += "\n\n"
         return text + block.strip("\n") + "\n", False
 
+    # Find end of block: first top-level section not owned by us
     end = len(lines)
     for index in range(start + 1, len(lines)):
         stripped = lines[index].strip()
-        if stripped.startswith("[") and not stripped.startswith("[mcp_servers.kumiho_memory"):
+        if stripped.startswith("[") and stripped not in _OWN_SECTIONS:
             end = index
             break
 
     updated_lines = lines[:start]
-    if updated_lines and updated_lines[-1].strip():
+    # Strip trailing blank lines before our block, then add exactly one blank separator
+    while updated_lines and not updated_lines[-1].strip():
+        updated_lines.pop()
+    if updated_lines:
+        updated_lines.append("")
         updated_lines.append("")
     updated_lines.extend(block.strip("\n").splitlines())
-    if end < len(lines) and updated_lines and updated_lines[-1].strip():
+    if end < len(lines) and lines[end].strip():
         updated_lines.append("")
     updated_lines.extend(lines[end:])
 
@@ -419,9 +461,13 @@ def setup_zeroclaw_config(venv_python: Path) -> None:
             encoding="utf-8",
         )
 
-    # Check if already configured
+    # Check if already configured (detect both new and old formats)
     config_text = ZEROCLAW_CONFIG.read_text(encoding="utf-8")
-    has_existing_config = "[mcp_servers.kumiho_memory]" in config_text
+    has_existing_config = (
+        MANAGED_COMMENT in config_text
+        or "[mcp_servers.kumiho_memory]" in config_text
+        or ('[[mcp.servers]]' in config_text and 'name = "kumiho_memory"' in config_text)
+    )
     if has_existing_config:
         ok("MCP server already configured in config.toml")
         if not ask_yes_no("Overwrite existing kumiho_memory config?", default_yes=False):

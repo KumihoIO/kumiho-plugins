@@ -3,19 +3,28 @@
 #
 # Prerequisites:
 #   pip install "kumiho[mcp]>=0.9.16" "kumiho-memory[all]>=0.3.16"
-#   export KUMIHO_AUTH_TOKEN=kh_live_...
+#   export KUMIHO_AUTH_TOKEN=<your-firebase-id-token>
+#
+# Obtain a token via:
+#   python -m kumiho.auth_cli login
+# The token is stored in ~/.kumiho/kumiho_authentication.json (id_token field).
 #
 # After adding this config, ZeroClaw will discover all kumiho tools
 # via the MCP handshake. Tools are prefixed as kumiho_memory__<name>.
 # Use tool_search("kumiho") in-session to see available tools.
 
-[mcp_servers.kumiho_memory]
+[mcp]
+enabled = true
+deferred_loading = false
+
+[[mcp.servers]]
+name = "kumiho_memory"
 transport = "stdio"
 command = "python"
 args = ["-m", "kumiho.mcp_server"]
 tool_timeout_secs = 30
 
-[mcp_servers.kumiho_memory.env]
+[mcp.servers.env]
 KUMIHO_AUTH_TOKEN = "${KUMIHO_AUTH_TOKEN}"
 # Optional: override control plane URL (default: https://control.kumiho.cloud)
 # KUMIHO_CONTROL_PLANE_URL = "${KUMIHO_CONTROL_PLANE_URL}"
