@@ -398,49 +398,158 @@ def setup_auth(cli_token: str | None = None) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Patch .mcp.json with token
+# Step 3: Patch MCP config with token
 # ---------------------------------------------------------------------------
 
 
-def patch_mcp_json(token: str | None) -> None:
-    """Verify .mcp.json config and write token to .env.local.
+def _claude_desktop_config_paths() -> list[Path]:
+    """Return platform-specific Claude Desktop global config paths."""
+    paths: list[Path] = []
+    if IS_WIN:
+        local_appdata = os.getenv("LOCALAPPDATA", "")
+        if local_appdata:
+            msix_base = Path(local_appdata) / "Packages"
+            if msix_base.exists():
+                for entry in msix_base.iterdir():
+                    if entry.name.startswith("Claude_") and entry.is_dir():
+                        paths.append(
+                            entry / "LocalCache" / "Roaming" / "Claude"
+                            / "claude_desktop_config.json"
+                        )
+                        break
+        appdata = os.getenv("APPDATA", "")
+        if appdata:
+            paths.append(Path(appdata) / "Claude" / "claude_desktop_config.json")
+    else:
+        paths.append(
+            Path.home() / "Library" / "Application Support" / "Claude"
+            / "claude_desktop_config.json"
+        )
+        xdg = os.getenv("XDG_CONFIG_HOME", "")
+        paths.append(
+            Path(xdg) / "Claude" / "claude_desktop_config.json"
+            if xdg else Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
+        )
+    return paths
 
-    We deliberately do NOT write the token into .mcp.json itself because:
-    - The repo copy should stay clean (template variable, no secrets)
-    - The installed plugin copy should not contain secrets either
-    - run_kumiho_mcp.py already loads the token at startup from:
-      1. ~/.kumiho/kumiho_authentication.json (credential cache)
-      2. .env.local (next to the plugin)
-    """
-    if not MCP_JSON.exists():
-        warn(f".mcp.json not found at {MCP_JSON} — skipping")
-        return
 
+def _try_write_token_to_config(config_path: Path, token: str) -> bool:
+    """Write token into an MCP config file. Returns True on success."""
+    if not config_path.exists():
+        return False
     try:
-        config = json.loads(MCP_JSON.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
-        fail(f"Failed to read .mcp.json: {e}")
-        return
+        body = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    servers = body.get("mcpServers")
+    if not isinstance(servers, dict):
+        return False
+    server = None
+    for name in ("kumiho-memory", "kumiho"):
+        if isinstance(servers.get(name), dict):
+            server = servers[name]
+            break
+    if server is None:
+        return False
+    env = server.get("env")
+    if not isinstance(env, dict):
+        return False
+    if env.get("KUMIHO_AUTH_TOKEN") == token:
+        return True  # already in sync
+    env["KUMIHO_AUTH_TOKEN"] = token
+    try:
+        config_path.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
+        return True
+    except OSError:
+        return False
 
-    servers = config.get("mcpServers", {})
-    server = servers.get("kumiho-memory")
-    if not server:
-        warn("No 'kumiho-memory' entry in .mcp.json — skipping")
-        return
 
-    ok(".mcp.json has kumiho-memory server entry")
+def _set_os_env_var(key: str, value: str) -> bool:
+    """Persist an environment variable at the OS user level.
 
-    # Write .env.local for the run_kumiho_mcp.py bootstrap script
-    if token:
+    Windows: writes to HKCU\\Environment via winreg and broadcasts
+             WM_SETTINGCHANGE so running apps (including Claude Desktop)
+             pick it up without a full reboot.
+    macOS/Linux: appends/updates an export line in ~/.zshenv (created if
+                 absent).  New Claude Desktop processes will inherit it.
+    """
+    if IS_WIN:
         try:
-            ENV_LOCAL.write_text(
-                f"# Kumiho API token (written by setup wizard)\n"
-                f"KUMIHO_AUTH_TOKEN={token}\n",
-                encoding="utf-8",
+            import winreg
+            key_handle = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, "Environment", 0,
+                winreg.KEY_SET_VALUE,
             )
-            ok(f"Token written to {ENV_LOCAL.name}")
-        except OSError:
-            pass  # Non-critical if plugin dir is read-only
+            winreg.SetValueEx(key_handle, key, 0, winreg.REG_SZ, value)
+            winreg.CloseKey(key_handle)
+            # Broadcast so Explorer and GUI apps see the change immediately
+            import ctypes
+            HWND_BROADCAST = 0xFFFF
+            WM_SETTINGCHANGE = 0x001A
+            ctypes.windll.user32.SendMessageW(
+                HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment"
+            )
+            return True
+        except Exception:
+            return False
+    else:
+        # Write to ~/.zshenv — sourced by zsh for all session types
+        zshenv = Path.home() / ".zshenv"
+        marker = f"export {key}="
+        try:
+            existing = zshenv.read_text(encoding="utf-8") if zshenv.exists() else ""
+            lines = existing.splitlines(keepends=True)
+            new_line = f'export {key}="{value}"\n'
+            updated = [new_line if l.startswith(marker) else l for l in lines]
+            if not any(l.startswith(marker) for l in lines):
+                updated.append(new_line)
+            zshenv.write_text("".join(updated), encoding="utf-8")
+            return True
+        except Exception:
+            return False
+
+
+def patch_mcp_json(token: str | None) -> None:
+    """Write token to all reachable MCP config locations.
+
+    Priority:
+      1. OS user-level env var — Claude Desktop inherits it on next launch
+         and WM_SETTINGCHANGE notifies running apps on Windows immediately.
+      2. Claude Desktop global config — triggers MCP server restart now.
+      3. .env.local next to the plugin — picked up by run_kumiho_mcp.py
+         for Claude Code sessions.
+
+    We deliberately do NOT write into the plugin .mcp.json (git-tracked).
+    """
+    if not token:
+        return
+
+    # 1. OS-level user env var
+    if _set_os_env_var("KUMIHO_AUTH_TOKEN", token):
+        ok("KUMIHO_AUTH_TOKEN set as user environment variable (OS level)")
+    else:
+        warn("Could not set OS-level env var — Claude Desktop may need a restart")
+
+    # 2. Claude Desktop global config (triggers restart)
+    desktop_written = False
+    for desktop_path in _claude_desktop_config_paths():
+        if _try_write_token_to_config(desktop_path, token):
+            ok(f"Token written to {desktop_path.name} (MCP server will restart)")
+            desktop_written = True
+            break
+    if not desktop_written:
+        warn("Claude Desktop config not found — restart Claude Desktop after onboarding")
+
+    # 3. .env.local for Claude Code / run_kumiho_mcp.py
+    try:
+        ENV_LOCAL.write_text(
+            f"# Kumiho API token (written by setup wizard)\n"
+            f"KUMIHO_AUTH_TOKEN={token}\n",
+            encoding="utf-8",
+        )
+        ok(f"Token written to {ENV_LOCAL.name}")
+    except OSError:
+        pass  # Non-critical if plugin dir is read-only
 
 
 # ---------------------------------------------------------------------------
@@ -559,7 +668,7 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["KUMIHO_AUTH_TOKEN"] = token
     print()
 
-    # Step 3: Patch .mcp.json
+    # Step 3: Write token to OS env + Desktop config + .env.local
     log("Step 3/5: MCP server configuration")
     patch_mcp_json(token)
     print()
