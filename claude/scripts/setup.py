@@ -4,16 +4,18 @@
 Interactive setup that:
   1. Finds or creates a Python venv with kumiho packages
   2. Authenticates with Kumiho Cloud (paste API token or use existing)
-  3. Patches .mcp.json with auth token (triggers MCP server restart)
+  3. Writes token to .env.local and credential cache (MCP server reads on start)
   4. Ingests discoverable skills into CognitiveMemory/Skills graph
   5. Verifies the MCP server can connect
 
 Usage:
-    python scripts/setup.py
+    python scripts/setup.py                    # interactive
+    python scripts/setup.py --token TOKEN -y   # non-interactive (for Claude Code)
 """
 
 from __future__ import annotations
 
+import argparse
 import base64
 import getpass
 import json
@@ -22,6 +24,14 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
+
+# Ensure stdout can handle Unicode (em dashes, box drawing, etc.)
+# even on Windows consoles with legacy codepages like cp949/cp1252.
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -75,7 +85,12 @@ def hr() -> None:
     print(f"  {DIM}{'─' * 50}{RESET}")
 
 
+AUTO_YES = False  # Set by --yes flag
+
+
 def ask(prompt: str, default: str = "") -> str:
+    if AUTO_YES and default:
+        return default
     suffix = f" [{DIM}{default}{RESET}]" if default else ""
     try:
         answer = input(f"  {prompt}{suffix}: ").strip()
@@ -86,6 +101,8 @@ def ask(prompt: str, default: str = "") -> str:
 
 
 def ask_yes_no(prompt: str, default_yes: bool = True) -> bool:
+    if AUTO_YES:
+        return default_yes
     suffix = "[Y/n]" if default_yes else "[y/N]"
     try:
         answer = input(f"  {prompt} {suffix}: ").strip().lower()
@@ -273,8 +290,32 @@ def cache_token(token: str) -> bool:
     return True
 
 
-def setup_auth() -> str | None:
-    """Authenticate and return the token, or None if skipped."""
+def setup_auth(cli_token: str | None = None) -> str | None:
+    """Authenticate and return the token, or None if skipped.
+
+    If *cli_token* is provided (via ``--token``), skip all interactive
+    prompts and use it directly.
+    """
+    # Fast path: token supplied via CLI — no prompts needed
+    if cli_token:
+        token = clean_token(cli_token)
+        if not token:
+            fail("Empty token supplied via --token")
+            return None
+        claims = decode_jwt_payload(token)
+        if claims is None:
+            fail("Token doesn't look like a valid JWT (expected 3 dot-separated base64url parts)")
+            return None
+        if cache_token(token):
+            email = (claims.get("email") or claims.get("created_by") or "unknown") if claims else "unknown"
+            ok(f"Token cached at {CRED_PATH}")
+            if email != "unknown":
+                ok(f"Authenticated as {email}")
+        else:
+            fail("Failed to cache token")
+        return token
+
+    # Interactive path
     existing_email = check_existing_auth()
     if existing_email:
         ok(f"Already authenticated as {existing_email}")
@@ -362,7 +403,15 @@ def setup_auth() -> str | None:
 
 
 def patch_mcp_json(token: str | None) -> None:
-    """Write token into .mcp.json so Claude discovers the MCP server."""
+    """Verify .mcp.json config and write token to .env.local.
+
+    We deliberately do NOT write the token into .mcp.json itself because:
+    - The repo copy should stay clean (template variable, no secrets)
+    - The installed plugin copy should not contain secrets either
+    - run_kumiho_mcp.py already loads the token at startup from:
+      1. ~/.kumiho/kumiho_authentication.json (credential cache)
+      2. .env.local (next to the plugin)
+    """
     if not MCP_JSON.exists():
         warn(f".mcp.json not found at {MCP_JSON} — skipping")
         return
@@ -376,29 +425,12 @@ def patch_mcp_json(token: str | None) -> None:
     servers = config.get("mcpServers", {})
     server = servers.get("kumiho-memory")
     if not server:
-        warn("No 'kumiho-memory' entry in .mcp.json — skipping token patch")
+        warn("No 'kumiho-memory' entry in .mcp.json — skipping")
         return
 
-    env = server.setdefault("env", {})
-    current = env.get("KUMIHO_AUTH_TOKEN", "")
+    ok(".mcp.json has kumiho-memory server entry")
 
-    # Check if it has a hardcoded token (not a template)
-    is_template = current.startswith("${") and current.endswith("}")
-    has_real_token = current.startswith("eyJ") and len(current) > 50
-
-    if token:
-        env["KUMIHO_AUTH_TOKEN"] = token
-        MCP_JSON.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-        ok("Token written to .mcp.json (MCP server will restart)")
-    elif has_real_token:
-        # No new token provided but there's already one — leave it
-        ok(".mcp.json already has an auth token")
-    elif is_template:
-        ok(".mcp.json uses env var template — set KUMIHO_AUTH_TOKEN in your environment")
-    else:
-        warn(".mcp.json has no auth token — run /kumiho-onboard or set KUMIHO_AUTH_TOKEN")
-
-    # Also write .env.local for the run_kumiho_mcp.py bootstrap script
+    # Write .env.local for the run_kumiho_mcp.py bootstrap script
     if token:
         try:
             ENV_LOCAL.write_text(
@@ -481,7 +513,28 @@ def verify_connection(venv_python: Path, token: str | None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Kumiho Memory setup wizard for Claude Code / Claude Desktop",
+    )
+    p.add_argument(
+        "--token",
+        metavar="TOKEN",
+        help="API token (skips interactive auth prompts)",
+    )
+    p.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Auto-confirm all yes/no prompts (non-interactive mode)",
+    )
+    return p.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    global AUTO_YES
+    args = parse_args(argv)
+    AUTO_YES = args.yes
+
     print()
     print(f"  {BOLD}Kumiho Memory Setup for Claude{RESET}")
     print(f"  {DIM}Persistent graph-native cognitive memory{RESET}")
@@ -501,7 +554,7 @@ def main() -> int:
 
     # Step 2: Auth
     log("Step 2/5: Authentication")
-    token = setup_auth()
+    token = setup_auth(cli_token=args.token)
     if token:
         os.environ["KUMIHO_AUTH_TOKEN"] = token
     print()

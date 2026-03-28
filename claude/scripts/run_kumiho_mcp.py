@@ -570,29 +570,22 @@ def _bootstrap_desktop_server_entries() -> None:
             )
 
 
-def _sync_token_to_mcp_json() -> None:
-    """Write the resolved token into MCP config so Claude Desktop picks it up.
+def _sync_token_to_desktop_config() -> None:
+    """Write the resolved token into Claude Desktop's global config.
 
-    Tries the plugin-local ``.mcp.json`` first.  If that fails (read-only
-    filesystem), falls back to the Claude Desktop global config.
+    This triggers Claude Desktop to restart the MCP server so it picks up
+    the new token immediately.  We deliberately skip the plugin-local
+    ``.mcp.json`` — that file is git-tracked and must stay clean (template
+    variables only).  The credential cache and ``.env.local`` serve Claude
+    Code; the Desktop config serves Claude Desktop.
     """
     token = _clean_token_candidate((os.getenv("KUMIHO_AUTH_TOKEN", "") or "").strip())
     if not token or _looks_like_placeholder(token):
         return
 
-    # Try plugin-local .mcp.json first
-    if _try_sync_token_to_config(_plugin_root() / ".mcp.json", token):
-        return
-
-    # Fallback: Claude Desktop global config
     for desktop_path in _claude_desktop_config_paths():
         if _try_sync_token_to_config(desktop_path, token):
             return
-
-    print(
-        "[kumiho-claude] Warning: could not sync token to any MCP config file.",
-        file=sys.stderr,
-    )
 
 
 def _build_discovery_url(base_url: str) -> str:
@@ -806,7 +799,7 @@ def main() -> int:
     _sanitize_placeholder_env_vars()
     _hydrate_env_from_local_config()
     _bootstrap_desktop_server_entries()
-    _sync_token_to_mcp_json()
+    _sync_token_to_desktop_config()
     _validate_auth_token()
     _warn_auth()
     try:
