@@ -73,9 +73,8 @@ have built-in cron, but you can set it up at the OS level:
 schtasks /create /tn "Kumiho DreamState" /tr "python -m kumiho_memory dream" /sc daily /st 03:00
 ```
 
-**ZeroClaw** and **OpenClaw** have built-in scheduling via SKILL.toml cron and
-plugin config respectively. For Claude, OS-level scheduling is the recommended
-approach.
+**OpenClaw** has built-in scheduling via plugin config. For Claude, OS-level
+scheduling is the recommended approach.
 
 You can also use `python -m kumiho_memory dream` from the CLI at any time.
 
