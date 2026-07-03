@@ -128,13 +128,13 @@ ZeroClaw prefixes MCP tools with the server name and double underscore:
 
 | Tool | ZeroClaw syntax | Notes |
 |------|----------------|-------|
-| **engage** | `kumiho_memory__engage` | Composite: recall + context building |
-| **reflect** | `kumiho_memory__reflect` | Composite: buffer response + store captures + edge discovery |
-| recall | `kumiho_memory__recall` | Low-level — prefer engage |
-| store | `kumiho_memory__store` | Low-level — prefer reflect |
-| retrieve | `kumiho_memory__retrieve` | |
-| consolidate | `kumiho_memory__consolidate` | |
-| dream_state | `kumiho_memory__memory_dream_state` | |
+| **engage** | `kumiho_memory__kumiho_memory_engage` | Composite: recall + context building |
+| **reflect** | `kumiho_memory__kumiho_memory_reflect` | Composite: buffer response + store captures + edge discovery |
+| recall | `kumiho_memory__kumiho_memory_recall` | Low-level — prefer engage |
+| store | `kumiho_memory__kumiho_memory_store` | Low-level — prefer reflect |
+| retrieve | `kumiho_memory__kumiho_memory_retrieve` | |
+| consolidate | `kumiho_memory__kumiho_memory_consolidate` | |
+| dream_state | `kumiho_memory__kumiho_memory_dream_state` | |
 
 If tools aren't loaded yet, use `tool_search("kumiho")` in-session.
 
@@ -144,7 +144,7 @@ All three Kumiho plugins share the same Neo4j + Redis backend, `CognitiveMemory`
 
 | Capability        | Claude Code                                 | ZeroClaw                                  | OpenClaw                                      |
 | ----------------- | ------------------------------------------- | ----------------------------------------- | --------------------------------------------- |
-| Tool syntax       | `kumiho_memory_recall(...)`                 | `kumiho_memory__recall(...)`              | `memory_search(...)` / `creative_capture(...)` |
+| Tool syntax       | `kumiho_memory_recall(...)`                 | `kumiho_memory__kumiho_memory_recall(...)`              | `memory_search(...)` / `creative_capture(...)` |
 | Behavioral rules  | Discovery-first SKILL.md + SessionStart context | Discovery-first SKILL.md               | TypeScript hooks + injected memory instructions |
 | Session bootstrap | SessionStart hook + SKILL bootstrap         | Inline SKILL bootstrap                    | TypeScript identity bootstrap in `before_prompt_build` |
 | Recall behavior   | Agent-triggered recall guided by SKILL      | Agent-triggered recall guided by SKILL    | Automatic `before_prompt_build` hook           |
@@ -171,4 +171,4 @@ All three Kumiho plugins share the same Neo4j + Redis backend, `CognitiveMemory`
 
 **Tools not found**: Use `tool_search("kumiho")` in ZeroClaw to trigger deferred tool loading. The MCP `tools/list` handshake must complete before tools are available.
 
-**Skills not discoverable**: Run `scripts/ingest-skills.py` to populate the graph. Verify with `kumiho_memory__retrieve(space_path="CognitiveMemory/Skills")`.
+**Skills not discoverable**: Run `scripts/ingest-skills.py` to populate the graph. Verify with `kumiho_memory__kumiho_memory_retrieve(space_paths=["CognitiveMemory/Skills"])`.

@@ -109,7 +109,7 @@ kumiho_memory_engage(
 **Structured lookup** (when you know WHICH skill):
 ```
 kumiho_memory_retrieve(
-  space_path: "CognitiveMemory/Skills",
+  space_paths: ["CognitiveMemory/Skills"],
   mode: "latest"
 )
 ```
@@ -185,4 +185,4 @@ DreamState will review and refine it.
 
 **Edge types**: DERIVED_FROM (default, auto from reflect), DEPENDS_ON (assumptions), REFERENCED (auto from discover_edges), CREATED_FROM (artifacts), SUPERSEDES (belief revision), CONTAINS (bundles)
 
-Note: Tool names are agent-specific. Claude uses `kumiho_memory_<tool>`, ZeroClaw uses `kumiho_memory__<tool>` (double underscore), OpenClaw uses wrapped names like `memory_search`.
+Note: Tool names are agent-specific. Claude uses the tool's advertised name directly (`kumiho_memory_engage`), ZeroClaw prefixes it with the MCP server name and a double underscore (`kumiho_memory__kumiho_memory_engage`), OpenClaw uses wrapped names like `memory_search`.

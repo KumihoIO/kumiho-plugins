@@ -15,7 +15,7 @@ Sensitive personal context (health, finances, relationships, legal), info about 
 ## User control
 - **"What do you know about me?"** → `kumiho_memory_engage` with broad query, share transparently
 - **"Forget X"** → `kumiho_deprecate_item(item_kref, deprecated=true)` immediately
-- **"Show everything including forgotten"** → search with `include_deprecated=true`
+- **"Show everything including forgotten"** → `kumiho_fulltext_search(query=..., include_deprecated=true)` — the only search tool that accepts this parameter
 - **"Don't remember this session"** → skip artifact/consolidation, `kumiho_chat_clear`
 
 Nothing is silently overwritten — old revisions preserved. Dream State has safety guards (published items never auto-deprecated, 50% circuit breaker).

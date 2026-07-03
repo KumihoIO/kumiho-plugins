@@ -70,7 +70,7 @@ export const TOOL_SCHEMAS = {
       "Use this proactively when the user asks about past decisions, preferences, prior work, " +
       "or anything that might have been discussed in previous conversations. " +
       "Never say 'I don't remember' without searching first. " +
-      "Also use with space_path 'CognitiveMemory/Skills' to discover behavioral skills " +
+      "Also use with spacePath 'CognitiveMemory/Skills' to discover behavioral skills " +
       "(creative output tracking, graph traversal, privacy rules, session management).",
     parameters: {
       type: "object" as const,
