@@ -55,7 +55,7 @@ REFS_DIR = PLUGIN_DIR / "skills" / "kumiho-memory" / "references"
 INGEST_SCRIPT = SCRIPT_DIR / "ingest-skills.py"
 
 # ---------------------------------------------------------------------------
-# Console helpers (same as ZeroClaw setup for consistency)
+# Console helpers
 # ---------------------------------------------------------------------------
 
 RESET = "\033[0m"

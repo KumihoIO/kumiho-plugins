@@ -100,6 +100,11 @@ function mapMemoryEntry(
   };
 }
 
+/** Memory tools return revision krefs (`...?r=N`); item-level ops need the item kref. */
+function toItemKref(kref: string): string {
+  return kref.split("?")[0];
+}
+
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -387,18 +392,29 @@ export class KumihoClient {
     bundleName?: string;
     sourceRevisionKrefs?: string[];
   }): Promise<MemoryStoreResult> {
+    // kumiho_memory_store silently drops unknown args: the type must be
+    // sent as `memory_type`, and there is no `topics` field — topics are
+    // folded into tags (searchable) and metadata.topics (comma-delimited,
+    // the format mapMemoryEntry reads back into MemoryEntry.topics).
+    // The server defaults absent tags to ["published"]; the fold must not
+    // suppress that default for topics-only callers.
+    const tags = params.topics?.length
+      ? [...(params.tags ?? ["published"]), ...params.topics]
+      : params.tags;
+    const metadata = params.topics?.length
+      ? { ...params.metadata, topics: params.topics.join(",") }
+      : params.metadata;
     return this.transport.call<MemoryStoreResult>("kumiho_memory_store", {
       project: this.project,
       space_hint: params.spaceHint,
       user_text: params.userText,
       assistant_text: params.assistantText,
-      type: params.type,
+      memory_type: params.type,
       title: params.title,
       summary: params.summary,
-      topics: params.topics,
       artifact_location: params.artifactLocation,
-      metadata: params.metadata,
-      tags: params.tags,
+      metadata,
+      tags,
       bundle_name: params.bundleName,
       source_revision_krefs: params.sourceRevisionKrefs,
     });
@@ -521,16 +537,16 @@ export class KumihoClient {
   // -----------------------------------------------------------------------
 
   async memoryDelete(kref: string): Promise<void> {
-    await this.transport.call("kumiho_memory_delete", {
-      project: this.project,
-      kref,
+    // force: stored memories always have at least one revision.
+    await this.transport.call("kumiho_delete_item", {
+      item_kref: toItemKref(kref),
+      force: true,
     });
   }
 
   async memoryDeprecate(kref: string): Promise<void> {
-    await this.transport.call("kumiho_memory_deprecate", {
-      project: this.project,
-      kref,
+    await this.transport.call("kumiho_deprecate_item", {
+      item_kref: toItemKref(kref),
       deprecated: true,
     });
   }

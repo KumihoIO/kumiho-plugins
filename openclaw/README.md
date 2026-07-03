@@ -415,22 +415,22 @@ await memory.close();
 
 ## Cross-Agent Compatibility
 
-All three Kumiho plugins share the same Neo4j + Redis backend, `CognitiveMemory` graph, and skill-ingestion pipeline. Memories stored by one agent are recallable by any other. Cross-agent parity exists at the data model and discoverable-skill layer; host-side automation still differs by platform.
+The Kumiho plugins share the same Neo4j + Redis backend, `CognitiveMemory` graph, and skill-ingestion pipeline. Memories stored by one agent are recallable by any other. Cross-agent parity exists at the data model and discoverable-skill layer; host-side automation still differs by platform.
 
-| Capability        | Claude Code                                 | ZeroClaw                                  | OpenClaw                                      |
-| ----------------- | ------------------------------------------- | ----------------------------------------- | --------------------------------------------- |
-| Tool syntax       | `kumiho_memory_recall(...)`                 | `kumiho_memory__recall(...)`              | `memory_search(...)` / `creative_capture(...)` |
-| Behavioral rules  | Discovery-first SKILL.md + SessionStart context | Discovery-first SKILL.md               | TypeScript hooks + injected memory instructions |
-| Session bootstrap | SessionStart hook + SKILL bootstrap         | Inline SKILL bootstrap                    | TypeScript identity bootstrap in `before_prompt_build` |
-| Recall behavior   | Agent-triggered recall guided by SKILL      | Agent-triggered recall guided by SKILL    | Automatic `before_prompt_build` hook           |
-| Capture behavior  | Agent-triggered `store` / `add_response`    | Agent-triggered `store` / `add_response`  | Automatic `agent_end` buffering + capture      |
-| Consolidation     | Agent-triggered                             | Agent-triggered                           | Threshold + idle timer + manual tool           |
-| Dream State       | `/dream-state` command                      | `SKILL.toml` cron                         | Config schedule + manual tool                  |
-| Setup wizard      | `python scripts/setup.py`                   | `python scripts/setup.py`                 | `npx kumiho-setup`                             |
-| Skill ingestion   | Local SKILL + bundled references            | Claude canonical SKILL + bundled references | Claude canonical SKILL + bundled references |
-| Privacy model     | Raw transcripts stay local                  | Graph summaries only                      | Raw transcripts stay local + PII redaction     |
-| Creative memory   | Via graph skills                            | Via graph skills                          | Built-in `creative_capture` / `creative_recall` |
-| Local artifacts   | SessionEnd hook                             | Via graph skills (no built-in hook)       | Built-in artifact manager                      |
+| Capability        | Claude Code                                 | OpenClaw                                      |
+| ----------------- | ------------------------------------------- | --------------------------------------------- |
+| Tool syntax       | `kumiho_memory_recall(...)`                 | `memory_search(...)` / `creative_capture(...)` |
+| Behavioral rules  | Discovery-first SKILL.md + SessionStart context | TypeScript hooks + injected memory instructions |
+| Session bootstrap | SessionStart hook + SKILL bootstrap         | TypeScript identity bootstrap in `before_prompt_build` |
+| Recall behavior   | Agent-triggered recall guided by SKILL      | Automatic `before_prompt_build` hook           |
+| Capture behavior  | Agent-triggered `store` / `add_response`    | Automatic `agent_end` buffering + capture      |
+| Consolidation     | Agent-triggered                             | Threshold + idle timer + manual tool           |
+| Dream State       | `/dream-state` command                      | Config schedule + manual tool                  |
+| Setup wizard      | `python scripts/setup.py`                   | `npx kumiho-setup`                             |
+| Skill ingestion   | Local SKILL + bundled references            | Claude canonical SKILL + bundled references |
+| Privacy model     | Raw transcripts stay local                  | Raw transcripts stay local + PII redaction     |
+| Creative memory   | Via graph skills                            | Built-in `creative_capture` / `creative_recall` |
+| Local artifacts   | SessionEnd hook                             | Built-in artifact manager                      |
 
 ### Skill Ingestion
 
@@ -442,7 +442,7 @@ python scripts/ingest-skills.py --dry-run  # preview only
 python scripts/ingest-skills.py --list     # list sections
 ```
 
-This uses the Claude plugin's SKILL.md as the canonical source. All three agents discover the same skills.
+This uses the Claude plugin's SKILL.md as the canonical source. All agents discover the same skills.
 
 ## Troubleshooting
 

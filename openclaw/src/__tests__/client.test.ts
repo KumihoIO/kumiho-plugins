@@ -134,3 +134,100 @@ describe("KumihoClient memory retrieval", () => {
     });
   });
 });
+
+describe("KumihoClient memory storage wire contract", () => {
+  // kumiho_memory_store silently drops unknown args, so the exact wire
+  // field names are load-bearing: `type`/`topics` used to be discarded
+  // by the server (every memory stored as memory_type="summary").
+  it("sends memory_type and folds topics into tags + metadata", async () => {
+    const call = vi.fn().mockResolvedValue({ item_kref: "kref://x", revision_kref: "kref://x?r=1" });
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+
+    await client.memoryStore({
+      type: "decision",
+      title: "Chose gRPC",
+      summary: "gRPC over REST for the control plane.",
+      topics: ["grpc", "architecture"],
+      tags: ["user-stored"],
+    });
+
+    const [tool, payload] = call.mock.calls[0] as [string, Record<string, unknown>];
+    expect(tool).toBe("kumiho_memory_store");
+    expect(payload.memory_type).toBe("decision");
+    expect(payload).not.toHaveProperty("type");
+    expect(payload).not.toHaveProperty("topics");
+    expect(payload.tags).toEqual(["user-stored", "grpc", "architecture"]);
+    expect(payload.metadata).toEqual({ topics: "grpc,architecture" });
+  });
+
+  it("seeds the server's default published tag when folding topics without caller tags", async () => {
+    const call = vi.fn().mockResolvedValue({ item_kref: "kref://x", revision_kref: "kref://x?r=1" });
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+
+    await client.memoryStore({
+      type: "fact",
+      title: "t",
+      summary: "s",
+      topics: ["grpc"],
+    });
+
+    const [, payload] = call.mock.calls[0] as [string, Record<string, unknown>];
+    // Server-side: tag_list = tags or ["published"] — a topics-only fold
+    // must not turn the default off.
+    expect(payload.tags).toEqual(["published", "grpc"]);
+  });
+
+  it("omits the topics fold entirely when no topics are given", async () => {
+    const call = vi.fn().mockResolvedValue({ item_kref: "kref://x", revision_kref: "kref://x?r=1" });
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+
+    await client.memoryStore({
+      type: "fact",
+      title: "t",
+      summary: "s",
+      tags: ["user-stored"],
+    });
+
+    const [, payload] = call.mock.calls[0] as [string, Record<string, unknown>];
+    expect(payload.tags).toEqual(["user-stored"]);
+    expect(payload.metadata).toBeUndefined();
+  });
+});
+
+describe("KumihoClient memory management wire contract", () => {
+  it("deprecates via kumiho_deprecate_item with the item kref derived from a revision kref", async () => {
+    const call = vi.fn().mockResolvedValue({});
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+
+    await client.memoryDeprecate("kref://CognitiveMemory/facts/note.conversation?r=3");
+
+    expect(call).toHaveBeenCalledWith("kumiho_deprecate_item", {
+      item_kref: "kref://CognitiveMemory/facts/note.conversation",
+      deprecated: true,
+    });
+  });
+
+  it("deletes via kumiho_delete_item with force for revision-bearing items", async () => {
+    const call = vi.fn().mockResolvedValue({});
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+
+    await client.memoryDelete("kref://CognitiveMemory/facts/note.conversation?r=3");
+
+    expect(call).toHaveBeenCalledWith("kumiho_delete_item", {
+      item_kref: "kref://CognitiveMemory/facts/note.conversation",
+      force: true,
+    });
+  });
+
+  it("passes item krefs through unchanged", async () => {
+    const call = vi.fn().mockResolvedValue({});
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+
+    await client.memoryDeprecate("kref://CognitiveMemory/facts/note.conversation");
+
+    expect(call).toHaveBeenCalledWith("kumiho_deprecate_item", {
+      item_kref: "kref://CognitiveMemory/facts/note.conversation",
+      deprecated: true,
+    });
+  });
+});

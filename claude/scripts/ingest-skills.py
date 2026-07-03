@@ -5,8 +5,8 @@ Uses the generic skill ingest pipeline from kumiho-memory to parse this
 plugin's SKILL.md and reference docs, then ingest non-inline sections into
 the Kumiho graph.
 
-All three agents (Claude, ZeroClaw, OpenClaw) share the same graph — skills
-ingested here are discoverable by any agent via the Skill Discovery Protocol.
+All agents (Claude, OpenClaw) share the same graph — skills ingested here
+are discoverable by any agent via the Skill Discovery Protocol.
 
 Usage:
     pip install "kumiho>=0.9.16" "kumiho-memory>=0.3.16"
