@@ -397,9 +397,11 @@ export class KumihoClient {
     // folded into tags (searchable) and metadata.topics (comma-delimited,
     // the format mapMemoryEntry reads back into MemoryEntry.topics).
     // The server defaults absent tags to ["published"]; the fold must not
-    // suppress that default for topics-only callers.
+    // suppress that default for topics-only callers. Topic tags must come
+    // BEFORE "published" — the server freezes a revision the moment
+    // "published" lands and silently rejects every later tag.
     const tags = params.topics?.length
-      ? [...(params.tags ?? ["published"]), ...params.topics]
+      ? [...params.topics, ...(params.tags ?? ["published"])]
       : params.tags;
     const metadata = params.topics?.length
       ? { ...params.metadata, topics: params.topics.join(",") }

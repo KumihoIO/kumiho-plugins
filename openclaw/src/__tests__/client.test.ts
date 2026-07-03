@@ -156,7 +156,7 @@ describe("KumihoClient memory storage wire contract", () => {
     expect(payload.memory_type).toBe("decision");
     expect(payload).not.toHaveProperty("type");
     expect(payload).not.toHaveProperty("topics");
-    expect(payload.tags).toEqual(["user-stored", "grpc", "architecture"]);
+    expect(payload.tags).toEqual(["grpc", "architecture", "user-stored"]);
     expect(payload.metadata).toEqual({ topics: "grpc,architecture" });
   });
 
@@ -173,8 +173,9 @@ describe("KumihoClient memory storage wire contract", () => {
 
     const [, payload] = call.mock.calls[0] as [string, Record<string, unknown>];
     // Server-side: tag_list = tags or ["published"] — a topics-only fold
-    // must not turn the default off.
-    expect(payload.tags).toEqual(["published", "grpc"]);
+    // must not turn the default off. Topics precede "published" because
+    // the server freezes the revision once "published" is applied.
+    expect(payload.tags).toEqual(["grpc", "published"]);
   });
 
   it("omits the topics fold entirely when no topics are given", async () => {
