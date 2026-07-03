@@ -22,5 +22,5 @@ env = { KUMIHO_AUTH_TOKEN = "${KUMIHO_AUTH_TOKEN}" }
 # ZeroClaw's cron system runs this as a scheduled agent task.
 [cron.dream_state]
 schedule = "0 3 * * *"
-command = "kumiho_memory__memory_dream_state"
+command = "kumiho_memory__kumiho_memory_dream_state"
 description = "Nightly Dream State — review, enrich, and clean stored memories"

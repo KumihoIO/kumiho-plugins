@@ -10,7 +10,9 @@
 # The token is stored in ~/.kumiho/kumiho_authentication.json (id_token field).
 #
 # After adding this config, ZeroClaw will discover all kumiho tools
-# via the MCP handshake. Tools are prefixed as kumiho_memory__<name>.
+# via the MCP handshake. Tools are named kumiho_memory__<full tool name>
+# (server name + "__" + the tool's advertised name), e.g.
+# kumiho_memory__kumiho_memory_engage.
 # Use tool_search("kumiho") in-session to see available tools.
 
 [mcp]

@@ -33,7 +33,7 @@ All three Kumiho plugins share the same Neo4j + Redis backend, `CognitiveMemory`
 
 | Capability        | Claude Code                                 | ZeroClaw                                  | OpenClaw                                      |
 | ----------------- | ------------------------------------------- | ----------------------------------------- | --------------------------------------------- |
-| Tool syntax       | `kumiho_memory_recall(...)`                 | `kumiho_memory__recall(...)`              | `memory_search(...)` / `creative_capture(...)` |
+| Tool syntax       | `kumiho_memory_recall(...)`                 | `kumiho_memory__kumiho_memory_recall(...)`              | `memory_search(...)` / `creative_capture(...)` |
 | Behavioral rules  | Discovery-first SKILL.md + SessionStart context | Discovery-first SKILL.md               | TypeScript hooks + injected memory instructions |
 | Session bootstrap | SessionStart hook + SKILL bootstrap         | Inline SKILL bootstrap                    | TypeScript identity bootstrap in `before_prompt_build` |
 | Recall behavior   | Agent-triggered recall guided by SKILL      | Agent-triggered recall guided by SKILL    | Automatic `before_prompt_build` hook           |

@@ -322,7 +322,9 @@ User:  "What do I prefer for my editor theme?"
 Agent: calls memory_search → query: "editor theme preferences"
 
 User:  "Save this blog draft to my blog-jan26 project"
-Agent: calls creative_capture → title: "Blog Draft", project: "blog-jan26", kind: "document"
+Agent: calls creative_capture → title: "Blog Draft", content: "<draft text>",
+       creativeProject: "blog-posts", project: "blog-jan26", kind: "document"
+       (creativeProject = Kumiho project; project = space slug — both required)
 ```
 
 ## CLI Commands
