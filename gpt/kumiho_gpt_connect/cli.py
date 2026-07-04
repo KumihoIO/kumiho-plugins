@@ -83,7 +83,11 @@ def _cmd_url(args: argparse.Namespace) -> int:
               "so the tunnel URL is known, then re-run this.", file=sys.stderr)
         return 1
     print(f"Connector URL: {cfg.connector_url}")
-    print(f"Consent PIN:   {cfg.pin}")
+    if cfg.pin:
+        print(f"Consent PIN:   {cfg.pin}")
+    else:
+        print("Consent PIN:   (already used — a client is approved. Run "
+              "`kumiho-gpt-connect rotate-pin` to authorize another client.)")
     return 0
 
 
@@ -128,10 +132,12 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
 
 def _store_cloud_token(token: str) -> None:
     import json
+    import os
     from pathlib import Path
 
     cache = Path.home() / ".kumiho" / "kumiho_authentication.json"
     cache.parent.mkdir(parents=True, exist_ok=True)
+    cfgmod._harden(cache.parent)  # restrict ~/.kumiho — it holds the Cloud token
     body = {}
     if cache.exists():
         try:
@@ -139,7 +145,15 @@ def _store_cloud_token(token: str) -> None:
         except (json.JSONDecodeError, OSError):
             body = {}
     body["api_token"] = token
-    cache.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
+    data = json.dumps(body, indent=2) + "\n"
+    # Create owner-only (0600) so there is no world-readable window on POSIX;
+    # _harden applies icacls on Windows.
+    fd = os.open(cache, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(data)
+    finally:
+        cfgmod._harden(cache)
 
 
 def main(argv: list[str] | None = None) -> int:

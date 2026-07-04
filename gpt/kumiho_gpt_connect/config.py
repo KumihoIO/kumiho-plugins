@@ -31,13 +31,50 @@ def config_dir() -> Path:
 
 
 def _harden(path: Path) -> None:
-    """chmod 700/600 on POSIX; best-effort no-op on Windows."""
+    """Restrict to the current user: chmod 700/600 on POSIX, icacls on Windows.
+
+    These files hold the PIN, the tunnel token, and the OAuth signing key, so
+    on multi-user machines they must not be world-readable.
+    """
     if os.name == "nt":
+        _harden_windows(path)
         return
     try:
         mode = stat.S_IRWXU if path.is_dir() else (stat.S_IRUSR | stat.S_IWUSR)
         path.chmod(mode)
     except OSError:
+        pass
+
+
+def _harden_windows(path: Path) -> None:
+    """Break inheritance and grant only the current user access (best effort)."""
+    user = os.environ.get("USERNAME") or os.environ.get("USER")
+    if not user:
+        try:
+            import getpass
+
+            user = getpass.getuser()
+        except Exception:
+            user = ""
+    if not user:
+        # Do not silently leave secrets at inherited ACLs — surface it.
+        import sys
+
+        print(
+            f"[kumiho-gpt-connect] WARNING: could not resolve the current user to "
+            f"restrict {path}; secrets may inherit broad ACLs. Set USERNAME.",
+            file=sys.stderr,
+        )
+        return
+    grant = f"{user}:(OI)(CI)F" if path.is_dir() else f"{user}:F"
+    try:
+        import subprocess
+
+        subprocess.run(
+            ["icacls", str(path), "/inheritance:r", "/grant:r", grant],
+            check=False, capture_output=True,
+        )
+    except Exception:
         pass
 
 

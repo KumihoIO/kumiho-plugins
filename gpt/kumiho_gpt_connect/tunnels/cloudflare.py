@@ -18,6 +18,7 @@ Two modes:
 
 from __future__ import annotations
 
+import hashlib
 import os
 import platform
 import re
@@ -36,7 +37,7 @@ from .. import config as cfgmod
 from .base import Tunnel, TunnelError
 
 _QUICK_URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
-_RELEASE = "https://github.com/cloudflare/cloudflared/releases/latest/download"
+_RELEASES = "https://github.com/cloudflare/cloudflared/releases"
 
 
 class CloudflareTunnel(Tunnel):
@@ -116,10 +117,17 @@ def _ensure_cloudflared() -> str:
         return str(dest)
 
     asset = _asset_name()
-    url = f"{_RELEASE}/{asset}"
-    print(f"[kumiho-gpt-connect] downloading cloudflared: {url}", file=sys.stderr)
+    # Pin the version (KUMIHO_GPT_CLOUDFLARED_VERSION, default "latest") and
+    # optionally verify the download (KUMIHO_GPT_CLOUDFLARED_SHA256). Prefer a
+    # cloudflared already on PATH (checked above) or a pinned version + hash for
+    # supply-chain safety.
+    version = (os.getenv("KUMIHO_GPT_CLOUDFLARED_VERSION", "") or "latest").strip()
+    url = (f"{_RELEASES}/latest/download/{asset}" if version == "latest"
+           else f"{_RELEASES}/download/{version}/{asset}")
+    print(f"[kumiho-gpt-connect] downloading cloudflared ({version}): {url}", file=sys.stderr)
     tmp = dest_dir / asset
     urllib.request.urlretrieve(url, tmp)
+    _verify_checksum(tmp)
     if asset.endswith(".tgz"):
         with tarfile.open(tmp) as tf:
             member = next((m for m in tf.getmembers() if m.name.endswith("cloudflared")), None)
@@ -133,6 +141,17 @@ def _ensure_cloudflared() -> str:
     if os.name != "nt":
         dest.chmod(dest.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP)
     return str(dest)
+
+
+def _verify_checksum(path) -> None:
+    """Verify the download against KUMIHO_GPT_CLOUDFLARED_SHA256 when provided."""
+    expected = (os.getenv("KUMIHO_GPT_CLOUDFLARED_SHA256", "") or "").strip().lower()
+    if not expected:
+        return
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != expected:
+        path.unlink(missing_ok=True)
+        raise TunnelError(f"cloudflared checksum mismatch: expected {expected}, got {actual}")
 
 
 def _asset_name() -> str:

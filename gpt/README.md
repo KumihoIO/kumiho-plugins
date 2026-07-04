@@ -107,6 +107,13 @@ once by entering the **PIN** on a local consent page, and every MCP request
 then carries a short-lived signed Bearer token. **The token is never embedded
 in the connector URL.**
 
+The PIN is **one-time**: entering it approves *that* ChatGPT client and then
+clears the PIN. That approved client is remembered, so ChatGPT reconnects (and
+survives gateway restarts) without a PIN. Adding a *different* client — e.g.
+re-adding the connector, which registers a new client — needs a fresh PIN:
+run `kumiho-gpt-connect rotate-pin`. Wrong-PIN attempts are locked out after a
+few tries.
+
 Because CE has no authentication of its own, this gateway PIN/OAuth *is* the
 security boundary for the tunnel — keep it single-user, and rotate the PIN with
 `kumiho-gpt-connect rotate-pin` if needed.
@@ -152,3 +159,8 @@ State lives in `~/.kumiho/gpt/` (config, OAuth signing key, registered clients).
 - **ChatGPT can't reach the connector** — confirm the tunnel is up and (for a
   Cloudflare named tunnel) that its ingress points at `127.0.0.1:8790`.
 - **PIN changes didn't take** — restart the service so the gateway reloads it.
+- **Registration rejected / `invalid_redirect_uri`** — for safety the gateway only
+  accepts ChatGPT/OpenAI (`chatgpt.com`, `openai.com`) https redirect origins, so a
+  mistakenly-entered PIN can't deliver the auth code anywhere else. If ChatGPT's
+  callback host differs, set `KUMIHO_GPT_ALLOWED_REDIRECT_HOSTS` (comma-separated
+  hostnames) before starting the gateway.
