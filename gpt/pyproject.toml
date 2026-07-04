@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kumiho-gpt-connect"
+version = "0.1.0"
+description = "One-command installer that exposes Kumiho Memory to ChatGPT as a custom MCP connector (CE-first, local gateway OAuth)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Kumiho Clouds", email = "support@kumiho.cloud" }]
+keywords = ["kumiho", "memory", "mcp", "chatgpt", "connector", "oauth"]
+
+# Everything the local gateway process needs is a hard dependency so
+# `uvx kumiho-gpt-connect` / `pipx install kumiho-gpt-connect` pulls the whole
+# stack in one shot:
+#   - kumiho[mcp] + kumiho-memory  -> the stdio MCP server whose tools we expose
+#   - mcp-proxy                    -> wraps that stdio server as a local HTTP/SSE endpoint
+#   - starlette/uvicorn/httpx      -> the OAuth-aware gateway that fronts it
+#   - pyjwt[crypto]                -> sign/verify the gateway's own OAuth tokens
+#   - pyngrok                      -> the ngrok tunnel option (cloudflared is fetched at runtime)
+dependencies = [
+    "kumiho[mcp]>=0.10.4",
+    "kumiho-memory[all]>=0.6.2",
+    "mcp-proxy>=0.8.0",
+    "starlette>=0.37",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "pyjwt[crypto]>=2.8",
+    "pyngrok>=7.0",
+]
+
+[project.urls]
+Homepage = "https://kumiho.io"
+Repository = "https://github.com/KumihoIO/kumiho-plugins"
+
+[project.scripts]
+kumiho-gpt-connect = "kumiho_gpt_connect.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["kumiho_gpt_connect*"]
