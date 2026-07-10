@@ -20,7 +20,15 @@ from pathlib import Path
 
 DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.9.16 kumiho-memory[all]>=0.3.16"
 MARKER_FILE = ".installed-packages.txt"
-DEFAULT_DISCOVERY_USER_AGENT = "kumiho-claude/0.9.0"
+DEFAULT_DISCOVERY_USER_AGENT = "kumiho-claude/0.9.1"
+
+# Self-hosted Community Edition (CE) defaults.  Mirrors the kumiho-gpt-connect
+# CE backend: the SDK routes to a loopback CE server when no auth token is set,
+# with KUMIHO_LOCAL_SERVER_ENDPOINT overriding the gRPC target and a local Redis
+# URL backing CE working memory (cloud gets Redis via the control-plane proxy).
+DEFAULT_CE_ENDPOINT = "127.0.0.1:9190"
+DEFAULT_CE_REDIS_URL = "redis://127.0.0.1:6379"
+CE_MODE_VALUES = {"ce", "community", "self-hosted", "self_hosted", "selfhosted", "local"}
 
 
 def _state_dir() -> Path:
@@ -340,7 +348,13 @@ def _hydrate_env_from_plugin_mcp() -> None:
     if not isinstance(env, dict):
         return
 
-    for key in ("KUMIHO_AUTH_TOKEN", "KUMIHO_CONTROL_PLANE_URL", "KUMIHO_TENANT_HINT"):
+    for key in (
+        "KUMIHO_AUTH_TOKEN",
+        "KUMIHO_CONTROL_PLANE_URL",
+        "KUMIHO_TENANT_HINT",
+        "KUMIHO_CLAUDE_MODE",
+        "KUMIHO_CLAUDE_SERVER_ENDPOINT",
+    ):
         raw = env.get(key)
         if isinstance(raw, str):
             _set_env_if_absent(key, raw, f"{mcp_path}")
@@ -386,7 +400,13 @@ def _hydrate_env_from_claude_settings() -> None:
             continue
         found_any = True
         loaded_any = False
-        for key in ("KUMIHO_AUTH_TOKEN", "KUMIHO_CONTROL_PLANE_URL", "KUMIHO_TENANT_HINT"):
+        for key in (
+            "KUMIHO_AUTH_TOKEN",
+            "KUMIHO_CONTROL_PLANE_URL",
+            "KUMIHO_TENANT_HINT",
+            "KUMIHO_CLAUDE_MODE",
+            "KUMIHO_CLAUDE_SERVER_ENDPOINT",
+        ):
             raw = env.get(key)
             if isinstance(raw, str):
                 if _set_env_if_absent(key, raw, f"{settings_path}"):
@@ -647,7 +667,66 @@ def _normalize_server_target(raw_target: str) -> str | None:
     return target or None
 
 
+def _ce_mode_enabled() -> bool:
+    """True when the plugin should target a self-hosted kumiho-server CE endpoint.
+
+    Opt-in only, so the fail-fast cloud default is preserved.  Enabled by
+    ``KUMIHO_CLAUDE_MODE=ce`` (or ``community`` / ``self-hosted`` / ``local``),
+    or implicitly when ``KUMIHO_CLAUDE_SERVER_ENDPOINT`` is set to a real value.
+    """
+    mode = (os.getenv("KUMIHO_CLAUDE_MODE", "") or "").strip().lower()
+    if mode and not _looks_like_placeholder(mode) and mode in CE_MODE_VALUES:
+        return True
+    endpoint = (os.getenv("KUMIHO_CLAUDE_SERVER_ENDPOINT", "") or "").strip()
+    return bool(endpoint) and not _looks_like_placeholder(endpoint)
+
+
+def _resolve_ce_endpoint() -> str | None:
+    """Return the normalized CE gRPC endpoint when CE mode is on, else ``None``."""
+    if not _ce_mode_enabled():
+        return None
+    raw = (os.getenv("KUMIHO_CLAUDE_SERVER_ENDPOINT", "") or "").strip()
+    if raw and not _looks_like_placeholder(raw):
+        normalized = _normalize_server_target(raw)
+        if normalized:
+            return normalized
+        print(
+            f"[kumiho-claude] Could not parse KUMIHO_CLAUDE_SERVER_ENDPOINT={raw!r}; "
+            f"falling back to default CE endpoint {DEFAULT_CE_ENDPOINT}.",
+            file=sys.stderr,
+        )
+    return DEFAULT_CE_ENDPOINT
+
+
+def _bootstrap_ce_endpoint(endpoint: str) -> None:
+    """Point the SDK at a self-hosted CE server instead of cloud discovery.
+
+    CE selection at the SDK level is: no auth token -> tokenless loopback CE
+    probe, with ``KUMIHO_LOCAL_SERVER_ENDPOINT`` overriding the CE gRPC target
+    (mirrors the kumiho-gpt-connect CE backend).  We clear any inherited cloud
+    endpoint and token so routing cannot flip back to control-plane discovery,
+    and supply a local Redis URL for CE working memory.
+    """
+    os.environ.pop("KUMIHO_SERVER_ENDPOINT", None)
+    os.environ.pop("KUMIHO_SERVER_ADDRESS", None)
+    os.environ["KUMIHO_LOCAL_SERVER_ENDPOINT"] = endpoint
+    # A token would flip the SDK back to control-plane discovery; CE runs
+    # tokenless and enforces its own auth at the server.
+    os.environ["KUMIHO_AUTH_TOKEN"] = ""
+    os.environ.setdefault("UPSTASH_REDIS_URL", DEFAULT_CE_REDIS_URL)
+    print(
+        f"[kumiho-claude] CE mode: routing to self-hosted endpoint {endpoint} "
+        "(control-plane discovery and cloud auth skipped).",
+        file=sys.stderr,
+    )
+
+
 def _bootstrap_server_endpoint() -> None:
+    ce_endpoint = _resolve_ce_endpoint()
+    if ce_endpoint:
+        _bootstrap_ce_endpoint(ce_endpoint)
+        return
+
     preset_endpoint = os.getenv("KUMIHO_SERVER_ENDPOINT", "").strip() or os.getenv("KUMIHO_SERVER_ADDRESS", "").strip()
     if preset_endpoint:
         print(
@@ -768,6 +847,9 @@ def _sanitize_placeholder_env_vars() -> None:
         "KUMIHO_CLAUDE_DISCOVERY_USER_AGENT",
         "KUMIHO_MCP_LOG_LEVEL",
         "KUMIHO_CLAUDE_DISABLE_LLM_FALLBACK",
+        "KUMIHO_CLAUDE_MODE",
+        "KUMIHO_CLAUDE_SERVER_ENDPOINT",
+        "KUMIHO_LLM_BASE_URL",
     ):
         raw = (os.getenv(key, "") or "").strip()
         if raw and _looks_like_placeholder(raw):
@@ -784,6 +866,20 @@ def _configure_llm_fallback() -> None:
 
     key_vars = ("KUMIHO_LLM_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
     if any(os.getenv(var, "").strip() for var in key_vars):
+        return
+
+    # A self-provided LLM base URL (e.g. a local Ollama / llama.cpp server, or a
+    # CE deployment's own model endpoint) means a real model is reachable even
+    # without an API key.  Honor it instead of pinning the dead-port fallback;
+    # OpenAI-compatible local servers accept any non-empty key.
+    base_url = (os.getenv("KUMIHO_LLM_BASE_URL", "") or "").strip()
+    if base_url and not _looks_like_placeholder(base_url):
+        os.environ.setdefault("KUMIHO_LLM_PROVIDER", "openai")
+        os.environ.setdefault("OPENAI_API_KEY", "kumiho-local-llm")
+        print(
+            f"[kumiho-claude] Using self-provided LLM endpoint {base_url} for summarization.",
+            file=sys.stderr,
+        )
         return
 
     os.environ.setdefault("KUMIHO_LLM_PROVIDER", "openai")
@@ -807,10 +903,16 @@ def main() -> int:
 
     _sanitize_placeholder_env_vars()
     _hydrate_env_from_local_config()
+    # The Desktop server-entry self-heal is auth-independent (its token embed is
+    # already guarded), so it runs in both modes — otherwise a CE user's stale
+    # entry would never be repaired after a plugin upgrade.
     _bootstrap_desktop_server_entries()
-    _sync_token_to_desktop_config()
-    _validate_auth_token()
-    _warn_auth()
+    # CE / self-hosted mode is tokenless and server-authenticated: skip the
+    # cloud-token sync and auth warnings so they do not fire spuriously.
+    if not _ce_mode_enabled():
+        _sync_token_to_desktop_config()
+        _validate_auth_token()
+        _warn_auth()
     try:
         _bootstrap_server_endpoint()
     except RuntimeError as exc:

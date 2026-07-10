@@ -28,7 +28,24 @@ This plugin uses one local MCP server:
 - `KUMIHO_CLAUDE_DISCOVERY_USER_AGENT` (override discovery HTTP User-Agent)
 
 `KUMIHO_SERVER_ENDPOINT` and `KUMIHO_SERVER_ADDRESS` are intentionally ignored by
-the launcher to enforce control-plane discovery routing.
+the launcher to enforce control-plane discovery routing in cloud mode. For
+self-hosted routing use `KUMIHO_CLAUDE_SERVER_ENDPOINT` (see below).
+
+## Self-hosted Community Edition (CE)
+
+Opt-in mode that targets a local `kumiho-server` CE instead of cloud discovery.
+Cloud behavior is unchanged unless one of these is set:
+
+- `KUMIHO_CLAUDE_MODE` = `ce` (or `community` / `self-hosted` / `local`) — enable CE mode
+- `KUMIHO_CLAUDE_SERVER_ENDPOINT` (default `127.0.0.1:9190`) — CE gRPC endpoint; setting it also enables CE mode
+- `UPSTASH_REDIS_URL` (default `redis://127.0.0.1:6379`) — CE working-memory Redis
+- `KUMIHO_LLM_BASE_URL` — OpenAI-compatible LLM endpoint for summarization (replaces the dead-port fallback)
+
+In CE mode the launcher skips control-plane discovery and cloud auth (no
+`KUMIHO_AUTH_TOKEN` / `kumiho-auth login` needed; any inherited token is cleared),
+points the SDK at the CE endpoint via `KUMIHO_LOCAL_SERVER_ENDPOINT`, and logs
+the selected mode and resolved endpoint on startup. The CE server enforces its
+own auth.
 
 ## Verify connection
 
