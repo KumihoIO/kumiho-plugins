@@ -3,13 +3,40 @@
 Persistent graph-native memory plugin for Claude. Runs a local Kumiho MCP
 server with `kumiho-memory` so Claude **remembers you across sessions**.
 
-Version: **0.9.1** | Requires: `kumiho>=0.9.16`, `kumiho-memory>=0.3.16`
+Version: **0.11.0** | Requires: `kumiho>=0.10.5`, `kumiho-memory>=0.12.1`
+(installed automatically into an isolated venv — nothing to `pip install`)
+
+## Quick install
+
+```bash
+claude plugin marketplace add KumihoIO/kumiho-plugins
+claude plugin install kumiho-memory@kumiho-plugins
+```
+
+Or inside Claude Code: run `/plugin`, **Add marketplace** →
+`KumihoIO/kumiho-plugins`, then install **kumiho-memory**.
+
+Then pick a backend — **Cloud** (managed, API token) or **self-hosted CE**
+(your own `kumiho-server`, no token):
+
+```bash
+/kumiho-onboard                 # interactive: asks Cloud vs CE, then wires everything
+/kumiho-onboard <API-TOKEN>     # Cloud, non-interactive (kumiho.io › Dashboard › API Keys)
+/kumiho-onboard ce              # self-hosted CE (defaults to 127.0.0.1:9190)
+```
+
+See [Choosing a backend](#choosing-a-backend-cloud-vs-ce) for the CE
+neo4j / redis / embedding details.
 
 ## What it does
 
 - Bootstraps user identity and preferences at session start
 - Recalls context from previous sessions via semantic graph search
 - Stores decisions, preferences, and project facts automatically
+- **Decision Memory** — mines your git commits *and* your sessions into a
+  git-anchored decision graph: ask `kumiho_code_why` why code is the way it
+  is and get the decision, its rationale, the rejected alternatives, and the
+  measurements that decided it (opt-in; see [Decision Memory](#decision-memory))
 - Generates local conversation artifacts (BYO-storage — raw transcripts stay on your machine)
 - Runs Dream State consolidation for memory hygiene
 - Auto-approves Kumiho memory tool calls (no permission prompts)
@@ -48,28 +75,76 @@ The Kumiho plugins share the same Neo4j + Redis backend, `CognitiveMemory` graph
 
 ## Installation
 
-### Claude Code
-
-Install from GitHub:
+### Claude Code (marketplace)
 
 ```bash
-claude plugin add github:kumihoclouds/kumiho-claude
+claude plugin marketplace add KumihoIO/kumiho-plugins
+claude plugin install kumiho-memory@kumiho-plugins
+```
+
+`marketplace update` refreshes to the latest published version:
+
+```bash
+claude plugin marketplace update kumiho-plugins
 ```
 
 ### Local development
 
-Run ad hoc without installing:
+Run ad hoc from a checkout without installing (point at the `claude/`
+plugin directory in this repo):
 
 ```bash
-claude --plugin-dir ./kumiho-claude
+claude --plugin-dir ./claude
 ```
 
 ## Getting started
 
-1. **Sign up** at [kumiho.io](https://kumiho.io) (free tier available)
-2. **Mint an API token** from the dashboard under **API Keys**
-3. **Run `/kumiho-onboard`** inside Claude — the wizard handles auth, setup, and skill ingestion
+1. **Install** the plugin (marketplace commands above)
+2. **Choose a backend** — see [Choosing a backend](#choosing-a-backend-cloud-vs-ce):
+   - **Cloud**: sign up at [kumiho.io](https://kumiho.io) (free tier), mint an API token under **API Keys**
+   - **CE**: stand up your own [`kumiho-server` Community Edition](https://github.com/KumihoIO/kumiho-server-community) (Neo4j + Redis + embedding)
+3. **Run `/kumiho-onboard`** inside Claude — the wizard handles backend selection, auth, MCP config, and skill ingestion
 4. **Start chatting** — Claude now remembers you across sessions
+
+## Choosing a backend (Cloud vs CE)
+
+| | **Cloud** (managed) | **Self-hosted CE** |
+|---|---|---|
+| Auth | API token (`eyJ…` JWT) | none — the CE server enforces its own |
+| Backend store | managed Neo4j + Redis | **you run** Neo4j + Redis (+ an embedding/LLM) |
+| Setup | `/kumiho-onboard <TOKEN>` | stand up `kumiho-server-community`, then `/kumiho-onboard ce` |
+| Data | summaries in Kumiho Cloud; raw transcripts stay local | everything on your machine/VPC |
+
+**Cloud** — the token is all you need; everything else is managed:
+
+```bash
+/kumiho-onboard <API-TOKEN>
+# or:  python ./claude/scripts/setup.py --token <API-TOKEN> --yes
+```
+
+**CE** — the graph store (Neo4j) and the embedding model live **inside the
+CE server**, which you deploy first from
+[kumiho-server-community](https://github.com/KumihoIO/kumiho-server-community)
+(its installer runs the Docker one-shot for Neo4j + Redis and configures the
+embedding provider). The plugin only needs to know where to reach it:
+
+```bash
+/kumiho-onboard ce
+# or, non-interactive, with a non-default endpoint / redis / local LLM:
+python ./claude/scripts/setup.py --ce --yes \
+  --ce-endpoint 127.0.0.1:9190 \
+  --ce-redis-url redis://127.0.0.1:6379 \
+  --ce-llm-base-url http://127.0.0.1:11434/v1
+```
+
+| Plugin-side CE flag | What it points at | Default |
+|---|---|---|
+| `--ce-endpoint` | the CE server's gRPC endpoint (fronts Neo4j) | `127.0.0.1:9190` |
+| `--ce-redis-url` | working-memory Redis | `redis://127.0.0.1:6379` |
+| `--ce-llm-base-url` | OpenAI-compatible LLM for summarization/embedding (Ollama, llama.cpp, vLLM, …) | fail-fast (set one for consolidation) |
+
+No API token is involved in CE mode. Full CE environment details are in
+[Self-hosted (Community Edition)](#self-hosted-community-edition) below.
 
 On your first session the plugin will ask a few questions (name, language,
 communication style) to set up your identity. After that, it picks up where
@@ -93,6 +168,34 @@ The plugin registers three hooks that run automatically:
 | `/memory-capture` | Capture a specific fact or preference into long-term memory |
 | `/dream-state` | Run Dream State consolidation (review, enrich, prune stored memories) |
 
+## Decision Memory
+
+Git records *what* changed and *when*; it never records *why*. Decision
+Memory captures the why — decisions, their rationale, the alternatives that
+were rejected, and the measurements that decided them — as a graph anchored
+to git (the code is never copied; nodes point at `{repo, commit, file,
+line}`, so the memory never rots across rebases). Opt-in via
+`KUMIHO_MEMORY_CODE=1` (on by default for this plugin; set `0` to disable).
+
+| Tool | Ask |
+|---|---|
+| `kumiho_code_why` | *Why is this code the way it is?* — the decision, rationale, and verbatim evidence for a file/commit, plus whether it was later reversed (`superseded_by`) |
+| `kumiho_code_ingest` | Mine a commit range into decision nodes (idempotent) |
+| `kumiho_code_mine_session` | Mine the conversation itself — rejected alternatives + measurements the commit message never captured |
+
+**Automatic capture:** on `git commit` (and at session end) the plugin
+mines the commit into the graph with zero action. **Session mining** —
+mining the whole conversation, not just commits — closes the loop but is a
+full-transcript LLM pass, so it is a **second opt-in**:
+
+```dotenv
+KUMIHO_MEMORY_CODE=1            # commit capture (default on)
+KUMIHO_MEMORY_CODE_AUTOMINE=1   # also mine sessions at session end (default off)
+```
+
+Before editing unfamiliar code, ask `kumiho_code_why` for the file first —
+never re-litigate a decision the graph already explains.
+
 ## Runtime model
 
 The bootstrap script (`scripts/run_kumiho_mcp.py`) creates an isolated
@@ -108,7 +211,7 @@ gRPC endpoint via control-plane discovery, and launches the MCP server.
 Default package spec:
 
 ```text
-kumiho[mcp]>=0.9.16 kumiho-memory[all]>=0.3.16
+kumiho[mcp]>=0.10.5 kumiho-memory[all]>=0.12.1
 ```
 
 ## Self-hosted (Community Edition)
@@ -283,7 +386,7 @@ YAML frontmatter (session_id, date, topics, summary) and structured
 | `KUMIHO_CLAUDE_HOME` | *(platform default)* | Override runtime/venv directory |
 | `KUMIHO_CLAUDE_PACKAGE_SPEC` | *(see above)* | Override pip install spec |
 | `KUMIHO_CLAUDE_DISABLE_LLM_FALLBACK` | *(unset)* | Set to `1` to disable local no-key LLM fallback |
-| `KUMIHO_CLAUDE_DISCOVERY_USER_AGENT` | `kumiho-claude/0.9.1` | Override discovery HTTP User-Agent |
+| `KUMIHO_CLAUDE_DISCOVERY_USER_AGENT` | `kumiho-claude/0.11.0` | Override discovery HTTP User-Agent |
 | `KUMIHO_ARTIFACT_DIR` | `~/.kumiho/artifacts/` | Override conversation artifact directory |
 
 ### Self-hosted (Community Edition)
