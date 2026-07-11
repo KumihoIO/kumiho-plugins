@@ -1,12 +1,12 @@
 {
   "name": "kumiho-memory",
   "version": "0.11.0",
-  "description": "Persistent graph-native memory for Claude — recalls context across sessions, stores decisions and preferences, and bootstraps identity at session start.",
+  "description": "Persistent graph-native memory for Claude — recalls context across sessions, stores decisions and preferences, bootstraps identity at session start, and mines commits + conversations into a git-anchored decision graph (Decision Memory).",
   "author": {
     "name": "Kumiho Inc.",
     "url": "https://kumiho.io"
   },
-  "repository": "https://github.com/kumihoclouds/kumiho-claude",
+  "repository": "https://github.com/KumihoIO/kumiho-plugins",
   "homepage": "https://docs.kumiho.io/python/mcp.html",
   "license": "MIT",
   "keywords": [
