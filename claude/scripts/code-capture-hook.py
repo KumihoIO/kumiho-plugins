@@ -9,15 +9,24 @@ graph with zero user action:
   contains a ``git ... commit`` invocation.  Commit grain, not edit grain:
   anchors need a commit hash, and per-edit capture would burn LLM calls on
   noise (see the issue).
-* ``SessionEnd`` — batch safety net for commits made during the session.
+* ``SessionEnd`` — batch safety net for commits made during the session,
+  AND (Phase 2 loop-closer) mines the session TRANSCRIPT into the graph:
+  rejected alternatives, measurements, and decisions that never reached a
+  commit.  The commit worker captures *what* landed; the session worker
+  captures *why*.
 
 Design constraints (all hard):
-- The hook must NEVER block or fail the commit/session: the worker is
+- The hook must NEVER block or fail the commit/session: the workers are
   spawned fully detached and this process exits 0 immediately, always.
 - Re-runs are free: the SDK's incremental mode marker-skips captured
-  commits with zero LLM cost, so over-triggering is harmless.
+  commits AND completed sessions with zero LLM cost, so over-triggering is
+  harmless.
 - Gate: ``KUMIHO_MEMORY_CODE`` — on by default for the plugin (the plugin
-  IS the integration layer); set ``0``/``false`` to disable capture.
+  IS the integration layer); set ``0``/``false`` to disable commit capture.
+  Session mining is additionally gated behind
+  ``KUMIHO_MEMORY_CODE_AUTOMINE=1`` (OFF by default — a full-transcript LLM
+  pass at every session end is real cost + raw-conversation privacy, so it
+  is explicit opt-in; the session worker enforces this gate itself).
 """
 
 import json
@@ -36,10 +45,12 @@ def _gate_enabled() -> bool:
     )
 
 
-def _spawn_worker(repo_dir: str) -> None:
-    worker = Path(__file__).resolve().parent / "code_ingest_worker.py"
+def _spawn(worker_name: str, args: list) -> None:
+    """Spawn a detached worker that survives this hook's exit."""
+    worker = Path(__file__).resolve().parent / worker_name
     if not worker.exists():
         return
+    repo_dir = args[0] if args else os.getcwd()
     kwargs = {
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
@@ -51,7 +62,7 @@ def _spawn_worker(repo_dir: str) -> None:
         kwargs["creationflags"] = 0x00000008 | 0x00000200
     else:
         kwargs["start_new_session"] = True
-    subprocess.Popen([sys.executable, str(worker), repo_dir], **kwargs)
+    subprocess.Popen([sys.executable, str(worker), *args], **kwargs)
 
 
 def main() -> None:
@@ -71,12 +82,29 @@ def main() -> None:
         command = str((data.get("tool_input") or {}).get("command", ""))
         if not _COMMIT_RE.search(command):
             return
-    elif event != "SessionEnd":
+        # commit grain: mine the commit that (plausibly) just landed
+        try:
+            _spawn("code_ingest_worker.py", [cwd])
+        except Exception:  # noqa: BLE001 — capture must never break the session
+            pass
         return
 
+    if event != "SessionEnd":
+        return
+
+    # SessionEnd: commit safety net AND (opt-in) session-transcript mining.
     try:
-        _spawn_worker(cwd)
-    except Exception:  # noqa: BLE001 — capture must never break the session
+        _spawn("code_ingest_worker.py", [cwd])
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        session_id = str(data.get("session_id", "") or "")
+        transcript = str(data.get("transcript_path", "") or "")
+        if session_id and transcript:
+            # The session worker self-enforces the AUTOMINE double opt-in;
+            # spawning is unconditional and cheap (it exits fast when off).
+            _spawn("session_mine_worker.py", [cwd, session_id, transcript])
+    except Exception:  # noqa: BLE001 — mining must never break the session
         pass
 
 

@@ -1,6 +1,6 @@
 {
   "name": "kumiho-memory",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Persistent graph-native memory for Claude — recalls context across sessions, stores decisions and preferences, and bootstraps identity at session start.",
   "author": {
     "name": "Kumiho Inc.",
