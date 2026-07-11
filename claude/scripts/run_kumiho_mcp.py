@@ -835,10 +835,36 @@ def _bootstrap_server_endpoint() -> None:
     )
 
 
+def _placeholder_default(value: str) -> str | None:
+    """For a literal ``${VAR:-default}`` (or ``${VAR-default}``) placeholder,
+    return the *default* the shell would have substituted; ``None`` for a
+    bare ``${VAR}`` with no default.
+
+    Claude Desktop does not expand ``${VAR:-default}`` — it passes the whole
+    string through literally — so the launcher has to do the substitution the
+    shell would have done, honoring the default the .mcp.json author declared.
+    """
+    text = value.strip()
+    if not (text.startswith("${") and text.endswith("}")):
+        return None
+    inner = text[2:-1]
+    for sep in (":-", "-"):
+        idx = inner.find(sep)
+        if idx > 0:
+            return inner[idx + len(sep):]
+    return None
+
+
 def _sanitize_placeholder_env_vars() -> None:
-    """Strip unresolved ${VAR:-default} placeholders that Claude Desktop
-    passes through as literal strings.  Without this, downstream code
-    (pip install, log-level parsing, etc.) receives garbage values.
+    """Resolve or strip unresolved ``${VAR:-default}`` placeholders that
+    Claude Desktop passes through as literal strings.
+
+    A declared default is the author's *intended* value, not garbage: a
+    ``${VAR:-default}`` is resolved to ``default`` (so e.g.
+    ``KUMIHO_MEMORY_CODE=${KUMIHO_MEMORY_CODE:-1}`` correctly enables Decision
+    Memory on Desktop instead of being silently cleared to off). A bare
+    ``${VAR}`` with no default is cleared, so downstream code (pip install,
+    log-level parsing, auth) never receives a raw template literal.
     """
     for key in (
         "KUMIHO_AUTH_TOKEN",
@@ -853,7 +879,16 @@ def _sanitize_placeholder_env_vars() -> None:
         "KUMIHO_MEMORY_CODE",
     ):
         raw = (os.getenv(key, "") or "").strip()
-        if raw and _looks_like_placeholder(raw):
+        if not raw or not _looks_like_placeholder(raw):
+            continue
+        default = _placeholder_default(raw)
+        if default is not None and default != "":
+            os.environ[key] = default
+            print(
+                f"[kumiho-claude] Resolved {key} to its declared default.",
+                file=sys.stderr,
+            )
+        else:
             os.environ.pop(key, None)
             print(
                 f"[kumiho-claude] Cleared unresolved placeholder for {key}.",
