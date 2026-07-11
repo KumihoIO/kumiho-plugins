@@ -3,7 +3,7 @@
 Persistent graph-native memory plugin for Claude. Runs a local Kumiho MCP
 server with `kumiho-memory` so Claude **remembers you across sessions**.
 
-Version: **0.9.0** | Requires: `kumiho>=0.9.16`, `kumiho-memory>=0.3.16`
+Version: **0.9.1** | Requires: `kumiho>=0.9.16`, `kumiho-memory>=0.3.16`
 
 ## What it does
 
@@ -111,6 +111,63 @@ Default package spec:
 kumiho[mcp]>=0.9.16 kumiho-memory[all]>=0.3.16
 ```
 
+## Self-hosted (Community Edition)
+
+By default the launcher resolves a **cloud** Kumiho endpoint via control-plane
+discovery and fails fast if no auth token is present. If you run your own
+[`kumiho-server` Community Edition](https://github.com/KumihoIO/kumiho-server-community)
+you can point the plugin at it instead — **opt-in**, so cloud users are
+unaffected.
+
+**Easiest path — the wizard.** Run `/kumiho-onboard` and pick
+**Self-hosted (Community Edition)**, or from a terminal:
+
+```bash
+python ./kumiho-claude/scripts/setup.py --ce --yes
+# non-default endpoint: --ce-endpoint HOST:PORT
+```
+
+The wizard writes the CE config below to `.env.local`, your OS user environment,
+and the Claude Desktop config, then ingests skills and probes the server — no
+API token involved.
+
+**Manual path.** Enable CE mode by setting **either** of:
+
+```dotenv
+# .env.local (plugin root) or .claude/settings.local.json env block
+KUMIHO_CLAUDE_MODE=ce
+# or, equivalently, just name the endpoint (this alone turns CE mode on):
+KUMIHO_CLAUDE_SERVER_ENDPOINT=127.0.0.1:9190
+```
+
+In CE mode the launcher:
+
+- **Skips** control-plane discovery and cloud auth entirely — no
+  `kumiho-auth login` and no `KUMIHO_AUTH_TOKEN` are required (any inherited
+  token is cleared so it cannot flip routing back to cloud). The CE server
+  enforces its own auth.
+- Routes the SDK to the CE gRPC endpoint via `KUMIHO_LOCAL_SERVER_ENDPOINT`
+  (default `127.0.0.1:9190`), so it does **not** fall back to `127.0.0.1:8080`.
+- Provides a local working-memory Redis URL (`UPSTASH_REDIS_URL`, default
+  `redis://127.0.0.1:6379`) — cloud gets this via the control-plane proxy; CE
+  does not.
+- Logs the selected mode and resolved endpoint on startup so
+  "why is my memory empty / not connecting" is answerable at a glance.
+
+For consolidation/reflect summarization in CE mode, point at a local or
+self-provided LLM instead of the fail-fast dead-port fallback:
+
+```dotenv
+# OpenAI-compatible local server (Ollama, llama.cpp, vLLM, …)
+KUMIHO_LLM_BASE_URL=http://127.0.0.1:11434/v1
+# or a real key: OPENAI_API_KEY / ANTHROPIC_API_KEY (+ KUMIHO_LLM_PROVIDER=anthropic)
+```
+
+Start the CE server first (the community installer runs the Docker one-shot for
+Neo4j + Redis and an onboarding wizard); see the
+[kumiho-server-community](https://github.com/KumihoIO/kumiho-server-community)
+releases.
+
 ## Authentication
 
 Run `/kumiho-onboard` inside Claude — the wizard walks you through authentication
@@ -214,7 +271,7 @@ YAML frontmatter (session_id, date, topics, summary) and structured
 
 | Variable | Description |
 |----------|-------------|
-| `KUMIHO_AUTH_TOKEN` | JWT bearer token for authenticated memory/graph calls |
+| `KUMIHO_AUTH_TOKEN` | JWT bearer token for authenticated memory/graph calls (cloud mode; not required in CE mode) |
 
 ### Optional
 
@@ -226,11 +283,22 @@ YAML frontmatter (session_id, date, topics, summary) and structured
 | `KUMIHO_CLAUDE_HOME` | *(platform default)* | Override runtime/venv directory |
 | `KUMIHO_CLAUDE_PACKAGE_SPEC` | *(see above)* | Override pip install spec |
 | `KUMIHO_CLAUDE_DISABLE_LLM_FALLBACK` | *(unset)* | Set to `1` to disable local no-key LLM fallback |
-| `KUMIHO_CLAUDE_DISCOVERY_USER_AGENT` | `kumiho-claude/0.9.0` | Override discovery HTTP User-Agent |
+| `KUMIHO_CLAUDE_DISCOVERY_USER_AGENT` | `kumiho-claude/0.9.1` | Override discovery HTTP User-Agent |
 | `KUMIHO_ARTIFACT_DIR` | `~/.kumiho/artifacts/` | Override conversation artifact directory |
 
+### Self-hosted (Community Edition)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KUMIHO_CLAUDE_MODE` | *(unset)* | Set to `ce` (or `community` / `self-hosted` / `local`) to target a self-hosted CE server instead of cloud discovery |
+| `KUMIHO_CLAUDE_SERVER_ENDPOINT` | `127.0.0.1:9190` | CE gRPC endpoint; setting it also enables CE mode |
+| `UPSTASH_REDIS_URL` | `redis://127.0.0.1:6379` | CE working-memory Redis URL (CE only) |
+| `KUMIHO_LLM_BASE_URL` | *(unset)* | OpenAI-compatible LLM endpoint for summarization; when set, replaces the fail-fast dead-port fallback |
+
 `KUMIHO_SERVER_ENDPOINT` and `KUMIHO_SERVER_ADDRESS` are intentionally
-ignored by the launcher to enforce control-plane discovery routing.
+ignored by the launcher to enforce control-plane discovery routing in cloud
+mode. For self-hosted routing use `KUMIHO_CLAUDE_SERVER_ENDPOINT` (see
+[Self-hosted (Community Edition)](#self-hosted-community-edition)).
 
 ## Troubleshooting
 
@@ -297,6 +365,9 @@ python ./kumiho-claude/scripts/run_kumiho_mcp.py --self-test
 
 # Test discovery with .env.local:
 python ./kumiho-claude/scripts/test_discovery_env.py --env-file .env.local
+
+# Offline checks for self-hosted CE mode (no network/venv needed):
+python ./kumiho-claude/scripts/test_ce_mode.py
 ```
 
 ## Structure
@@ -329,6 +400,7 @@ python ./kumiho-claude/scripts/test_discovery_env.py --env-file .env.local
 │   ├── save-session-artifact.py  # SessionEnd hook
 │   ├── auto-approve-memory.py    # PermissionRequest hook
 │   ├── test_discovery_env.py     # Discovery smoke test
+│   ├── test_ce_mode.py           # Self-hosted CE mode offline checks
 │   ├── setup.py                  # Interactive setup wizard
 │   └── ingest-skills.py          # Skill ingestion into CognitiveMemory/Skills graph
 ├── CONNECTORS.md                 # MCP connector details and env reference
