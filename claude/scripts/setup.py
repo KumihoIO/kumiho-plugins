@@ -3,14 +3,16 @@
 
 Interactive setup that:
   1. Finds or creates a Python venv with kumiho packages
-  2. Authenticates with Kumiho Cloud (paste API token or use existing)
-  3. Writes token to .env.local and credential cache (MCP server reads on start)
+  2. Selects a backend — Kumiho Cloud (API token) or self-hosted CE (no token)
+  3. Writes credentials / CE config to .env.local, OS env, and Desktop config
   4. Ingests discoverable skills into CognitiveMemory/Skills graph
   5. Verifies the MCP server can connect
 
 Usage:
-    python scripts/setup.py                    # interactive
-    python scripts/setup.py --token TOKEN -y   # non-interactive (for Claude Code)
+    python scripts/setup.py                    # interactive (choose backend)
+    python scripts/setup.py --token TOKEN -y   # non-interactive cloud
+    python scripts/setup.py --ce -y            # non-interactive self-hosted CE
+    python scripts/setup.py --ce --ce-endpoint 127.0.0.1:9190 -y
 """
 
 from __future__ import annotations
@@ -53,6 +55,10 @@ ENV_LOCAL_FALLBACK = KUMIHO_DIR / ".env.local"  # used when plugin dir is read-o
 SKILL_MD = PLUGIN_DIR / "skills" / "kumiho-memory" / "SKILL.md"
 REFS_DIR = PLUGIN_DIR / "skills" / "kumiho-memory" / "references"
 INGEST_SCRIPT = SCRIPT_DIR / "ingest-skills.py"
+
+# Self-hosted Community Edition (CE) defaults — mirror run_kumiho_mcp.py.
+DEFAULT_CE_ENDPOINT = "127.0.0.1:9190"
+DEFAULT_CE_REDIS_URL = "redis://127.0.0.1:6379"
 
 # ---------------------------------------------------------------------------
 # Console helpers
@@ -425,6 +431,135 @@ def setup_auth(cli_token: str | None = None) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Step 2 (alt): Self-hosted Community Edition (CE)
+# ---------------------------------------------------------------------------
+
+
+def choose_backend(args: argparse.Namespace) -> str:
+    """Return 'cloud' or 'ce'. Preserves the cloud default for non-interactive
+    runs and whenever a token is supplied, so existing scripts are unaffected."""
+    if getattr(args, "ce", False):
+        return "ce"
+    if args.token:
+        return "cloud"
+    if AUTO_YES:
+        return "cloud"
+
+    choice = ask_choice("Which Kumiho backend?", [
+        {
+            "label": "Kumiho Cloud (managed)",
+            "note": "API token from kumiho.io",
+            "value": "cloud",
+            "recommended": True,
+        },
+        {
+            "label": "Self-hosted (Community Edition)",
+            "note": "local kumiho-server, no token",
+            "value": "ce",
+        },
+    ])
+    return choice["value"]
+
+
+def _normalize_endpoint(raw: str) -> str:
+    """Reduce an endpoint to bare host:port, mirroring the launcher's
+    _normalize_server_target — strips a scheme (grpc://, https://) and any path
+    so both the liveness probe and the persisted value stay well-formed."""
+    target = (raw or "").strip()
+    if not target:
+        return ""
+    if "://" in target:
+        import urllib.parse
+
+        parsed = urllib.parse.urlparse(target)
+        if not parsed.hostname:
+            return target
+        port = parsed.port
+        if port is None:
+            scheme = parsed.scheme.lower()
+            port = 443 if scheme in {"https", "grpcs"} else (80 if scheme in {"http", "grpc"} else 443)
+        return f"{parsed.hostname}:{port}"
+    if "/" in target:
+        target = target.split("/", 1)[0]
+    return target
+
+
+def _probe_ce(endpoint: str, timeout: float = 2.0) -> bool:
+    """Best-effort liveness check against a local CE server's /api/_live."""
+    import urllib.request
+
+    target = _normalize_endpoint(endpoint)
+    if not target:
+        return False
+    try:
+        with urllib.request.urlopen(f"http://{target}/api/_live", timeout=timeout) as resp:
+            return getattr(resp, "status", 200) < 400
+    except Exception:
+        return False
+
+
+def _ce_runtime_env(ce: dict) -> dict:
+    """Env for direct-SDK subprocesses (ingest/verify): tokenless CE routing."""
+    env = {
+        "KUMIHO_LOCAL_SERVER_ENDPOINT": ce["endpoint"],
+        "KUMIHO_AUTH_TOKEN": "",
+        "UPSTASH_REDIS_URL": ce.get("redis_url") or DEFAULT_CE_REDIS_URL,
+    }
+    if ce.get("llm_base_url"):
+        env["KUMIHO_LLM_BASE_URL"] = ce["llm_base_url"]
+    return env
+
+
+def _ce_persist_pairs(ce: dict) -> list[tuple[str, str]]:
+    """KEY=VALUE pairs to persist; the launcher derives the rest at startup.
+    Non-default values only, to keep configs minimal."""
+    pairs = [("KUMIHO_CLAUDE_MODE", "ce")]
+    if ce["endpoint"] != DEFAULT_CE_ENDPOINT:
+        pairs.append(("KUMIHO_CLAUDE_SERVER_ENDPOINT", ce["endpoint"]))
+    if ce.get("redis_url") and ce["redis_url"] != DEFAULT_CE_REDIS_URL:
+        pairs.append(("UPSTASH_REDIS_URL", ce["redis_url"]))
+    if ce.get("llm_base_url"):
+        pairs.append(("KUMIHO_LLM_BASE_URL", ce["llm_base_url"]))
+    return pairs
+
+
+def setup_ce(args: argparse.Namespace) -> dict:
+    """Collect CE settings, probe the server, and return a CE config dict."""
+    endpoint = (getattr(args, "ce_endpoint", None) or "").strip() or DEFAULT_CE_ENDPOINT
+    if not AUTO_YES:
+        endpoint = ask("CE server endpoint (host:port)", endpoint).strip() or DEFAULT_CE_ENDPOINT
+    endpoint = _normalize_endpoint(endpoint) or DEFAULT_CE_ENDPOINT
+
+    ce = {
+        "endpoint": endpoint,
+        "redis_url": (getattr(args, "ce_redis_url", None) or "").strip(),
+        "llm_base_url": (getattr(args, "ce_llm_base_url", None) or "").strip(),
+    }
+
+    if _probe_ce(endpoint):
+        ok(f"CE server detected at {endpoint}")
+    else:
+        warn(f"No CE server answering at {endpoint} yet")
+        warn("Start it first — see github.com/KumihoIO/kumiho-server-community")
+
+    if not AUTO_YES and not ce["llm_base_url"]:
+        llm = ask("Local LLM base URL for summarization (optional, blank to skip)", "").strip()
+        if llm:
+            ce["llm_base_url"] = llm
+
+    return ce
+
+
+def verify_ce(ce: dict) -> None:
+    """Confirm the CE server answers on its liveness endpoint."""
+    if _probe_ce(ce["endpoint"]):
+        ok(f"CE server reachable at {ce['endpoint']}")
+    else:
+        warn(f"CE server not reachable at {ce['endpoint']} — start kumiho-server CE, "
+             "then start a new session")
+
+
+# ---------------------------------------------------------------------------
 # Step 3: Patch MCP config with token
 # ---------------------------------------------------------------------------
 
@@ -489,6 +624,95 @@ def _try_write_token_to_config(config_path: Path, token: str) -> bool:
         return True
     except OSError:
         return False
+
+
+def _try_write_env_to_config(config_path: Path, updates: dict) -> bool:
+    """Merge *updates* into the kumiho-memory server's env block. Returns True
+    on success (including when already in sync)."""
+    if not config_path.exists():
+        return False
+    try:
+        body = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    servers = body.get("mcpServers")
+    if not isinstance(servers, dict):
+        return False
+    server = None
+    for name in ("kumiho-memory", "kumiho"):
+        if isinstance(servers.get(name), dict):
+            server = servers[name]
+            break
+    if server is None:
+        return False
+    env = server.get("env")
+    if not isinstance(env, dict):
+        env = {}
+        server["env"] = env
+    changed = False
+    for k, v in updates.items():
+        if env.get(k) != v:
+            env[k] = v
+            changed = True
+    if not changed:
+        return True
+    try:
+        config_path.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def _delete_env_from_config(config_path: Path, keys: list[str]) -> bool:
+    """Remove *keys* from the kumiho-memory server's env block. Returns True
+    only when a key was actually present and removed (so callers can stop)."""
+    if not config_path.exists():
+        return False
+    try:
+        body = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    servers = body.get("mcpServers")
+    if not isinstance(servers, dict):
+        return False
+    server = None
+    for name in ("kumiho-memory", "kumiho"):
+        if isinstance(servers.get(name), dict):
+            server = servers[name]
+            break
+    if server is None:
+        return False
+    env = server.get("env")
+    if not isinstance(env, dict):
+        return False
+    removed = False
+    for k in keys:
+        if k in env:
+            del env[k]
+            removed = True
+    if not removed:
+        return False
+    try:
+        config_path.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def _neutralize_env_markers(keys: list[str]) -> None:
+    """Clear the other backend's persisted markers so they cannot override the
+    backend just configured. Only touches surfaces where a marker is actually
+    present, so fresh installs are left clean. (.env.local is fully rewritten by
+    each backend's writer, so it needs no cleanup here.)"""
+    # OS user env — rewrite empty only when the marker was actually inherited,
+    # to avoid planting stray empty vars for users who never used the other mode.
+    for k in keys:
+        if (os.getenv(k, "") or "").strip():
+            _set_os_env_var(k, "")
+    # Claude Desktop config — delete the keys if present (no-op otherwise).
+    for desktop_path in _claude_desktop_config_paths():
+        if _delete_env_from_config(desktop_path, keys):
+            break
 
 
 def _upsert_shell_export(rc_path: Path, key: str, value: str) -> bool:
@@ -592,6 +816,10 @@ def patch_mcp_json(token: str | None) -> None:
     if not token:
         return
 
+    # Clear any CE markers left by a prior self-hosted onboarding, so the
+    # launcher does not blank this token and route to a local CE instead.
+    _neutralize_env_markers(["KUMIHO_CLAUDE_MODE", "KUMIHO_CLAUDE_SERVER_ENDPOINT"])
+
     # 1. OS-level user env var
     if _set_os_env_var("KUMIHO_AUTH_TOKEN", token):
         ok("KUMIHO_AUTH_TOKEN set as user environment variable (OS level)")
@@ -627,19 +855,60 @@ def patch_mcp_json(token: str | None) -> None:
             warn(f"Could not write .env.local to fallback location: {e}")
 
 
+def write_ce_config(ce: dict) -> None:
+    """Write CE config to the three surfaces the launcher reads: OS user env,
+    Claude Desktop config, and .env.local. No token is involved."""
+    pairs = _ce_persist_pairs(ce)
+
+    # 1. OS-level user env vars (inherited by Claude Desktop on next launch)
+    for k, v in pairs:
+        if _set_os_env_var(k, v):
+            ok(f"{k} set as user environment variable (OS level)")
+        else:
+            warn(f"Could not set OS-level env var {k} — a restart may be needed")
+
+    # 2. Claude Desktop global config (triggers MCP server restart)
+    desktop_written = False
+    for desktop_path in _claude_desktop_config_paths():
+        if _try_write_env_to_config(desktop_path, dict(pairs)):
+            ok(f"CE config written to {desktop_path.name} (MCP server will restart)")
+            desktop_written = True
+            break
+    if not desktop_written:
+        warn("Claude Desktop config not found — restart Claude Desktop after onboarding")
+
+    # 3. .env.local for Claude Code / run_kumiho_mcp.py
+    env_content = "# Kumiho self-hosted CE config (written by setup wizard)\n"
+    env_content += "".join(f"{k}={v}\n" for k, v in pairs)
+    try:
+        ENV_LOCAL.write_text(env_content, encoding="utf-8")
+        ok(f"CE config written to {ENV_LOCAL.name}")
+    except OSError:
+        warn(f"Plugin dir is read-only — writing .env.local to {ENV_LOCAL_FALLBACK}")
+        try:
+            KUMIHO_DIR.mkdir(parents=True, exist_ok=True)
+            ENV_LOCAL_FALLBACK.write_text(env_content, encoding="utf-8")
+            ok(f"CE config written to {ENV_LOCAL_FALLBACK}")
+        except OSError as e:
+            warn(f"Could not write .env.local to fallback location: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Step 4: Ingest skills into the graph
 # ---------------------------------------------------------------------------
 
 
-def run_ingestion(venv_python: Path, token: str | None) -> None:
-    """Run the ingest-skills.py script to populate CognitiveMemory/Skills."""
+def run_ingestion(venv_python: Path, token: str | None = None, ce_env: dict | None = None) -> None:
+    """Run the ingest-skills.py script to populate CognitiveMemory/Skills.
+
+    Cloud mode authenticates with *token*; CE mode routes tokenlessly via the
+    env derived from *ce_env*."""
     if not INGEST_SCRIPT.exists():
         warn(f"Ingestion script not found: {INGEST_SCRIPT}")
         warn("Run: python -m kumiho_memory ingest-skill <SKILL.md>")
         return
 
-    if not token:
+    if ce_env is None and not token:
         warn("Skipping skill ingestion (no auth token) — run later after authenticating")
         return
 
@@ -648,7 +917,14 @@ def run_ingestion(venv_python: Path, token: str | None) -> None:
         return
 
     log("Ingesting skills into the graph...")
-    env = {**os.environ, "KUMIHO_AUTH_TOKEN": token}
+    if ce_env is not None:
+        env = {**os.environ, **_ce_runtime_env(ce_env)}
+        # Drop any inherited cloud endpoint so the tokenless SDK cannot route
+        # away from the CE loopback (the launcher pops these; we do too).
+        env.pop("KUMIHO_SERVER_ENDPOINT", None)
+        env.pop("KUMIHO_SERVER_ADDRESS", None)
+    else:
+        env = {**os.environ, "KUMIHO_AUTH_TOKEN": token}
     r = subprocess.run(
         [str(venv_python), str(INGEST_SCRIPT)],
         timeout=60,
@@ -704,7 +980,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--token",
         metavar="TOKEN",
-        help="API token (skips interactive auth prompts)",
+        help="API token (skips interactive auth prompts; selects cloud backend)",
+    )
+    p.add_argument(
+        "--ce",
+        action="store_true",
+        help="Self-hosted Community Edition backend (no API token required)",
+    )
+    p.add_argument(
+        "--ce-endpoint",
+        metavar="HOST:PORT",
+        help=f"CE gRPC endpoint (default {DEFAULT_CE_ENDPOINT}); implies --ce",
+    )
+    p.add_argument(
+        "--ce-redis-url",
+        metavar="URL",
+        help=f"CE working-memory Redis URL (default {DEFAULT_CE_REDIS_URL})",
+    )
+    p.add_argument(
+        "--ce-llm-base-url",
+        metavar="URL",
+        help="OpenAI-compatible LLM endpoint for CE summarization",
     )
     p.add_argument(
         "-y", "--yes",
@@ -736,26 +1032,42 @@ def main(argv: list[str] | None = None) -> int:
     venv_python = setup_venv(base_python)
     print()
 
-    # Step 2: Auth
-    log("Step 2/5: Authentication")
-    token = setup_auth(cli_token=args.token)
-    if token:
-        os.environ["KUMIHO_AUTH_TOKEN"] = token
+    # A CE-specific flag implies the CE backend.
+    if args.ce_endpoint or args.ce_redis_url or args.ce_llm_base_url:
+        args.ce = True
+
+    # Step 2: Backend selection + auth/config
+    log("Step 2/5: Backend & authentication")
+    backend = choose_backend(args)
+    token: str | None = None
+    ce: dict | None = None
+    if backend == "ce":
+        ce = setup_ce(args)
+    else:
+        token = setup_auth(cli_token=args.token)
+        if token:
+            os.environ["KUMIHO_AUTH_TOKEN"] = token
     print()
 
-    # Step 3: Write token to OS env + Desktop config + .env.local
+    # Step 3: Persist config (OS env + Desktop config + .env.local)
     log("Step 3/5: MCP server configuration")
-    patch_mcp_json(token)
+    if ce is not None:
+        write_ce_config(ce)
+    else:
+        patch_mcp_json(token)
     print()
 
     # Step 4: Skill ingestion
     log("Step 4/5: Skill ingestion")
-    run_ingestion(venv_python, token)
+    run_ingestion(venv_python, token=token, ce_env=ce)
     print()
 
     # Step 5: Verify
     log("Step 5/5: Verify connection")
-    verify_connection(venv_python, token)
+    if ce is not None:
+        verify_ce(ce)
+    else:
+        verify_connection(venv_python, token)
     print()
 
     # Summary
@@ -763,7 +1075,11 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print(f"  {GREEN}{BOLD}Setup complete!{RESET}")
     print()
-    if token:
+    if ce is not None:
+        print(f"  Self-hosted CE mode configured (endpoint {ce['endpoint']}).")
+        print(f"  Start a new session — the plugin bootstraps on first message.")
+        print(f"  {DIM}Ensure your kumiho-server CE is running.{RESET}")
+    elif token:
         print(f"  Claude will connect to Kumiho memory automatically.")
         print(f"  Start a new session — the plugin bootstraps on first message.")
     else:

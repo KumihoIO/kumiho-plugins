@@ -229,6 +229,79 @@ def test_llm_fallback() -> bool:
     return ok
 
 
+def test_setup_wizard_ce() -> bool:
+    """The onboarding wizard's CE helpers: backend choice, persisted pairs, and
+    the tokenless runtime env handed to ingestion/verify."""
+    import types
+
+    import setup
+
+    setup.AUTO_YES = True
+
+    def ns(**kw):
+        base = {
+            "ce": False, "ce_endpoint": None, "ce_redis_url": None,
+            "ce_llm_base_url": None, "token": None, "yes": True,
+        }
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    ok = True
+
+    # Backend selection preserves the cloud default; CE is opt-in.
+    ok &= _check("--ce selects CE", setup.choose_backend(ns(ce=True)) == "ce")
+    ok &= _check("token selects cloud", setup.choose_backend(ns(token="eyJ")) == "cloud")
+    ok &= _check("non-interactive default is cloud", setup.choose_backend(ns()) == "cloud")
+
+    # Persisted pairs are minimal at defaults, complete when overridden.
+    default_pairs = setup._ce_persist_pairs({"endpoint": setup.DEFAULT_CE_ENDPOINT, "redis_url": "", "llm_base_url": ""})
+    ok &= _check("default persist = mode only", default_pairs == [("KUMIHO_CLAUDE_MODE", "ce")], f"got {default_pairs}")
+    custom_pairs = dict(setup._ce_persist_pairs({"endpoint": "h:9", "redis_url": "redis://r:1", "llm_base_url": "http://l/v1"}))
+    ok &= _check(
+        "custom persist includes overrides",
+        custom_pairs == {"KUMIHO_CLAUDE_MODE": "ce", "KUMIHO_CLAUDE_SERVER_ENDPOINT": "h:9",
+                         "UPSTASH_REDIS_URL": "redis://r:1", "KUMIHO_LLM_BASE_URL": "http://l/v1"},
+        f"got {custom_pairs}",
+    )
+
+    # Runtime env for ingest/verify is tokenless and points at the CE endpoint.
+    rt = setup._ce_runtime_env({"endpoint": "h:9", "redis_url": "", "llm_base_url": ""})
+    ok &= _check(
+        "runtime env is tokenless CE",
+        rt == {"KUMIHO_LOCAL_SERVER_ENDPOINT": "h:9", "KUMIHO_AUTH_TOKEN": "", "UPSTASH_REDIS_URL": setup.DEFAULT_CE_REDIS_URL},
+        f"got {rt}",
+    )
+
+    # A down endpoint probes False (no crash, no false positive).
+    ok &= _check("probe of down endpoint is False", setup._probe_ce("127.0.0.1:9199", timeout=1.0) is False)
+
+    # Endpoint normalization strips scheme/path so the probe URL stays valid.
+    ok &= _check("normalize scheme URL", setup._normalize_endpoint("grpc://127.0.0.1:9190") == "127.0.0.1:9190")
+    ok &= _check("normalize trailing path", setup._normalize_endpoint("127.0.0.1:9190/") == "127.0.0.1:9190")
+    ok &= _check("normalize plain passthrough", setup._normalize_endpoint("127.0.0.1:9190") == "127.0.0.1:9190")
+    ce_norm = setup.setup_ce(ns(ce=True, ce_endpoint="grpc://5.6.7.8:9191"))
+    ok &= _check("setup_ce normalizes endpoint", ce_norm["endpoint"] == "5.6.7.8:9191", f"got {ce_norm['endpoint']}")
+
+    # Backend-switch cleanup: cloud re-onboarding must strip stale CE markers
+    # from the Desktop config so the launcher does not trap the user in CE mode.
+    import json as _json
+    tmp_cfg = os.path.join(tempfile.mkdtemp(prefix="kumiho-cfg-"), "claude_desktop_config.json")
+    with open(tmp_cfg, "w", encoding="utf-8") as f:
+        _json.dump({"mcpServers": {"kumiho-memory": {"env": {
+            "KUMIHO_AUTH_TOKEN": "eyJnew", "KUMIHO_CLAUDE_MODE": "ce",
+            "KUMIHO_CLAUDE_SERVER_ENDPOINT": "127.0.0.1:9190"}}}}, f)
+    removed = setup._delete_env_from_config(
+        __import__("pathlib").Path(tmp_cfg), ["KUMIHO_CLAUDE_MODE", "KUMIHO_CLAUDE_SERVER_ENDPOINT"])
+    with open(tmp_cfg, encoding="utf-8") as f:
+        after = _json.load(f)["mcpServers"]["kumiho-memory"]["env"]
+    ok &= _check("delete removed CE markers", removed is True)
+    ok &= _check("token preserved after delete", after.get("KUMIHO_AUTH_TOKEN") == "eyJnew")
+    ok &= _check("CE markers gone after delete", "KUMIHO_CLAUDE_MODE" not in after and "KUMIHO_CLAUDE_SERVER_ENDPOINT" not in after)
+    ok &= _check("delete no-op returns False", setup._delete_env_from_config(__import__("pathlib").Path(tmp_cfg), ["KUMIHO_CLAUDE_MODE"]) is False)
+
+    return ok
+
+
 def main() -> int:
     # Point the credential cache at an empty dir so a real ~/.kumiho token on the
     # test machine cannot leak in and trigger a live discovery call.
@@ -240,6 +313,7 @@ def main() -> int:
         ("ce_env_wiring", test_ce_env_wiring),
         ("cloud_default_preserved", test_cloud_default_preserved),
         ("llm_fallback", test_llm_fallback),
+        ("setup_wizard_ce", test_setup_wizard_ce),
     )
 
     all_ok = True

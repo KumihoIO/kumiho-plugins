@@ -119,7 +119,19 @@ discovery and fails fast if no auth token is present. If you run your own
 you can point the plugin at it instead — **opt-in**, so cloud users are
 unaffected.
 
-Enable CE mode by setting **either** of:
+**Easiest path — the wizard.** Run `/kumiho-onboard` and pick
+**Self-hosted (Community Edition)**, or from a terminal:
+
+```bash
+python ./kumiho-claude/scripts/setup.py --ce --yes
+# non-default endpoint: --ce-endpoint HOST:PORT
+```
+
+The wizard writes the CE config below to `.env.local`, your OS user environment,
+and the Claude Desktop config, then ingests skills and probes the server — no
+API token involved.
+
+**Manual path.** Enable CE mode by setting **either** of:
 
 ```dotenv
 # .env.local (plugin root) or .claude/settings.local.json env block
