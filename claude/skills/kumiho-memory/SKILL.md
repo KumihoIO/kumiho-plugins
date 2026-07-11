@@ -181,6 +181,8 @@ DreamState will review and refine it.
 
 **Graph**: `kumiho_create_edge`, `kumiho_get_edges`, `kumiho_get_dependencies`, `kumiho_get_dependents`, `kumiho_find_path`, `kumiho_analyze_impact`, `kumiho_get_provenance_summary`
 
+**Decision Memory (code work)**: `kumiho_code_why` (why is this code the way it is? — git-anchored decisions + verbatim evidence), `kumiho_code_ingest` (mine a commit range; idempotent). **Before modifying unfamiliar code, ask `kumiho_code_why` for the file first** — prior decisions, their rationale, and whether they were later reversed (`superseded_by`) come back in one call. Never re-litigate a decision the graph already explains; if you change it anyway, say why and commit with a message that carries the new rationale (the auto-capture hook mines it back into the graph).
+
 **Creative output tracking**: See creative-memory skill (Skill Discovery) — composes `kumiho_search_items`, `kumiho_create_item`, `kumiho_create_revision`, `kumiho_create_artifact`, `kumiho_create_edge`, `kumiho_memory_reflect`
 
 **Edge types**: DERIVED_FROM (default, auto from reflect), DEPENDS_ON (assumptions), REFERENCED (auto from discover_edges), CREATED_FROM (artifacts), SUPERSEDES (belief revision), CONTAINS (bundles)

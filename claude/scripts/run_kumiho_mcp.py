@@ -18,7 +18,7 @@ import venv
 from pathlib import Path
 
 
-DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.9.16 kumiho-memory[all]>=0.3.16"
+DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.9.16 kumiho-memory[all]>=0.11.0"
 MARKER_FILE = ".installed-packages.txt"
 DEFAULT_DISCOVERY_USER_AGENT = "kumiho-claude/0.9.1"
 
@@ -850,6 +850,7 @@ def _sanitize_placeholder_env_vars() -> None:
         "KUMIHO_CLAUDE_MODE",
         "KUMIHO_CLAUDE_SERVER_ENDPOINT",
         "KUMIHO_LLM_BASE_URL",
+        "KUMIHO_MEMORY_CODE",
     ):
         raw = (os.getenv(key, "") or "").strip()
         if raw and _looks_like_placeholder(raw):
