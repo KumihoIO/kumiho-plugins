@@ -39,6 +39,14 @@ def _load_launcher():
     return module
 
 
+def _load_pending():
+    path = Path(__file__).resolve().parent / "code_capture_pending.py"
+    spec = importlib.util.spec_from_file_location("code_capture_pending", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def main() -> int:
     repo_dir = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
 
@@ -81,9 +89,17 @@ def main() -> int:
             return 0
         launcher._configure_llm_fallback()
         if (os.getenv("KUMIHO_LLM_BASE_URL", "") or "").startswith("http://127.0.0.1:9"):
-            # Fail-fast LLM fallback means no real model is configured —
-            # mining would only produce errors. Quietly wait for real keys.
-            log("skip: no LLM configured (fail-fast fallback active)")
+            # No real model here (fail-fast fallback) and no agent in the loop,
+            # so decisions can't be extracted now. KEYLESS fallback: queue the
+            # commit so the in-loop agent captures it via kumiho_code_capture on
+            # its next session (see code_capture_pending.py + SKILL.md). Never
+            # drop the commit — the queue is the keyless bridge.
+            try:
+                _load_pending().enqueue(repo_dir)
+                log("no LLM: queued commit for keyless agent capture "
+                    "(pending-code-captures.jsonl)")
+            except Exception as exc:  # noqa: BLE001 — never break the session
+                log(f"skip: no LLM and enqueue failed: {exc}")
             return 0
 
         python_path = launcher._ensure_runtime()
