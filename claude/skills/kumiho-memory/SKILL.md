@@ -92,6 +92,26 @@ This does three things in one call:
 ---
 
 <!-- inline -->
+## Build the typed graph (keyless decomposition)
+
+After a **substantive** exchange — a decision settled, a durable fact, or a new named entity (person, system, file, concept) that will recur — decompose it into the typed knowledge graph so recall can bridge memories through shared entities:
+
+```
+kumiho_memory_decompose(
+  kref: "<the stored memory revision — from the reflect/consolidate you just did>",
+  entities:  [{ name: "config_from_env", type: "convention" }],     // reusable named hubs
+  facts:     [{ statement: "...", about: ["config_from_env"] }],     // claims, each ABOUT its entities
+  relations: [{ subject: "...", predicate: "uses", object: "..." }]  // entity -> entity
+)
+```
+
+- **Keyless — YOUR job, not a separate LLM's** (exactly like `reflect` / `code_capture`): you already read the conversation, so distill the entities/facts/relations yourself. No API key.
+- **Token-lean**: distill from the memory's *compact summary*, NOT the raw transcript. A handful of each — the salient, durable ones. Decompose only when something worth graphing emerged; skip chit-chat.
+- Reuse existing entity names so hubs merge across sessions; `type`/`aliases` enrich the same node. Requires `KUMIHO_MEMORY_ONTOLOGY=1` (on by default).
+
+---
+
+<!-- inline -->
 ## Skill Discovery Protocol
 
 You have access to a shared skill library in the Kumiho graph. Before attempting an unfamiliar procedure or when you need specialized behavioral guidance beyond the rules above, **search for a skill first**.
@@ -180,6 +200,8 @@ DreamState will review and refine it.
 **Memory lifecycle (low-level)**: `kumiho_memory_ingest`, `kumiho_memory_add_response`, `kumiho_memory_consolidate`, `kumiho_memory_recall` (semantic search — prefer engage), `kumiho_memory_retrieve` (structured filters: space, bundle, mode), `kumiho_memory_store` (prefer reflect), `kumiho_memory_discover_edges` (handled by reflect), `kumiho_memory_store_execution` (build/deploy/test outcomes), `kumiho_memory_dream_state`
 
 **Graph**: `kumiho_create_edge`, `kumiho_get_edges`, `kumiho_get_dependencies`, `kumiho_get_dependents`, `kumiho_find_path`, `kumiho_analyze_impact`, `kumiho_get_provenance_summary`
+
+**Ontology (typed graph)**: `kumiho_memory_decompose` — **keyless**: after a substantive exchange, pass the entities / facts / relations you distilled from the stored memory's summary; builds typed entity/fact nodes + ABOUT / DERIVED_FROM / relation edges so recall can bridge memories through shared entities (no key, exactly like reflect). See "Build the typed graph" above.
 
 **Decision Memory (code work)**: `kumiho_code_why` (why is this code the way it is? — git-anchored decisions + verbatim evidence), `kumiho_code_capture` (**store a decision YOU just made — keyless**), `kumiho_code_ingest` (batch-mine a commit range with a model), `kumiho_code_mine_session` (mine the conversation itself). **Before modifying unfamiliar code, ask `kumiho_code_why` for the file first** — prior decisions, their rationale, and whether they were later reversed (`superseded_by`) come back in one call. Never re-litigate a decision the graph already explains.
 
