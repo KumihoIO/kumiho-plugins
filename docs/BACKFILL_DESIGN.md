@@ -326,7 +326,9 @@ The host agent reads each packet and appends to staging. Rules the prompt encode
      whose metadata is what recall surfaces — replaying newest→oldest makes the
      *earliest* mention the last-stacked revision, so the surfaced `event_date` is
      the true origin (verified by a stacking regression fixture: same decision,
-     two dates → recalled `event_date` == earliest).
+     two dates → recalled `event_date` == earliest). *Interim mechanism*: once
+     kumiho-server#43's order-independent `min(event_date)`-on-stack semantics
+     land (below), the anchor no longer depends on replay order at all.
    - **Per session, two reflect calls** (kref determinism): first
      `tool_memory_reflect(session_id="backfill:<source_session_id>",
      response=<digest>, captures=[captures[0]], discover_edges=false)` — its single
@@ -353,6 +355,30 @@ semantics.)
 
 **Consolidation is not called** on backfill sessions; the typed graph comes from the
 staged decompose triples, and Dream State can enrich later like any other memory.
+
+**Throughput & write reliability
+([kumiho-server#43](https://github.com/KumihoIO/kumiho-server/issues/43))**:
+phase 1 ships **serial** — two reflect calls per session, one store per capture —
+correct and simple. Measured on loopback CE (#43 prototype): client-side
+concurrency caps at ×1.67 even at RTT≈0 (the *server write path* is the ceiling)
+and naive concurrent bursts intermittently hit Neo4j deadlocks — and a bulk burst
+into a fresh graph is exactly backfill's shape — so client-side concurrency is not
+the fix and is deliberately not used. The fix is server-side batching
+(`BatchCreateRevisions`, #43), realized **inside** `tool_memory_reflect`: its
+per-capture store loop becomes one batch call, the runner's semantics don't change,
+and no direct-store fork appears. Interactions specified now so #43 can honor them:
+
+   - **One idempotency key, two layers**: the per-capture `content_sha256` is
+     passed as #43's per-item idempotency key — a DB-level `MERGE` no-op on
+     resubmit, independently of (and consistent with) the staging-level marks.
+   - **Order-independent valid-time**: #43 stacking takes `min(event_date)` across
+     revisions of a stacked item, so batching cannot reintroduce the newest-wins
+     clobber that replay order currently guards against.
+   - **Known residual**: the per-capture stack-*search* (`find_similar_item`)
+     round-trip is not batched by #43 — negligible on a fresh graph (create-path,
+     fast misses), relevant for re-runs against a populated graph.
+   - **Keyless unaffected**: batch write is a deterministic server call; reflect
+     already sends `discover_edges: false`.
 
 ## Provenance & dedup
 
@@ -407,7 +433,7 @@ agent sessions work at all).
 | Phase | Deliverables | Exit criteria |
 | --- | --- | --- |
 | **0 — yield measurement** *(new; gates the project)* | inventory + packetizer + rubric dry-run on ≥1 real corpus (maintainer dogfood); measure captures-by-type per session | median ≥ 2 non-summary captures across top-K **and** a teaser digest a non-author finds compelling; if yield is ~0–1, stop and rethink signal density before building ingest |
-| **1 — plugin command** | `commands/kumiho-backfill.md`, `scripts/backfill_inventory.py`, `scripts/backfill_ingest.py`, `scripts/backfill/ingest_runner.py`, `.mcp.json` spec-floor bump, kumiho-memory **skill edit** (backfill-tag rendering rule) | dogfood against CE + cloud; captures visible in dashboard with correct `event_date`; re-run is a no-op at capture granularity; **crowding check**: fresh live captures from the current week still rank top-3 for their queries on a fully-backfilled graph; adversarial recall E2E passes |
+| **1 — plugin command** | `commands/kumiho-backfill.md`, `scripts/backfill_inventory.py`, `scripts/backfill_ingest.py`, `scripts/backfill/ingest_runner.py`, `.mcp.json` spec-floor bump, kumiho-memory **skill edit** (backfill-tag rendering rule). Ingest ships **serial**; throughput is gated on kumiho-server#43 (batch-aware reflect) — a later speedup, not a phase-1 blocker | dogfood against CE + cloud; captures visible in dashboard with correct `event_date`; re-run is a no-op at capture granularity; **crowding check**: fresh live captures from the current week still rank top-3 for their queries on a fully-backfilled graph; adversarial recall E2E passes |
 | **2 — hosted prompt** | `prompts/backfill.md` (+ rubric factored to shared include), staging-detect hint in `session-bootstrap.py`, onboard CTA wiring | fresh-VM bare-session run produces staging + teaser; install → onboard → ingest picks it up; conversion validated on at least one user outside the team |
 | **3 — Codex** | `codex/AGENTS.md` backfill section reusing the same scripts; `~/.codex` parser | extraction parity on a Codex corpus |
 | **4 — ChatGPT** | export-ZIP mode (**staging-always** — connector-direct is out: it would run reflect server-side, bypassing host-agent distillation and all local screening; revisit only with an explicit design) | export → typed memories end-to-end |
