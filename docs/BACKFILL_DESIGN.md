@@ -67,9 +67,10 @@ not shorten either to bare "backfill" where ambiguous.
    but does **not** affect ranking: the event-proximity prior defaults off with no
    env toggle (`recall_rerank.py:84-103`) and `tool_memory_recall` never passes
    `query_time` (no temporal-intent parser exists). Backfill's job is to write the
-   date correctly so activation is retroactively free; enabling rank-time use is a
-   named SDK follow-up (file in kumiho-SDKs: event-proximity enablement +
-   temporal-intent → `query_time` plumbing), **not** a backfill blocker.
+   date correctly so activation is retroactively free; enabling rank-time use is
+   tracked as [kumiho-SDKs#70](https://github.com/KumihoIO/kumiho-SDKs/issues/70)
+   (event-proximity enablement + agent-supplied `query_time` on the recall/engage
+   schemas), **not** a backfill blocker.
 6. **Transcripts are data, not instructions — at extraction *and* at recall** —
    mined text is untrusted input twice: the extraction prompt must not obey it, and
    a distilled capture must not become a standing directive in future sessions
@@ -364,9 +365,12 @@ concurrency caps at ×1.67 even at RTT≈0 (the *server write path* is the ceili
 and naive concurrent bursts intermittently hit Neo4j deadlocks — and a bulk burst
 into a fresh graph is exactly backfill's shape — so client-side concurrency is not
 the fix and is deliberately not used. The fix is server-side batching
-(`BatchCreateRevisions`, #43), realized **inside** `tool_memory_reflect`: its
+(`BatchCreateRevisions`, #43), realized **inside** `tool_memory_reflect`
+(SDK adoption tracked as
+[kumiho-SDKs#71](https://github.com/KumihoIO/kumiho-SDKs/issues/71)): its
 per-capture store loop becomes one batch call, the runner's semantics don't change,
-and no direct-store fork appears. Interactions specified now so #43 can honor them:
+and no direct-store fork appears. Interactions specified now so #43/#71 can honor
+them:
 
    - **One idempotency key, two layers**: the per-capture `content_sha256` is
      passed as #43's per-item idempotency key — a DB-level `MERGE` no-op on
@@ -438,6 +442,15 @@ agent sessions work at all).
 | **3 — Codex** | `codex/AGENTS.md` backfill section reusing the same scripts; `~/.codex` parser | extraction parity on a Codex corpus |
 | **4 — ChatGPT** | export-ZIP mode (**staging-always** — connector-direct is out: it would run reflect server-side, bypassing host-agent distillation and all local screening; revisit only with an explicit design) | export → typed memories end-to-end |
 
+## Cross-repo dependencies & follow-ups
+
+| Repo / issue | Status | What it does for backfill | Blocking? |
+| --- | --- | --- | --- |
+| [kumiho-SDKs#68](https://github.com/KumihoIO/kumiho-SDKs/issues/68) / [PR #69](https://github.com/KumihoIO/kumiho-SDKs/pull/69) — `event_date` on reflect captures | **shipped** (kumiho-memory 0.16.2) | the valid-time write path every capture uses | **Yes — satisfied** (feature-gated at ingest) |
+| [kumiho-server#43](https://github.com/KumihoIO/kumiho-server/issues/43) — `BatchCreateRevisions` bulk-write RPC | open | ingest throughput + deadlock-free bulk writes; `min(event_date)`-on-stack order independence (skipping undated revisions) | No — phase 1 ships serial |
+| [kumiho-SDKs#71](https://github.com/KumihoIO/kumiho-SDKs/issues/71) — batch-aware reflect (adopts #43) | open | reflect's per-capture loop → one batch call; runner unchanged; staging `content_sha256` becomes the DB-level idempotency key | No — transparent speedup when it lands |
+| [kumiho-SDKs#70](https://github.com/KumihoIO/kumiho-SDKs/issues/70) — rank-time valid-time (event-proximity enable + agent-supplied `query_time`) | open | backfilled `event_date` anchors become rank-effective **retroactively**; until then dates are surfaced-only | No — E2E asserts surfaced dates only |
+
 ## Testing
 
 - **Unit (inventory)**: synthetic JSONL fixtures — filter correctness (sidechain/
@@ -464,8 +477,8 @@ agent sessions work at all).
    `/kumiho-onboard`-only. Ambient is stickier; explicit is quieter.
 3. Promote the ingest runner to `python -m kumiho_memory backfill-ingest` at
    phase 3 (shared by codex/gpt plugins, tested in the SDK suite)?
-4. The SDK follow-up for rank-time valid-time (event-proximity enablement +
-   temporal-intent → `query_time`): file now and schedule independently, or bundle
-   with the next retrieval-quality push?
+4. Scheduling of [kumiho-SDKs#70](https://github.com/KumihoIO/kumiho-SDKs/issues/70)
+   (rank-time valid-time, now filed): independent, or bundled with the next
+   retrieval-quality push?
 5. Phase 0 yield bar: is median ≥ 2 non-summary captures per top-K session the
    right go/no-go, or should the gate be teaser quality judged blind?
