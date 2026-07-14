@@ -184,9 +184,13 @@ Deliberately under `~/.kumiho/` (user data awaiting review), not the XDG cache d
 
 **Idempotency keys**: a capture's identity is `(source_session_id, content_sha256)`.
 A continued session (append-only JSONL growth — the *common* path) re-extracts only
-content not already staged: existing captures and their `ingested_kref`s are
-untouched; genuinely new material appends as new captures. `packet_sha256` is
-informational only — a changed packet never triggers wholesale re-ingest.
+content not already staged: `packetize --refresh` rebuilds packets for
+extracted/ingested sessions and reports only the changed ones; `stage` then merges
+by hash — existing captures and their `ingested_kref`s are untouched, genuinely new
+material appends (and reopens an `ingested` session for just those captures).
+`packet_sha256` is informational only — a changed packet never triggers wholesale
+re-ingest. Stage 2 additionally sets a `decomposed: true` mark per session (the
+decompose resume flag) — an implementation field on top of schema v1.
 
 ## Stage 1 — Extract
 
@@ -213,11 +217,14 @@ Deterministic; runs pre-install (no kumiho packages, no venv). Subcommands:
 **Claude Code parsing**: each JSONL line has `type` — use only `user`/`assistant`
 records (fields: `timestamp`, `cwd`, `gitBranch`, `sessionId`, `uuid`/`parentUuid`,
 `isSidechain`, `isMeta`, `isCompactSummary`, `message{role, content}`). For titles
-use, in order: a `custom-title` record, a `last-prompt` record, else the first real
-user message. Do **not** depend on `summary` or `ai-title` records — corpus censuses
-show them absent or rare (≈0–0.4%). Session-continuation chains are detected via
-shared `sessionId`/`cwd` lineage (heuristic pinned against fixtures at impl); a
-chain ranks as one candidate.
+use, in order: a `custom-title` record, an `ai-title` record, else the first real
+human message. (`last-prompt` records carry no text — only a `leafUuid` pointer,
+verified 2026-07 — so they cannot title anything; `summary` records may be absent
+entirely.) Harness-generated user records (`<command-name>`, `<task-notification>`,
+`<local-command-stdout>` echoes) are plumbing, not the human — excluded from human
+counts and packets. Session-continuation chains are detected via shared cwd +
+first-human-message lineage (heuristic pinned against fixtures); a chain ranks as
+one candidate.
 
 **Hygiene filters** (drop, with counted reasons in the manifest):
 - records with `isSidechain: true` (sub-agent traffic) or `isMeta: true`

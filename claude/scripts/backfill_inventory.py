@@ -175,6 +175,7 @@ def parse_claude_session(path: Path) -> dict | None:
     messages = []  # (ts_iso, role, text) — human user + assistant text only
     session_id = path.stem
     title = ""
+    title_is_custom = False
     cwd = ""
     git_branch = ""
     first_ts = last_ts = ""
@@ -187,8 +188,17 @@ def parse_claude_session(path: Path) -> dict | None:
             except (json.JSONDecodeError, UnicodeDecodeError):
                 continue
             rtype = rec.get("type")
+            # Title priority: custom-title beats ai-title; last-prompt records
+            # carry no text (leafUuid pointer only — verified 2026-07) so the
+            # final fallback is the first human message.
+            if rtype == "custom-title":
+                custom = str(rec.get("customTitle", "") or rec.get("title", ""))
+                if custom:
+                    title, title_is_custom = custom, True
+                continue
             if rtype == "ai-title":
-                title = str(rec.get("aiTitle", "")) or title
+                if not title_is_custom:
+                    title = str(rec.get("aiTitle", "")) or title
                 continue
             if rtype not in ("user", "assistant"):
                 continue
@@ -221,6 +231,8 @@ def parse_claude_session(path: Path) -> dict | None:
 
     human_msgs = sum(1 for _, role, _ in messages if role == "user")
     if human_msgs == 0:
+        return None
+    if cwd == "/":  # archetypes fallback: SDK/automation sessions run from /
         return None
     if not title:
         title = next(t for _, r, t in messages if r == "user").strip()[:120]
@@ -295,11 +307,11 @@ def cmd_scan(args) -> int:
     return 0
 
 
-def _merge_manifest_session(staging: dict, meta: dict) -> str:
-    """Add a parsed session to staging if new. Returns its resulting status."""
+def _merge_manifest_session(staging: dict, meta: dict) -> tuple[str, bool]:
+    """Add a parsed session to staging if new. Returns (status, was_added)."""
     for sess in staging["sessions"]:
         if sess["source_session_id"] == meta["source_session_id"]:
-            return sess["status"]  # frozen: never re-score or overwrite
+            return sess["status"], False  # frozen: never re-score or overwrite
     staging["sessions"].append({
         "source": meta["source"],
         "source_session_id": meta["source_session_id"],
@@ -316,7 +328,7 @@ def _merge_manifest_session(staging: dict, meta: dict) -> str:
         "captures": [],
         "decompose": {},
     })
-    return "inventoried"
+    return "inventoried", True
 
 
 def cmd_manifest(args) -> int:
@@ -324,11 +336,14 @@ def cmd_manifest(args) -> int:
     files = discover_claude_files(args.projects)
     parsed: list[dict] = []
     empty = 0
+    drop_totals: dict[str, int] = {}
     for path in files:
         meta = parse_claude_session(path)
         if meta is None:
             empty += 1
             continue
+        for reason, count in meta["dropped"].items():
+            drop_totals[reason] = drop_totals.get(reason, 0) + count
         if args.since and (meta["ended_at"][:10] or "0000") < args.since:
             continue
         parsed.append(meta)
@@ -344,11 +359,11 @@ def cmd_manifest(args) -> int:
     for group in by_key.values():
         group.sort(key=lambda m: m["ended_at"], reverse=True)
         keeper, rest = group[0], group[1:]
-        if _merge_manifest_session(staging, keeper) == "inventoried":
-            added += 1
+        _, was_added = _merge_manifest_session(staging, keeper)
+        added += was_added
         for dupe in rest:
-            status = _merge_manifest_session(staging, dupe)
-            if status == "inventoried":
+            _, was_added = _merge_manifest_session(staging, dupe)
+            if was_added:  # pre-existing sessions keep their frozen state
                 for sess in staging["sessions"]:
                     if sess["source_session_id"] == dupe["source_session_id"]:
                         sess["status"] = "skipped"
@@ -361,6 +376,7 @@ def cmd_manifest(args) -> int:
         counts[sess["status"]] = counts.get(sess["status"], 0) + 1
     print(f"manifest: {len(files)} files parsed, {empty} empty/bot-only dropped, "
           f"{added} new, {skipped_dupes} continuation-duplicates")
+    print(f"record drops (hygiene filters): {drop_totals}")
     print(f"staging totals: {counts} -> {staging_path()}")
     return 0
 
@@ -403,10 +419,9 @@ def build_packet(meta: dict) -> str:
         used.add(i)
         windows += 1
     parts += ["## Tail", ""]
-    for entry in msgs[-TAIL_EXCHANGES * 2:]:
-        idx = msgs.index(entry)
+    for idx in range(max(0, len(msgs) - TAIL_EXCHANGES * 2), len(msgs)):
         if idx not in used:
-            parts.append(_excerpt(*entry, CONTEXT_EXCERPT_CHARS))
+            parts.append(_excerpt(*msgs[idx], CONTEXT_EXCERPT_CHARS))
             used.add(idx)
 
     packet = anonymize("\n".join(parts))
@@ -415,29 +430,43 @@ def build_packet(meta: dict) -> str:
 
 def cmd_packetize(args) -> int:
     staging = load_staging()
-    candidates = sorted(
-        (s for s in staging["sessions"] if s["status"] == "inventoried"),
-        key=lambda s: s["score"], reverse=True,
-    )[: args.top]
+    if args.refresh:
+        # Grown-session path: rebuild packets for already-processed sessions
+        # and report the ones whose content changed, so the agent re-distills
+        # only those (stage then appends novel-hash captures).
+        candidates = [s for s in staging["sessions"]
+                      if s["status"] in ("extracted", "ingested")]
+    else:
+        candidates = sorted(
+            (s for s in staging["sessions"] if s["status"] == "inventoried"),
+            key=lambda s: s["score"], reverse=True,
+        )[: args.top]
     if not candidates:
         print("packetize: no inventoried sessions pending — run manifest, or all done")
         return 0
     pkt_dir = backfill_home() / "packets"
     pkt_dir.mkdir(parents=True, exist_ok=True)
-    written = 0
+    written = unchanged = 0
     for sess in candidates:
         meta = parse_claude_session(Path(sess["source_path"]))
         if meta is None:
-            sess["status"], sess["skip_reason"] = "skipped", "unreadable-on-packetize"
+            if not args.refresh:
+                sess["status"], sess["skip_reason"] = "skipped", "unreadable-on-packetize"
             continue
         packet = build_packet(meta)
+        sha = hashlib.sha256(packet.encode("utf-8")).hexdigest()
+        if args.refresh and sha == sess.get("packet_sha256"):
+            unchanged += 1
+            continue
         out = pkt_dir / f"{sess['source_session_id']}.md"
         out.write_text(packet, encoding="utf-8")
-        sess["packet_sha256"] = hashlib.sha256(packet.encode("utf-8")).hexdigest()
+        sess["packet_sha256"] = sha
         written += 1
-        print(f"packet: {out}  ({len(packet)} chars, score {sess['score']})")
+        print(f"packet: {out}  ({len(packet)} chars, score {sess['score']}"
+              f"{', REFRESHED — re-distill this one' if args.refresh else ''})")
     save_staging(staging)
-    print(f"packetize: {written} packets in {pkt_dir}")
+    print(f"packetize: {written} packets in {pkt_dir}"
+          + (f", {unchanged} unchanged" if args.refresh else ""))
     return 0
 
 
@@ -451,6 +480,8 @@ def validate_captures(payload: dict) -> list[str]:
     captures = payload.get("captures")
     if not isinstance(captures, list) or not captures:
         return ["captures must be a non-empty list"]
+    if not all(isinstance(c, dict) for c in captures):
+        return ["every capture must be an object"]
     if captures[0].get("type") != "summary":
         errors.append("captures[0] must be the session digest (type: summary)")
     for i, cap in enumerate(captures):
@@ -474,18 +505,22 @@ def cmd_stage(args) -> int:
     if sess is None:
         print(f"stage: unknown session {args.session!r} — run manifest first", file=sys.stderr)
         return 1
-    if sess["status"] == "ingested":
-        print(f"stage: session {args.session} already ingested — refusing to overwrite", file=sys.stderr)
-        return 1
 
     if args.skip:
+        if sess["status"] == "ingested":
+            print(f"stage: session {args.session} already ingested — cannot skip", file=sys.stderr)
+            return 1
         sess["status"], sess["skip_reason"] = "skipped", (args.reason or "agent-skipped")
         save_staging(staging)
         print(f"stage: {args.session} marked skipped ({sess['skip_reason']})")
         return 0
 
-    with open(args.captures_file, encoding="utf-8") as fh:
-        payload = json.load(fh)
+    try:
+        with open(args.captures_file, encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"stage: cannot read captures file {args.captures_file!r}: {exc}", file=sys.stderr)
+        return 1
     errors = validate_captures(payload)
     if errors:
         print("stage: validation failed:", file=sys.stderr)
@@ -497,13 +532,29 @@ def cmd_stage(args) -> int:
         cap["tags"] = tags
         cap["content_sha256"] = capture_sha256(cap)
         cap.setdefault("ingested_kref", "")
-    sess["captures"] = payload["captures"]
-    sess["decompose"] = payload.get("decompose") or {}
-    sess["status"] = "extracted"
+
+    # Merge, never replace: a continued (grown) session keeps its existing
+    # captures and their ingested_krefs; only novel-hash material appends.
+    existing = sess.get("captures") or []
+    if existing:
+        known = {c.get("content_sha256") for c in existing}
+        novel = [c for c in payload["captures"]
+                 if c["content_sha256"] not in known and c["type"] != "summary"]
+        sess["captures"] = existing + novel
+        if payload.get("decompose") and not sess.get("decompose"):
+            sess["decompose"] = payload["decompose"]
+        appended = len(novel)
+    else:
+        sess["captures"] = payload["captures"]
+        sess["decompose"] = payload.get("decompose") or {}
+        appended = len(payload["captures"])
+    if appended:
+        sess["status"] = "extracted"  # re-opens an ingested session for the new captures
     save_staging(staging)
-    typed = sum(1 for c in payload["captures"] if c["type"] != "summary")
-    print(f"stage: {args.session} extracted — {len(payload['captures'])} captures "
-          f"({typed} typed), decompose={'yes' if sess['decompose'] else 'no'}")
+    typed = sum(1 for c in sess["captures"] if c["type"] != "summary")
+    print(f"stage: {args.session} extracted — {appended} captures added "
+          f"({len(sess['captures'])} total, {typed} typed), "
+          f"decompose={'yes' if sess['decompose'] else 'no'}")
     return 0
 
 
@@ -520,6 +571,8 @@ def main() -> int:
 
     p_pkt = sub.add_parser("packetize", help="write anonymized packets for top-K")
     p_pkt.add_argument("--top", type=int, default=DEFAULT_TOP_K)
+    p_pkt.add_argument("--refresh", action="store_true",
+                       help="rebuild packets for grown extracted/ingested sessions")
 
     p_stage = sub.add_parser("stage", help="validate + record agent captures for a session")
     p_stage.add_argument("--session", required=True)

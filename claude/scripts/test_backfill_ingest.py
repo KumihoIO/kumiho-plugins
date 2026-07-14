@@ -282,6 +282,82 @@ def test_ontology_disabled_skip() -> bool:
     return ok
 
 
+def test_response_is_screened() -> bool:
+    tmp = Path(tempfile.mkdtemp(prefix="backfill-ing-test-"))
+    staging_file = make_staging(tmp)
+    staging = json.loads(staging_file.read_text())
+    may = next(s for s in staging["sessions"] if s["source_session_id"] == "may")
+    may["captures"][0]["content"] = "Digest mentioning dev@example.com in May."
+    staging_file.write_text(json.dumps(staging))
+    recorder = ReflectRecorder()
+    _run_full(tmp, recorder, [])
+    return _check("summary response uses the ANONYMIZED digest",
+                  recorder.calls[0]["response"] == "Digest mentioning [email] in May.")
+
+
+def test_decompose_resume_window() -> bool:
+    """Crash between the last capture mark and the decompose/status flip."""
+    tmp = Path(tempfile.mkdtemp(prefix="backfill-ing-test-"))
+    staging_file = make_staging(tmp)
+    staging = json.loads(staging_file.read_text())
+    march = next(s for s in staging["sessions"] if s["source_session_id"] == "march")
+    for cap in march["captures"]:
+        cap["ingested_kref"] = "kref://done/1"   # all marked...
+    # ...but status never flipped and decompose never ran (the crash window).
+    staging_file.write_text(json.dumps(staging))
+    recorder = ReflectRecorder()
+    decompose_calls: list = []
+    runner, staging2, stats = _run_full(tmp, recorder, decompose_calls)
+    march2 = next(s for s in staging2["sessions"] if s["source_session_id"] == "march")
+    ok = _check("all-marked session still revisited",
+                any(s["already"] == 3 for s in stats))
+    ok &= _check("decompose completed on resume",
+                 len(decompose_calls) == 1
+                 and decompose_calls[0]["kref"] == "kref://done/1")
+    ok &= _check("status finally flipped to ingested", march2["status"] == "ingested")
+    ok &= _check("no capture re-uploaded for the marked session",
+                 all(c["session_id"] != "backfill:march" for c in recorder.calls))
+    return ok
+
+
+def test_wrapper_env_pinning() -> bool:
+    path = Path(__file__).resolve().parent / "backfill_ingest.py"
+    spec = importlib.util.spec_from_file_location("backfill_ingest_mod", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    env = {"KUMIHO_AUTO_ASSESS": "1", "KUMIHO_GRAPH_AUGMENTED_RECALL": "1",
+           "KUMIHO_LLM_API_KEY": "real-key", "ANTHROPIC_API_KEY": "real-key",
+           "KUMIHO_LLM_BASE_URL": "https://api.openai.com/v1"}
+    module._pin_keyless_env(env)
+    ok = _check("assessor and graph-augmented recall pinned off",
+                env["KUMIHO_AUTO_ASSESS"] == "0"
+                and env["KUMIHO_GRAPH_AUGMENTED_RECALL"] == "0")
+    ok &= _check("LLM endpoint forced to the dead port",
+                 env["KUMIHO_LLM_BASE_URL"] == "http://127.0.0.1:9/v1")
+    ok &= _check("provider keys scrubbed",
+                 "KUMIHO_LLM_API_KEY" not in env and "ANTHROPIC_API_KEY" not in env)
+    return ok
+
+
+def test_main_full_run_writes_log() -> bool:
+    tmp = Path(tempfile.mkdtemp(prefix="backfill-ing-test-"))
+    staging_file = make_staging(tmp)
+    recorder = ReflectRecorder()
+    install_fake(recorder, lambda a: {})
+    runner = load_runner()
+    log_file = tmp / "backfill-ingest.log"
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        sys.argv = ["ingest_runner.py", "--staging", str(staging_file), "--yes",
+                    "--log-file", str(log_file)]
+        rc = runner.main()
+    body = log_file.read_text() if log_file.exists() else ""
+    ok = _check("full run exits 0 and uploads", rc == 0 and len(recorder.calls) == 3)
+    ok &= _check("log file written with summary + krefs",
+                 "captures stored" in body and "krefs=kref://" in body)
+    return ok
+
+
 def test_main_consent_paths() -> bool:
     tmp = Path(tempfile.mkdtemp(prefix="backfill-ing-test-"))
     staging_file = make_staging(tmp)
@@ -313,6 +389,10 @@ def main() -> int:
         ("resume_after_crash", test_resume_after_crash),
         ("dropped_event_dates_warns", test_dropped_event_dates_warns),
         ("ontology_disabled_skip", test_ontology_disabled_skip),
+        ("response_is_screened", test_response_is_screened),
+        ("decompose_resume_window", test_decompose_resume_window),
+        ("wrapper_env_pinning", test_wrapper_env_pinning),
+        ("main_full_run_writes_log", test_main_full_run_writes_log),
         ("main_consent_paths", test_main_consent_paths),
     )
     all_ok = True

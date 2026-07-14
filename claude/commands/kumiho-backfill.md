@@ -117,7 +117,10 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/backfill_inventory.py"
    without acceptance; explicit onboarding answers always beat inference.
 
 8. **Re-runs.** "Run it again" extracts the next-best sessions (already
-   extracted/ingested ones are skipped automatically) — mention this.
+   extracted/ingested ones are skipped automatically) — mention this. For
+   sessions that have *grown* since extraction, `INV packetize --refresh`
+   rebuilds only the changed packets; re-distill those and `stage` will merge
+   just the genuinely new captures by content hash.
 
 ## Guardrails
 

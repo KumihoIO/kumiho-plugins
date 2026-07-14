@@ -63,7 +63,10 @@ def main() -> int:
     _pin_keyless_env(env)
 
     runner = Path(__file__).resolve().parent / "backfill" / "ingest_runner.py"
-    proc = subprocess.run([str(python_path), str(runner), *sys.argv[1:]], env=env)
+    argv = sys.argv[1:]
+    if "--log-file" not in argv:
+        argv += ["--log-file", str(launcher._state_dir() / "backfill-ingest.log")]
+    proc = subprocess.run([str(python_path), str(runner), *argv], env=env)
     return proc.returncode
 
 

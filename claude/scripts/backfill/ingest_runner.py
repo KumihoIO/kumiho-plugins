@@ -130,10 +130,14 @@ def screen_decompose(redactor, errcls, dec: dict) -> tuple[dict, int]:
 
 
 def pending_sessions(staging: dict) -> list[dict]:
-    """Extracted sessions with un-ingested captures, newest ended first."""
+    """Extracted sessions, newest ended first.
+
+    Status alone decides: a session whose captures are all marked but whose
+    decompose/status flip never landed (crash in that window) must still be
+    revisited — ingest_session skips marked captures and finishes the rest.
+    """
     todo = [s for s in staging["sessions"]
-            if s.get("status") == "extracted"
-            and any(not c.get("ingested_kref") for c in s.get("captures") or [])]
+            if s.get("status") == "extracted" and (s.get("captures") or [])]
     return sorted(todo, key=lambda s: s.get("ended_at", ""), reverse=True)
 
 
@@ -145,7 +149,8 @@ def render_payload(sessions: list[dict]) -> None:
         for cap in sess.get("captures") or []:
             state = cap.get("ingested_kref") or "pending"
             print(f"  [{cap.get('type')}] {cap.get('title')}  "
-                  f"(event_date={cap.get('event_date')}, {state})")
+                  f"(event_date={cap.get('event_date')}, "
+                  f"tags={','.join(cap.get('tags') or [])}, {state})")
             for line in str(cap.get("content", "")).splitlines():
                 print(f"      {line}")
         dec = sess.get("decompose") or {}
@@ -162,7 +167,6 @@ def ingest_session(sess: dict, staging: dict, staging_file: Path,
     stats = {"stored": 0, "screened": 0, "already": 0, "dropped_triples": 0}
     sid = f"backfill:{sess['source_session_id']}"
     captures = sess.get("captures") or []
-    digest = captures[0].get("content", "") if captures else ""
 
     for cap in captures:
         if cap.get("ingested_kref"):
@@ -175,7 +179,10 @@ def ingest_session(sess: dict, staging: dict, staging_file: Path,
             save_staging(staging, staging_file)
             _warn(f"capture screened out (credential shape): {cap.get('title', '')[:60]!r}")
             continue
-        response = digest if screened.get("type") == "summary" else screened.get("title", "")
+        # Screened text only ever leaves the machine — the summary's anonymized
+        # content doubles as the buffered digest response.
+        response = (screened["content"] if screened.get("type") == "summary"
+                    else screened["title"])
         result = reflect({
             "session_id": sid,
             "response": response,
@@ -228,6 +235,7 @@ def main() -> int:
                         help="confirm upload (the payload was already reviewed)")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--limit", type=int, default=0, help="max sessions this run")
+    parser.add_argument("--log-file", default="", help="append a run summary here")
     args = parser.parse_args()
 
     gate_msg = feature_gate()
@@ -235,9 +243,13 @@ def main() -> int:
         _warn(gate_msg)
         return 3
 
-    staging_file = Path(args.staging).expanduser() if args.staging else (
-        Path(os.getenv("KUMIHO_BACKFILL_HOME", str(Path.home() / ".kumiho" / "backfill")))
-        / "staging.json")
+    if args.staging:
+        staging_file = Path(args.staging).expanduser()
+    else:
+        # Same override semantics as backfill_inventory.backfill_home().
+        override = os.getenv("KUMIHO_BACKFILL_HOME", "").strip()
+        home = Path(override).expanduser() if override else Path.home() / ".kumiho" / "backfill"
+        staging_file = home / "staging.json"
     if not staging_file.is_file():
         _warn(f"no staging file at {staging_file} — run the extract stage first")
         return 1
@@ -266,6 +278,7 @@ def main() -> int:
     redactor = PIIRedactor()
 
     totals = {"stored": 0, "screened": 0, "already": 0, "dropped_triples": 0, "sessions": 0}
+    kref_sample: list[str] = []
     for sess in todo:
         _log(f"session {sess['source_session_id']} ({sess.get('ended_at', '')[:10]})")
         stats = ingest_session(sess, staging, staging_file, reflect, decompose,
@@ -273,10 +286,23 @@ def main() -> int:
         for key, val in stats.items():
             totals[key] += val
         totals["sessions"] += 1
+        anchor = (sess.get("captures") or [{}])[0].get("ingested_kref", "")
+        if anchor and anchor != SKIP_MARK and len(kref_sample) < 5:
+            kref_sample.append(anchor)
 
-    _log(f"done: {totals['sessions']} sessions, {totals['stored']} captures stored, "
-         f"{totals['screened']} screened out, {totals['already']} already ingested, "
-         f"{totals['dropped_triples']} triples dropped")
+    summary = (f"done: {totals['sessions']} sessions, {totals['stored']} captures stored, "
+               f"{totals['screened']} screened out, {totals['already']} already ingested, "
+               f"{totals['dropped_triples']} triples dropped")
+    _log(summary)
+    if kref_sample:
+        _log("kref sample: " + " ".join(kref_sample))
+    if args.log_file:
+        try:
+            with open(Path(args.log_file).expanduser(), "a", encoding="utf-8") as fh:
+                fh.write(f"{datetime.now(timezone.utc).isoformat(timespec='seconds')} "
+                         f"{summary} krefs={','.join(kref_sample)}\n")
+        except OSError as exc:
+            _warn(f"could not write log file {args.log_file}: {exc}")
     return 0
 
 
