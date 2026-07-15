@@ -761,8 +761,11 @@ def _set_os_env_var(key: str, value: str) -> bool:
             import ctypes
             HWND_BROADCAST = 0xFFFF
             WM_SETTINGCHANGE = 0x001A
-            ctypes.windll.user32.SendMessageW(
-                HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment"
+            SMTO_ABORTIFHUNG = 0x0002
+            result = ctypes.c_ulong()
+            ctypes.windll.user32.SendMessageTimeoutW(
+                HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment",
+                SMTO_ABORTIFHUNG, 5000, ctypes.byref(result),
             )
             return True
         except Exception:
