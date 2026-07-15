@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import base64
 import json
 import os
@@ -44,6 +45,71 @@ def _state_dir() -> Path:
     if xdg:
         return Path(xdg) / "kumiho-claude"
     return Path.home() / ".cache" / "kumiho-claude"
+
+
+def _pid_is_python(pid: int) -> bool:
+    """Return True if *pid* is alive and running python.exe (Windows only).
+
+    Checking the image name guards against acting on a PID that has since
+    been recycled by an unrelated process.
+    """
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        return False
+    output = (result.stdout or "").strip().lower()
+    return bool(output) and "python.exe" in output
+
+
+def _acquire_singleton_lock(state_dir: Path) -> None:
+    """Kill any orphaned previous launcher+server pair and claim the lock.
+
+    Windows only: subprocess.run (below) always keeps a separate launcher
+    process alongside the kumiho.mcp_server child, unlike POSIX's os.execv
+    which replaces the process image in-place. If a client is force-closed
+    or crashes without shutting the MCP connection down cleanly, that pair
+    is orphaned with nothing to reap it, and orphans accumulate across
+    session restarts. See #25.
+    """
+    state_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = state_dir / "mcp_server.lock"
+
+    previous_pid: int | None = None
+    if lock_path.exists():
+        try:
+            previous_pid = int(lock_path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            previous_pid = None
+
+    if previous_pid and previous_pid != os.getpid() and _pid_is_python(previous_pid):
+        print(
+            f"[kumiho-claude] Killing orphaned instance (PID {previous_pid}).",
+            file=sys.stderr,
+        )
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(previous_pid), "/T", "/F"],
+                capture_output=True, timeout=10,
+            )
+        except Exception:
+            pass
+
+    try:
+        lock_path.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        return
+
+    def _release_lock() -> None:
+        try:
+            if lock_path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                lock_path.unlink()
+        except OSError:
+            pass
+
+    atexit.register(_release_lock)
 
 
 def _venv_python(venv_dir: Path) -> Path:
@@ -939,6 +1005,8 @@ def main() -> int:
 
     _sanitize_placeholder_env_vars()
     _hydrate_env_from_local_config()
+    if os.name == "nt":
+        _acquire_singleton_lock(_state_dir())
     # The Desktop server-entry self-heal is auth-independent (its token embed is
     # already guarded), so it runs in both modes — otherwise a CE user's stale
     # entry would never be repaired after a plugin upgrade.
