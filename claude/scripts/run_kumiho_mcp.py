@@ -18,9 +18,9 @@ import venv
 from pathlib import Path
 
 
-DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.10.7 kumiho-memory[all]>=0.17.0"
+DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.10.7 kumiho-memory[all]>=0.17.1"
 MARKER_FILE = ".installed-packages.txt"
-DEFAULT_DISCOVERY_USER_AGENT = "kumiho-claude/0.15.0"
+DEFAULT_DISCOVERY_USER_AGENT = "kumiho-claude/0.16.0"
 
 # Self-hosted Community Edition (CE) defaults.  Mirrors the kumiho-gpt-connect
 # CE backend: the SDK routes to a loopback CE server when no auth token is set,

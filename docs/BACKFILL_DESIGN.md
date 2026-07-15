@@ -204,13 +204,19 @@ Deterministic; runs pre-install (no kumiho packages, no venv). Subcommands:
 - `manifest [--projects a,b] [--since DATE] [--top K]` — build the ranked manifest.
 - `packetize [--top K]` — emit bounded, anonymized per-session packets.
 
-**Sources (v1):**
+**Sources** (all three shipped as of plugin **0.16.0** — see
+[Multi-source implementation](#multi-source-implementation-v0160)):
 
-| Source | Location | Notes |
-| --- | --- | --- |
-| Claude Code | `~/.claude/projects/**/*.jsonl` | primary; parsing notes below |
-| Codex CLI | `~/.codex/sessions/**/*.jsonl` | same JSONL idea; field names to verify at impl |
-| ChatGPT | user-supplied export (`conversations.json` from the official ZIP) | no local store exists; `--chatgpt-export PATH`; `mapping` graph traversal, `create_time` epoch → dates |
+| Source | Location | Selection | Status |
+| --- | --- | --- | --- |
+| Claude Code | `~/.claude/projects/**/*.jsonl` | `--source claude` (in `all`) | shipped (0.15.0) |
+| Codex CLI | `~/.codex/sessions/**/*.jsonl` | `--source codex` (in `all`) | shipped (0.16.0) |
+| ChatGPT | user-supplied export `conversations.json` (official ZIP) | `--chatgpt-export PATH` | shipped (0.16.0) |
+
+`scan`/`manifest` take `--source {claude,codex,all}` (default `all`) to pick local
+stores; `--chatgpt-export PATH` adds a ChatGPT history orthogonally. All three
+produce the same session-meta shape and flow through one distill → review → ingest
+pipeline, landing as `source:<tool>`-tagged, ontology-typed memories.
 
 (`~/.claude/history.jsonl` is prompt history, not session content — not a source.)
 
@@ -459,8 +465,83 @@ agent sessions work at all).
 | **0 — yield measurement** *(new; gates the project)* | inventory + packetizer + rubric dry-run on ≥1 real corpus (maintainer dogfood); measure captures-by-type per session | median ≥ 2 non-summary captures across top-K **and** a teaser digest a non-author finds compelling; if yield is ~0–1, stop and rethink signal density before building ingest |
 | **1 — plugin command** | `commands/kumiho-backfill.md`, `scripts/backfill_inventory.py`, `scripts/backfill_ingest.py`, `scripts/backfill/ingest_runner.py`, `.mcp.json` spec-floor bump, kumiho-memory **skill edit** (backfill-tag rendering rule). Ingest ships **serial**; throughput is gated on kumiho-server#43 (batch-aware reflect) — a later speedup, not a phase-1 blocker | dogfood against CE + cloud; captures visible in dashboard with correct `event_date`; re-run is a no-op at capture granularity; **crowding check**: fresh live captures from the current week still rank top-3 for their queries on a fully-backfilled graph; adversarial recall E2E passes |
 | **2 — hosted prompt** | `prompts/backfill.md` (+ rubric factored to shared include), staging-detect hint in `session-bootstrap.py`, onboard CTA wiring | fresh-VM bare-session run produces staging + teaser; install → onboard → ingest picks it up; conversion validated on at least one user outside the team |
-| **3 — Codex** | `codex/AGENTS.md` backfill section reusing the same scripts; `~/.codex` parser | extraction parity on a Codex corpus |
-| **4 — ChatGPT** | export-ZIP mode (**staging-always** — connector-direct is out: it would run reflect server-side, bypassing host-agent distillation and all local screening; revisit only with an explicit design) | export → typed memories end-to-end |
+| **3 — Codex** ✅ *(shipped 0.16.0)* | `parse_codex_session` + `discover_codex_files` in `backfill_inventory.py` reusing the whole pipeline; `--source codex` (auto in `all`) | met — 998-session real corpus parsed with 0 false drops; a Codex session ingested end-to-end with a typed graph (`astro`/`revka-web` entities + facts) |
+| **4 — ChatGPT** ✅ *(shipped 0.16.0)* | `parse_chatgpt_export` (staging-always via `--chatgpt-export PATH` — connector-direct stays out: it would run reflect server-side, bypassing host-agent distillation and local screening) | met — synthetic `conversations.json` → typed memories end-to-end (`qdrant`/`weaviate` entities); real-export verification pending a user-supplied ZIP |
+
+## Multi-source implementation (v0.16.0)
+
+All three sources produce the identical session-meta dict
+(`source`, `source_session_id`, `source_path`, `project_dir`, `git_branch`,
+`title`, `started_at`, `ended_at`, `human_msgs`, `messages:[(ts,role,text)]`,
+`dropped`), so `manifest`/`packetize`/`stage`/`ingest` stay source-agnostic.
+Source dispatch lives in three small helpers in `backfill_inventory.py`:
+`_source_selection(args)` (maps `--source` → `["claude-code","codex"]`),
+`gather_source_metas(args)` (parses the selected stores + optional
+`--chatgpt-export`, returning `(metas, scanned, empty)`), and
+`_reparse_session(sess)` (packetize re-parses per `sess["source"]`).
+
+### Codex CLI
+
+- **Location:** `~/.codex/sessions/**/*.jsonl` (recursive; files are
+  `YYYY/MM/DD/rollout-*.jsonl`). `discover_codex_files()` globs `**/*.jsonl`.
+- **Record shape:** each line is `{timestamp, type, payload}`.
+  - `session_meta` → `payload.id` (session id), `payload.cwd` (`project_dir`),
+    `payload.timestamp` (`started_at`).
+  - `response_item` with `payload.type == "message"` and `payload.role` in
+    {`user`,`assistant`} is a turn; `payload.content` is a list of typed blocks
+    (`input_text`/`output_text`/`text`) joined by `_codex_text()`.
+  - `event_msg` / `turn_context` records are ignored (event stream + per-turn
+    config, not conversation).
+- **Plumbing filter (`_codex_human_text`)** — a Codex user turn is *not* the
+  human speaking when it is an injected `<environment_context>` /
+  `<user_instructions>` block, or an IDE-context preamble. Codex prepends
+  `# Context from my IDE setup:` (active file, open tabs) and the real prompt
+  follows `## My request for Codex:` — only that tail is kept; a bare IDE-context
+  turn with no marker is dropped. Titles fall back to the first human turn (no
+  Codex ai-title). Verified on a **998-session** real store: **0 false drops**
+  (across a 120-session sample, 911 marker-tail + 317 plain human turns kept, 0
+  IDE-context-without-marker mis-dropped); the high empty-session rate is
+  legitimate (env-context-only / automation runs).
+
+### ChatGPT export
+
+- **Location:** user-supplied `conversations.json` from the official data-export
+  ZIP (no local store). Included via `--chatgpt-export PATH` on `scan`/`manifest`;
+  `scan` reports the file + size only (no content read), parsing happens at
+  `manifest`.
+- **Parsing (`parse_chatgpt_export` → `_parse_chatgpt_conversation`):** the export
+  is a list of conversations, each a `mapping` DAG of nodes
+  `{message:{author:{role}, content:{content_type, parts}, create_time}}`.
+  Nodes are **linearized by `create_time`** (robust to parent/child order),
+  `content_type == "text"` `parts` are kept (`_chatgpt_msg_text` — code/tool
+  content skipped), epoch → ISO via `_epoch_iso`, `conversation_id`/`id` is the
+  session id, `title` falls back to the first user message, `project_dir` is the
+  sentinel `"chatgpt"`. `_reparse_session` re-reads the export and matches by
+  `conversation_id` at packetize time (`source_path` = the export path).
+  Verified on a synthetic export: mapping order restored, epoch dates correct,
+  Korean content preserved, typed-graph ingest.
+
+### Multi-session ingest — the redis-loop fix
+
+The runner replays one `reflect()` per session, each under its own
+`asyncio.run()`. `redis.asyncio` binds a connection to the event loop of first
+use, so `RedisMemoryBuffer`'s cached client — created once — was reused on a
+**closed** loop from the 2nd session onward and crashed with *"Event loop is
+closed"* / *"'NoneType' object has no attribute 'send'"*. A single ingest process
+could therefore store only **one** session; the resume/idempotency cursor masked
+it (each re-run stored the next one). Fixed in two layers:
+
+- **Core (`kumiho-memory` 0.17.1):** `RedisMemoryBuffer.client` is a **loop-aware
+  property** — a self-created client (from `redis_url`) is cheaply recreated on
+  loop change (`from_url` is lazy); a caller-injected client (test double) is left
+  untouched (`_owns_client`). The long-lived MCP server (one persistent loop) is
+  unaffected. Regression tests cover both paths.
+- **Plugin guard (`ingest_runner._reset_backfill_redis_client`):** rebinds the
+  shared working-memory client once per session, keeping kumiho-memory **0.17.0**
+  working (best-effort; the 0.17.1 property is the real guarantee).
+
+Verified: a single ingest process now stores **all** pending sessions in one run
+(3 test sessions spanning Codex + ChatGPT, no crash).
 
 ## Cross-repo dependencies & follow-ups
 
@@ -468,7 +549,8 @@ agent sessions work at all).
 | --- | --- | --- | --- |
 | [kumiho-SDKs#68](https://github.com/KumihoIO/kumiho-SDKs/issues/68) / [PR #69](https://github.com/KumihoIO/kumiho-SDKs/pull/69) — `event_date` on reflect captures | **shipped** (kumiho-memory 0.16.2) | the valid-time write path every capture uses | **Yes — satisfied** (feature-gated at ingest) |
 | [kumiho-server#43](https://github.com/KumihoIO/kumiho-server/issues/43) — `BatchCreateRevisions` bulk-write RPC | **shipped** (server 1.6.2; per-row artifacts 1.6.3) | single-transaction bulk writes, `{prefix}:{row_index}` idempotency, batched embeddings. `min(event_date)`-on-stack did **not** ship — replay order stays load-bearing | Satisfied |
-| [kumiho-SDKs#71](https://github.com/KumihoIO/kumiho-SDKs/issues/71) — batch-aware reflect (adopts #43) | **implemented** (kumiho 0.10.7 `tool_memory_store_batch` + kumiho-memory 0.17.0 reflect `idempotency_prefix`/`capture_results`; release pending) | runner sends one batched reflect per session (feature-detected, content-addressed prefix); per-capture fallback on 0.16.2. Plugin floors bump to 0.17.0/0.10.7 once released | No — fallback keeps 0.16.2 working |
+| [kumiho-SDKs#71](https://github.com/KumihoIO/kumiho-SDKs/issues/71) — batch-aware reflect (adopts #43) | **shipped** (kumiho 0.10.7 `tool_memory_store_batch` + kumiho-memory 0.17.0 reflect `idempotency_prefix`/`capture_results`, both on PyPI) | runner sends one batched reflect per session (feature-detected, content-addressed prefix); per-capture fallback on 0.16.2 | Satisfied |
+| kumiho-memory **0.17.1** — loop-aware Redis client | **fix ready** (branch `fix/redis-loop-aware-client`; release pending) | lets a single ingest process replay many sessions (one `asyncio.run()` each) without the redis.asyncio closed-loop crash. Plugin ships a `_reset_backfill_redis_client()` guard so 0.17.0 also works; floor bumps to 0.17.1 | No — plugin guard keeps 0.17.0 working |
 | [kumiho-SDKs#70](https://github.com/KumihoIO/kumiho-SDKs/issues/70) — rank-time valid-time (event-proximity enable + agent-supplied `query_time`) | open | backfilled `event_date` anchors become rank-effective **retroactively**; until then dates are surfaced-only | No — E2E asserts surfaced dates only |
 
 ## Testing

@@ -13,6 +13,13 @@ the exact payload). Design: `docs/BACKFILL_DESIGN.md` in kumiho-plugins.
 
 If the argument is `extract` or `ingest`, run only that stage. Default: both.
 
+**Sources.** `scan`/`manifest` auto-discover **Claude Code** (`~/.claude/projects`)
+and **Codex CLI** (`~/.codex/sessions`); pass `--source claude|codex|all`
+(default `all`) to narrow. A **ChatGPT** history is a user-supplied data export —
+if the user has one, add `--chatgpt-export /path/to/conversations.json` to
+`scan`/`manifest`. All three flow through the same distill → review → ingest
+pipeline and land as `source:<tool>`-tagged, ontology-typed memories.
+
 All scripts live at `${CLAUDE_PLUGIN_ROOT}/scripts/`; if `CLAUDE_PLUGIN_ROOT`
 is unset, use the plugin directory relative to this file. Below, `INV` means:
 
