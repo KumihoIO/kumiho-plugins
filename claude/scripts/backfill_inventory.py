@@ -319,12 +319,16 @@ def _codex_text(content) -> str:
 def _codex_human_text(text: str) -> str | None:
     """The human's words in a Codex user turn, or None if it is pure plumbing.
 
-    Codex injects ``<environment_context>`` / ``<user_instructions>`` turns and
-    prepends an IDE-context block (``# Context from my IDE setup:`` with the real
-    prompt after ``## My request for Codex:``) — neither is the human speaking.
+    Codex injects ``<environment_context>`` / ``<user_instructions>`` turns and a
+    ``# AGENTS.md instructions for <cwd>`` skill-discovery dump, and prepends an
+    IDE-context block (``# Context from my IDE setup:`` with the real prompt after
+    ``## My request for Codex:``) — none of these is the human speaking. Leaving
+    the AGENTS.md dump in would also make its byte-identical text a shared
+    continuation-dedup key and silently collapse every session in a repo.
     """
     t = text.strip()
-    if not t or t.startswith(("<environment_context", "<user_instructions")):
+    if not t or t.startswith(("<environment_context", "<user_instructions",
+                              "# AGENTS.md instructions for")):
         return None
     if _CODEX_REQUEST_MARKER in t:
         t = t.split(_CODEX_REQUEST_MARKER, 1)[1].strip()
@@ -427,7 +431,10 @@ def _chatgpt_msg_text(message: dict) -> str:
     content = message.get("content")
     if not isinstance(content, dict):
         return ""
-    if content.get("content_type") != "text":  # skip code/exec/tool content blocks
+    # "text" is a plain message; "multimodal_text" is an image/attachment turn
+    # whose real prompt is a bare string among the asset-pointer dicts. Skip
+    # code/exec/tool content types.
+    if content.get("content_type") not in ("text", "multimodal_text"):
         return ""
     parts = content.get("parts") or []
     return "\n".join(p for p in parts if isinstance(p, str))
@@ -485,7 +492,12 @@ def parse_chatgpt_export(path: Path) -> list[dict]:
             data = json.load(fh)
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return []
-    conversations = data if isinstance(data, list) else data.get("conversations", [])
+    if isinstance(data, list):
+        conversations = data
+    elif isinstance(data, dict):
+        conversations = data.get("conversations", [])
+    else:
+        return []  # a bare-scalar JSON export must not crash the whole scan
     if not isinstance(conversations, list):
         return []
     out = []
@@ -655,14 +667,20 @@ def cmd_manifest(args) -> int:
             continue
         parsed.append(meta)
 
-    # Continuation-duplicate heuristic: same cwd + same first human message ->
-    # keep the latest-ended file, mark the rest skipped.
+    # Continuation-duplicate heuristic: same source + cwd + first human message
+    # -> keep the latest-ended file, mark the rest skipped. Only file-based
+    # sources (claude-code, codex) split one logical session across transcript
+    # files; a ChatGPT export has no continuation concept (each conversation_id
+    # is already unique), so those bypass the dedup entirely. `source` is in the
+    # key so two tools in the same repo never dedupe against each other.
     def first_msg(m):
         return next(t for _, r, t in m["messages"] if r == "user").strip()[:200]
-    by_key: dict[tuple, list[dict]] = {}
-    for meta in parsed:
-        by_key.setdefault((meta["project_dir"], first_msg(meta)), []).append(meta)
     added = skipped_dupes = 0
+    for meta in (m for m in parsed if m["source"] == "chatgpt"):
+        added += _merge_manifest_session(staging, meta)[1]
+    by_key: dict[tuple, list[dict]] = {}
+    for meta in (m for m in parsed if m["source"] != "chatgpt"):
+        by_key.setdefault((meta["source"], meta["project_dir"], first_msg(meta)), []).append(meta)
     for group in by_key.values():
         group.sort(key=lambda m: m["ended_at"], reverse=True)
         keeper, rest = group[0], group[1:]
