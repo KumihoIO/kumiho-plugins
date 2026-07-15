@@ -1005,7 +1005,8 @@ def main() -> int:
 
     _sanitize_placeholder_env_vars()
     _hydrate_env_from_local_config()
-    if os.name == "nt":
+    # --self-test is a read-only diagnostic; it must never kill a live session.
+    if os.name == "nt" and not args.self_test:
         _acquire_singleton_lock(_state_dir())
     # The Desktop server-entry self-heal is auth-independent (its token embed is
     # already guarded), so it runs in both modes — otherwise a CE user's stale
