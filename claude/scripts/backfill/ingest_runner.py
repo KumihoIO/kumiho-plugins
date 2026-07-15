@@ -331,6 +331,26 @@ def ingest_session(sess: dict, staging: dict, staging_file: Path,
     return stats
 
 
+def _reset_backfill_redis_client() -> None:
+    """Rebind the shared working-memory redis client to the current event loop.
+
+    Each session's reflect() runs under its own ``asyncio.run()``; ``redis.asyncio``
+    binds a connection to the loop of first use, so a client cached from a prior
+    (now-closed) loop crashes the next session with "Event loop is closed". This
+    hands out a fresh client per session. kumiho-memory >= 0.17.1 does this itself
+    via a loop-aware client property; this keeps 0.17.0 working. Best-effort.
+    """
+    try:
+        from kumiho_memory import mcp_tools
+        buffer = getattr(getattr(mcp_tools, "_manager", None), "redis_buffer", None)
+        url = getattr(buffer, "redis_url", None) if buffer is not None else None
+        if buffer is not None and url:
+            import redis.asyncio as _redis
+            buffer.client = _redis.from_url(url, decode_responses=True)
+    except Exception:
+        pass  # the kumiho-memory >= 0.17.1 loop-aware client is the real guarantee
+
+
 def main() -> int:
     # Force UTF-8 stdout/stderr — the consent payload renders non-ASCII content
     # (Korean titles, em-dashes) that crashes on a legacy Windows code page.
@@ -396,6 +416,7 @@ def main() -> int:
     totals = {"stored": 0, "screened": 0, "already": 0, "dropped_triples": 0, "sessions": 0}
     kref_sample: list[str] = []
     for sess in todo:
+        _reset_backfill_redis_client()  # rebind redis to this session's fresh loop (0.17.0 guard)
         _log(f"session {sess['source_session_id']} ({sess.get('ended_at', '')[:10]})")
         stats = ingest_session(sess, staging, staging_file, reflect, decompose,
                                redactor, CredentialDetectedError, use_batch=use_batch)

@@ -24,8 +24,10 @@ Anonymization mirrors kumiho_memory.privacy (PIIRedactor PATTERNS and
 CREDENTIAL_PATTERNS) so what the agent sees is what the ingest screen expects.
 Runs pre-install by design: python3 stdlib only, no kumiho packages, no venv.
 
-v1 source: Claude Code (`~/.claude/projects/**/*.jsonl`). Codex and the
-ChatGPT export are phases 3/4 (design Rollout) and exit with a clear message.
+Sources: Claude Code (`~/.claude/projects/**/*.jsonl`) and Codex CLI
+(`~/.codex/sessions/**/*.jsonl`) are auto-discovered; a ChatGPT data export
+(`conversations.json`) is included via `--chatgpt-export PATH`. Choose stores
+with `--source {claude,codex,all}` on scan/manifest (default: all).
 """
 
 from __future__ import annotations
@@ -294,6 +296,260 @@ def discover_claude_files(projects_filter: list[str] | None) -> list[Path]:
     return files
 
 
+# ---------------------------------------------------------------------------
+# Codex CLI session parsing (~/.codex/sessions/**/*.jsonl, rollout records)
+# ---------------------------------------------------------------------------
+
+# The real human prompt in a Codex turn follows this marker; the block before it
+# is IDE context (active file, open tabs) that Codex prepends automatically.
+_CODEX_REQUEST_MARKER = "## My request for Codex:"
+
+
+def _codex_text(content) -> str:
+    """Text of a Codex response_item message.content (list of typed blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [b.get("text", "") for b in content
+                 if isinstance(b, dict) and b.get("type") in ("input_text", "output_text", "text")]
+        return "\n".join(p for p in parts if p)
+    return ""
+
+
+def _codex_human_text(text: str) -> str | None:
+    """The human's words in a Codex user turn, or None if it is pure plumbing.
+
+    Codex injects ``<environment_context>`` / ``<user_instructions>`` turns and
+    prepends an IDE-context block (``# Context from my IDE setup:`` with the real
+    prompt after ``## My request for Codex:``) — neither is the human speaking.
+    """
+    t = text.strip()
+    if not t or t.startswith(("<environment_context", "<user_instructions")):
+        return None
+    if _CODEX_REQUEST_MARKER in t:
+        t = t.split(_CODEX_REQUEST_MARKER, 1)[1].strip()
+    elif t.startswith("# Context from my IDE setup:"):
+        return None  # IDE context with no explicit request — no human words to keep
+    return t or None
+
+
+def parse_codex_session(path: Path) -> dict | None:
+    """One pass over a Codex rollout file -> metadata + message list, or None."""
+    session_id = path.stem
+    cwd = ""
+    started = ended = ""
+    messages: list[tuple[str, str, str]] = []
+    dropped = {"harness_or_context": 0, "empty_assistant": 0}
+
+    try:
+        handle = open(path, encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    with handle as fh:
+        for line in fh:
+            try:
+                rec = json.loads(line)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if not isinstance(rec, dict):
+                continue
+            payload = rec.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            ts = str(rec.get("timestamp", "") or "")
+            rtype = rec.get("type")
+            if rtype == "session_meta":
+                session_id = str(payload.get("id") or session_id)
+                cwd = str(payload.get("cwd") or cwd)
+                started = started or str(payload.get("timestamp") or ts)
+                continue
+            if rtype != "response_item" or payload.get("type") != "message":
+                continue
+            role = payload.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            if ts:
+                started = started or ts
+                ended = ts
+            text = _codex_text(payload.get("content", ""))
+            if role == "user":
+                human = _codex_human_text(text)
+                if human is None:
+                    dropped["harness_or_context"] += 1
+                    continue
+                messages.append((ts, "user", human))
+            elif text.strip():
+                messages.append((ts, "assistant", text))
+            else:
+                dropped["empty_assistant"] += 1
+
+    human_msgs = sum(1 for _, role, _ in messages if role == "user")
+    if human_msgs == 0:
+        return None
+    first_human = next((t for _, r, t in messages if r == "user"), "").lstrip()
+    if _AGENT_SPAWN_RE.match(first_human):
+        return None
+    return {
+        "source": "codex",
+        "source_session_id": session_id,
+        "source_path": str(path),
+        "project_dir": cwd,
+        "git_branch": "",
+        "title": first_human.strip()[:120],
+        "started_at": started,
+        "ended_at": ended,
+        "human_msgs": human_msgs,
+        "messages": messages,
+        "dropped": dropped,
+    }
+
+
+def discover_codex_files() -> list[Path]:
+    root = Path.home() / ".codex" / "sessions"
+    if not root.is_dir():
+        return []
+    return sorted(root.glob("**/*.jsonl"))
+
+
+# ---------------------------------------------------------------------------
+# ChatGPT export parsing (official data export: conversations.json mapping tree)
+# ---------------------------------------------------------------------------
+
+def _epoch_iso(epoch) -> str:
+    try:
+        return (datetime.fromtimestamp(float(epoch), tz=timezone.utc)
+                .isoformat(timespec="seconds").replace("+00:00", "Z"))
+    except (ValueError, TypeError, OSError, OverflowError):
+        return ""
+
+
+def _chatgpt_msg_text(message: dict) -> str:
+    content = message.get("content")
+    if not isinstance(content, dict):
+        return ""
+    if content.get("content_type") != "text":  # skip code/exec/tool content blocks
+        return ""
+    parts = content.get("parts") or []
+    return "\n".join(p for p in parts if isinstance(p, str))
+
+
+def _parse_chatgpt_conversation(conv: dict) -> dict | None:
+    mapping = conv.get("mapping")
+    if not isinstance(mapping, dict):
+        return None
+    # Linearize the mapping DAG by create_time — robust to parent/child ordering.
+    turns: list[tuple[float, str, str]] = []
+    for node in mapping.values():
+        if not isinstance(node, dict):
+            continue
+        msg = node.get("message")
+        if not isinstance(msg, dict):
+            continue
+        role = (msg.get("author") or {}).get("role") if isinstance(msg.get("author"), dict) else None
+        if role not in ("user", "assistant"):
+            continue
+        text = _chatgpt_msg_text(msg)
+        if not text.strip():
+            continue
+        turns.append((float(msg.get("create_time") or 0.0), role, text))
+    turns.sort(key=lambda x: x[0])
+    messages = [(_epoch_iso(ct), role, text) for ct, role, text in turns]
+    human_msgs = sum(1 for _, r, _ in messages if r == "user")
+    if human_msgs == 0:
+        return None
+    conv_id = str(conv.get("conversation_id") or conv.get("id") or "")
+    if not conv_id:
+        return None
+    title = str(conv.get("title") or "").strip()
+    if not title:
+        title = next((t for _, r, t in messages if r == "user"), "").strip()[:120]
+    return {
+        "source": "chatgpt",
+        "source_session_id": conv_id,
+        "source_path": "",  # filled in by the caller (the export file path)
+        "project_dir": "chatgpt",  # no cwd concept for a web chat
+        "git_branch": "",
+        "title": title,
+        "started_at": messages[0][0],
+        "ended_at": messages[-1][0],
+        "human_msgs": human_msgs,
+        "messages": messages,
+        "dropped": {"non_text_nodes": 0},
+    }
+
+
+def parse_chatgpt_export(path: Path) -> list[dict]:
+    """Parse an official ChatGPT data export (conversations.json) into metas."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return []
+    conversations = data if isinstance(data, list) else data.get("conversations", [])
+    if not isinstance(conversations, list):
+        return []
+    out = []
+    for conv in conversations:
+        if isinstance(conv, dict):
+            meta = _parse_chatgpt_conversation(conv)
+            if meta is not None:
+                out.append(meta)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Source selection + dispatch
+# ---------------------------------------------------------------------------
+
+def _source_selection(args) -> list[str]:
+    sel = (getattr(args, "source", None) or "all").lower()
+    if sel in ("all", "local"):
+        return ["claude-code", "codex"]
+    return [{"claude": "claude-code", "claude-code": "claude-code",
+             "codex": "codex"}.get(sel, sel)]
+
+
+def gather_source_metas(args) -> tuple[list[dict], int, int]:
+    """Parse the selected sources -> (metas, sessions_scanned, empty_dropped)."""
+    selected = _source_selection(args)
+    metas: list[dict] = []
+    scanned = empty = 0
+    if "claude-code" in selected:
+        for path in discover_claude_files(getattr(args, "projects", None)):
+            scanned += 1
+            meta = parse_claude_session(path)
+            metas.append(meta) if meta else None
+            empty += meta is None
+    if "codex" in selected:
+        for path in discover_codex_files():
+            scanned += 1
+            meta = parse_codex_session(path)
+            metas.append(meta) if meta else None
+            empty += meta is None
+    export = (getattr(args, "chatgpt_export", "") or "").strip()
+    if export:
+        for meta in parse_chatgpt_export(Path(export)):
+            scanned += 1
+            meta["source_path"] = str(Path(export))
+            metas.append(meta)
+    return metas, scanned, empty
+
+
+def _reparse_session(sess: dict) -> dict | None:
+    """Re-parse a staged session from its source for packetize."""
+    source = sess.get("source", "claude-code")
+    path = Path(sess["source_path"])
+    if source == "codex":
+        return parse_codex_session(path)
+    if source == "chatgpt":
+        for meta in parse_chatgpt_export(path):
+            if meta["source_session_id"] == sess["source_session_id"]:
+                meta["source_path"] = str(path)
+                return meta
+        return None
+    return parse_claude_session(path)
+
+
 def frozen_score(ended_at: str, human_msgs: int, now: float | None = None) -> float:
     now = time.time() if now is None else now
     try:
@@ -309,20 +565,45 @@ def frozen_score(ended_at: str, human_msgs: int, now: float | None = None) -> fl
 # Subcommands
 # ---------------------------------------------------------------------------
 
+def _files_span(files: list[Path]) -> str:
+    mtimes = [f.stat().st_mtime for f in files]
+    return (f"{datetime.fromtimestamp(min(mtimes)).date()} .. "
+            f"{datetime.fromtimestamp(max(mtimes)).date()}")
+
+
 def cmd_scan(args) -> int:
-    files = discover_claude_files(args.projects)
-    by_project: dict[str, list[Path]] = {}
-    for f in files:
-        by_project.setdefault(f.parent.name, []).append(f)
-    total_bytes = sum(f.stat().st_size for f in files)
+    selected = _source_selection(args)
     print("History Backfill — scan (directory entries and sizes only; no content read)\n")
-    print(f"Source: Claude Code (~/.claude/projects) — {len(files)} session files, "
-          f"{len(by_project)} projects, {total_bytes / 1_048_576:.1f} MB total")
-    for proj, fs in sorted(by_project.items()):
-        mtimes = [f.stat().st_mtime for f in fs]
-        span = (f"{datetime.fromtimestamp(min(mtimes)).date()} .. "
-                f"{datetime.fromtimestamp(max(mtimes)).date()}")
-        print(f"  {proj}: {len(fs)} sessions ({span})")
+
+    if "claude-code" in selected:
+        files = discover_claude_files(getattr(args, "projects", None))
+        by_project: dict[str, list[Path]] = {}
+        for f in files:
+            by_project.setdefault(f.parent.name, []).append(f)
+        total_mb = sum(f.stat().st_size for f in files) / 1_048_576
+        print(f"Source: Claude Code (~/.claude/projects) — {len(files)} session files, "
+              f"{len(by_project)} projects, {total_mb:.1f} MB total")
+        for proj, fs in sorted(by_project.items()):
+            print(f"  {proj}: {len(fs)} sessions ({_files_span(fs)})")
+
+    if "codex" in selected:
+        cx = discover_codex_files()
+        if cx:
+            total_mb = sum(f.stat().st_size for f in cx) / 1_048_576
+            print(f"Source: Codex CLI (~/.codex/sessions) — {len(cx)} session files, "
+                  f"{total_mb:.1f} MB total ({_files_span(cx)})")
+        else:
+            print("Source: Codex CLI (~/.codex/sessions) — none found")
+
+    export = (getattr(args, "chatgpt_export", "") or "").strip()
+    if export:
+        p = Path(export)
+        if p.is_file():
+            print(f"Source: ChatGPT export — {p} "
+                  f"({p.stat().st_size / 1_048_576:.1f} MB; conversations parsed at manifest)")
+        else:
+            print(f"Source: ChatGPT export — NOT FOUND at {p}")
+
     print(
         "\nDISCLOSURE — how extraction processes data:\n"
         "  * Selected sessions are reduced to bounded, anonymized packets\n"
@@ -364,15 +645,10 @@ def _merge_manifest_session(staging: dict, meta: dict) -> tuple[str, bool]:
 
 def cmd_manifest(args) -> int:
     staging = load_staging()
-    files = discover_claude_files(args.projects)
+    metas, scanned, empty = gather_source_metas(args)
     parsed: list[dict] = []
-    empty = 0
     drop_totals: dict[str, int] = {}
-    for path in files:
-        meta = parse_claude_session(path)
-        if meta is None:
-            empty += 1
-            continue
+    for meta in metas:
         for reason, count in meta["dropped"].items():
             drop_totals[reason] = drop_totals.get(reason, 0) + count
         if args.since and (meta["ended_at"][:10] or "0000") < args.since:
@@ -405,7 +681,7 @@ def cmd_manifest(args) -> int:
     counts: dict[str, int] = {}
     for sess in staging["sessions"]:
         counts[sess["status"]] = counts.get(sess["status"], 0) + 1
-    print(f"manifest: {len(files)} files parsed, {empty} empty/bot-only dropped, "
+    print(f"manifest: {scanned} sessions parsed, {empty} empty/bot-only dropped, "
           f"{added} new, {skipped_dupes} continuation-duplicates")
     print(f"record drops (hygiene filters): {drop_totals}")
     print(f"staging totals: {counts} -> {staging_path()}")
@@ -482,7 +758,7 @@ def cmd_packetize(args) -> int:
     pkt_dir.mkdir(parents=True, exist_ok=True)
     written = unchanged = 0
     for sess in candidates:
-        meta = parse_claude_session(Path(sess["source_path"]))
+        meta = _reparse_session(sess)
         if meta is None:
             if not args.refresh:
                 sess["status"], sess["skip_reason"] = "skipped", "unreadable-on-packetize"
@@ -635,12 +911,20 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
 
+    def _add_source_args(p):
+        p.add_argument("--source", choices=("claude", "codex", "all"), default="all",
+                       help="which local session store(s) to read (default: all)")
+        p.add_argument("--chatgpt-export", default="",
+                       help="path to a ChatGPT data-export conversations.json to include")
+
     p_scan = sub.add_parser("scan", help="enumerate sources + consent summary")
     p_scan.add_argument("--projects", type=lambda s: s.split(","), default=None)
+    _add_source_args(p_scan)
 
     p_manifest = sub.add_parser("manifest", help="parse, filter, score, merge into staging")
     p_manifest.add_argument("--projects", type=lambda s: s.split(","), default=None)
     p_manifest.add_argument("--since", default="", help="YYYY-MM-DD lower bound on ended_at")
+    _add_source_args(p_manifest)
 
     p_pkt = sub.add_parser("packetize", help="write anonymized packets for top-K")
     p_pkt.add_argument("--top", type=int, default=DEFAULT_TOP_K)
@@ -653,9 +937,6 @@ def main() -> int:
     p_stage.add_argument("--skip", action="store_true")
     p_stage.add_argument("--reason", default="")
 
-    for name in ("codex", "chatgpt-export"):
-        sub.add_parser(name, help="not yet implemented (design phases 3/4)")
-
     args = parser.parse_args()
     if args.command == "scan":
         return cmd_scan(args)
@@ -667,8 +948,7 @@ def main() -> int:
         if not args.skip and not args.captures_file:
             parser.error("stage requires --captures-file (or --skip)")
         return cmd_stage(args)
-    print(f"{args.command}: not implemented in phase 1 — see docs/BACKFILL_DESIGN.md "
-          "Rollout (Codex is phase 3, the ChatGPT export is phase 4)", file=sys.stderr)
+    parser.error(f"unknown command {args.command!r}")
     return 2
 
 

@@ -3,7 +3,7 @@
 Persistent graph-native memory plugin for Claude. Runs a local Kumiho MCP
 server with `kumiho-memory` so Claude **remembers you across sessions**.
 
-Version: **0.15.0** | Requires: `kumiho>=0.10.7`, `kumiho-memory>=0.17.0`
+Version: **0.16.0** | Requires: `kumiho>=0.10.7`, `kumiho-memory>=0.17.1`
 (installed automatically into an isolated venv — nothing to `pip install`)
 
 ## Quick install
@@ -211,7 +211,7 @@ gRPC endpoint via control-plane discovery, and launches the MCP server.
 Default package spec:
 
 ```text
-kumiho[mcp]>=0.10.7 kumiho-memory[all]>=0.17.0
+kumiho[mcp]>=0.10.7 kumiho-memory[all]>=0.17.1
 ```
 
 ## Self-hosted (Community Edition)
@@ -386,7 +386,7 @@ YAML frontmatter (session_id, date, topics, summary) and structured
 | `KUMIHO_CLAUDE_HOME` | *(platform default)* | Override runtime/venv directory |
 | `KUMIHO_CLAUDE_PACKAGE_SPEC` | *(see above)* | Override pip install spec |
 | `KUMIHO_CLAUDE_DISABLE_LLM_FALLBACK` | *(unset)* | Set to `1` to disable local no-key LLM fallback |
-| `KUMIHO_CLAUDE_DISCOVERY_USER_AGENT` | `kumiho-claude/0.15.0` | Override discovery HTTP User-Agent |
+| `KUMIHO_CLAUDE_DISCOVERY_USER_AGENT` | `kumiho-claude/0.16.0` | Override discovery HTTP User-Agent |
 | `KUMIHO_ARTIFACT_DIR` | `~/.kumiho/artifacts/` | Override conversation artifact directory |
 
 ### Self-hosted (Community Edition)
