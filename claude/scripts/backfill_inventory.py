@@ -150,6 +150,16 @@ def _text_of(content) -> str:
 _HARNESS_PREFIXES = ("<command-name>", "<command-message>", "<local-command-stdout>",
                      "<task-notification>", "<system-reminder>", "<local-command-caveat>")
 
+# Sub-agent / automation sessions whose first "user" turn is a spawn prompt, not a
+# human: "You are <role>, a <kind> agent.\n\n## Task…" (parallel workflow workers)
+# or "You are a worker agent spawned by…". They survive the per-record filters
+# (the spawn prompt is a userType=external turn) and otherwise dilute the yield.
+# Heuristic; validate against fixtures if the corpus shows new shapes.
+_AGENT_SPAWN_RE = re.compile(
+    r"^You are\s+(?:a\s+worker\s+agent\s+spawned\b"
+    r"|[\w .,\-]{1,60}?\bagent\b[.\s]*\n\s*\n\s*#)",
+    re.IGNORECASE)
+
 
 def _is_human_user_record(rec: dict) -> bool:
     if rec.get("type") != "user":
@@ -234,8 +244,11 @@ def parse_claude_session(path: Path) -> dict | None:
         return None
     if cwd == "/":  # archetypes fallback: SDK/automation sessions run from /
         return None
+    first_human = next((t for _, r, t in messages if r == "user"), "").lstrip()
+    if _AGENT_SPAWN_RE.match(first_human):  # sub-agent spawn prompt, not a human
+        return None
     if not title:
-        title = next(t for _, r, t in messages if r == "user").strip()[:120]
+        title = first_human.strip()[:120]
     return {
         "source": "claude-code",
         "source_session_id": session_id,
@@ -559,6 +572,13 @@ def cmd_stage(args) -> int:
 
 
 def main() -> int:
+    # Force UTF-8 stdout/stderr: the consent + packet output contains non-ASCII
+    # (em-dashes, Korean titles) that crashes on a legacy Windows code page (cp949).
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
 

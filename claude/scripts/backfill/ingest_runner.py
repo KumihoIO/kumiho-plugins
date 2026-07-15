@@ -303,6 +303,13 @@ def ingest_session(sess: dict, staging: dict, staging_file: Path,
 
 
 def main() -> int:
+    # Force UTF-8 stdout/stderr — the consent payload renders non-ASCII content
+    # (Korean titles, em-dashes) that crashes on a legacy Windows code page.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--staging", default="")
     parser.add_argument("--yes", action="store_true",
