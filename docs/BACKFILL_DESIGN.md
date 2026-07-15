@@ -470,6 +470,22 @@ agent sessions work at all).
 
 ## Multi-source implementation (v0.16.0)
 
+**What's new:** `/kumiho-backfill` now turns three histories — not just Claude
+Code — into ontology-typed memory, all through the same local-first,
+review-before-upload, **keyless** flow:
+
+- **Backfill your Codex history** — `~/.codex/sessions` is scanned automatically,
+  so your past Codex decisions, entities, and conventions become typed memory
+  from day one (`--source codex`, included in the `all` default).
+- **Backfill your ChatGPT history** — point at your ChatGPT data export and past
+  conversations become typed memory too (`--chatgpt-export conversations.json`):
+  your export ZIP, read locally, no account connection.
+- **Whole-history ingest in one pass** — a single run now ingests every selected
+  session at once, so a full backfill is one command instead of many.
+- **`--source {claude,codex,all}`** picks which local stores to mine.
+
+The rest of this section is how it works.
+
 All three sources produce the identical session-meta dict
 (`source`, `source_session_id`, `source_path`, `project_dir`, `git_branch`,
 `title`, `started_at`, `ended_at`, `human_msgs`, `messages:[(ts,role,text)]`,
@@ -521,27 +537,15 @@ Source dispatch lives in three small helpers in `backfill_inventory.py`:
   Verified on a synthetic export: mapping order restored, epoch dates correct,
   Korean content preserved, typed-graph ingest.
 
-### Multi-session ingest — the redis-loop fix
+### Whole-history ingest in one pass
 
-The runner replays one `reflect()` per session, each under its own
-`asyncio.run()`. `redis.asyncio` binds a connection to the event loop of first
-use, so `RedisMemoryBuffer`'s cached client — created once — was reused on a
-**closed** loop from the 2nd session onward and crashed with *"Event loop is
-closed"* / *"'NoneType' object has no attribute 'send'"*. A single ingest process
-could therefore store only **one** session; the resume/idempotency cursor masked
-it (each re-run stored the next one). Fixed in two layers:
-
-- **Core (`kumiho-memory` 0.17.1):** `RedisMemoryBuffer.client` is a **loop-aware
-  property** — a self-created client (from `redis_url`) is cheaply recreated on
-  loop change (`from_url` is lazy); a caller-injected client (test double) is left
-  untouched (`_owns_client`). The long-lived MCP server (one persistent loop) is
-  unaffected. Regression tests cover both paths.
-- **Plugin guard (`ingest_runner._reset_backfill_redis_client`):** rebinds the
-  shared working-memory client once per session, keeping kumiho-memory **0.17.0**
-  working (best-effort; the 0.17.1 property is the real guarantee).
-
-Verified: a single ingest process now stores **all** pending sessions in one run
-(3 test sessions spanning Codex + ChatGPT, no crash).
+A backfill run replays one `reflect()` per session, each under its own
+`asyncio.run()`. Two layers let a single run ingest the whole selected history in
+one command (previously the shared working-memory Redis client, bound to the first
+loop, let only the first session land): kumiho-memory **0.17.1** makes the buffer's
+client loop-aware (fix detail in its RELEASE_NOTES), and the runner's
+`_reset_backfill_redis_client()` guard keeps **0.17.0** working. Verified: one
+process ingests all pending sessions (Codex + ChatGPT) in a single run.
 
 ## Cross-repo dependencies & follow-ups
 

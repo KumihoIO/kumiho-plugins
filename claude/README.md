@@ -37,6 +37,9 @@ neo4j / redis / embedding details.
   git-anchored decision graph: ask `kumiho_code_why` why code is the way it
   is and get the decision, its rationale, the rejected alternatives, and the
   measurements that decided it (opt-in; see [Decision Memory](#decision-memory))
+- **History Backfill** — `/kumiho-backfill` mines your existing **Claude Code,
+  Codex, and ChatGPT** history into ontology-typed memory, so the graph knows
+  your work from day one (local-first, keyless, review before upload)
 - Generates local conversation artifacts (BYO-storage — raw transcripts stay on your machine)
 - Runs Dream State consolidation for memory hygiene
 - Auto-approves Kumiho memory tool calls (no permission prompts)
