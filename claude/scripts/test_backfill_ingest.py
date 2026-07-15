@@ -47,20 +47,25 @@ class FakeRedactor:
         return self.EMAIL_RE.sub("[email]", text)
 
 
-def reflect_schema(with_event_date: bool) -> list[dict]:
+def reflect_schema(with_event_date: bool, with_batch: bool = False) -> list[dict]:
     props = {"type": {}, "title": {}, "content": {}, "tags": {}, "space_hint": {}}
     if with_event_date:
         props["event_date"] = {}
+    top = {"session_id": {}, "response": {},
+           "captures": {"items": {"properties": props}}}
+    if with_batch:
+        top["idempotency_prefix"] = {}
     return [{
         "name": "kumiho_memory_reflect",
-        "inputSchema": {"properties": {"captures": {"items": {"properties": props}}}},
+        "inputSchema": {"properties": top},
     }]
 
 
-def install_fake(reflect_fn, decompose_fn, with_event_date: bool = True):
+def install_fake(reflect_fn, decompose_fn, with_event_date: bool = True,
+                 with_batch: bool = False):
     pkg = types.ModuleType("kumiho_memory")
     mcp_tools = types.ModuleType("kumiho_memory.mcp_tools")
-    mcp_tools.MEMORY_TOOLS = reflect_schema(with_event_date)
+    mcp_tools.MEMORY_TOOLS = reflect_schema(with_event_date, with_batch)
     mcp_tools.tool_memory_reflect = reflect_fn
     mcp_tools.MEMORY_TOOL_HANDLERS = {"kumiho_memory_decompose": decompose_fn}
     privacy = types.ModuleType("kumiho_memory.privacy")
@@ -137,6 +142,105 @@ class ReflectRecorder:
         if self.dropped:
             result["dropped_event_dates"] = [{"title": "x", "event_date": "bad"}]
         return result
+
+
+class BatchReflectRecorder:
+    """Batch-capable fake: returns positionally-aligned capture_results."""
+
+    def __init__(self, fail_index: int | None = None):
+        self.calls: list[dict] = []
+        self.fail_index = fail_index
+        self.failed_once = False
+
+    def __call__(self, args: dict) -> dict:
+        self.calls.append(json.loads(json.dumps(args)))
+        fail_here = (self.fail_index is not None and not self.failed_once
+                     and len(args["captures"]) > self.fail_index)
+        rows, krefs = [], []
+        for i, _cap in enumerate(args["captures"]):
+            if fail_here and i == self.fail_index:
+                self.failed_once = True
+                rows.append({"error": "row rejected"})
+            else:
+                kref = f"kref://cap/{len(self.calls)}/{i}"
+                rows.append({"revision_kref": kref})
+                krefs.append(kref)
+        return {"buffered": True, "captures_stored": len(krefs),
+                "edges_discovered": 0, "stored_krefs": krefs,
+                "capture_results": rows}
+
+
+def _run_batch(tmp: Path, recorder, decompose_calls: list):
+    install_fake(recorder, lambda a: (decompose_calls.append(a), {})[1],
+                 with_batch=True)
+    runner = load_runner()
+    staging_file = tmp / "staging.json"
+    staging = runner.load_staging(staging_file)
+    for sess in runner.pending_sessions(staging):
+        runner.ingest_session(sess, staging, staging_file, recorder,
+                              lambda a: (decompose_calls.append(a), {})[1],
+                              FakeRedactor(), FakeCredentialError,
+                              use_batch=True)
+    return runner, staging
+
+
+def test_batch_replay() -> bool:
+    tmp = Path(tempfile.mkdtemp(prefix="backfill-ing-test-"))
+    make_staging(tmp)
+    recorder = BatchReflectRecorder()
+    decompose_calls: list = []
+    runner, staging = _run_batch(tmp, recorder, decompose_calls)
+
+    ok = _check("one reflect call per session (2 sessions -> 2 calls)",
+                len(recorder.calls) == 2)
+    ok &= _check("newest session first",
+                 recorder.calls[0]["session_id"] == "backfill:may")
+    march_call = recorder.calls[1]
+    ok &= _check("credential capture excluded client-side (2 rows, not 3)",
+                 len(march_call["captures"]) == 2)
+    ok &= _check("content-addressed idempotency prefix",
+                 march_call["idempotency_prefix"].startswith("backfill:march:")
+                 and len(march_call["idempotency_prefix"].rsplit(":", 1)[1]) == 12)
+    ok &= _check("discover_edges false on batch calls",
+                 all(c["discover_edges"] is False for c in recorder.calls))
+    march = next(s for s in staging["sessions"] if s["source_session_id"] == "march")
+    ok &= _check("krefs mapped positionally",
+                 march["captures"][0]["ingested_kref"] == "kref://cap/2/0"
+                 and march["captures"][1]["ingested_kref"] == "kref://cap/2/1"
+                 and march["captures"][2]["ingested_kref"] == runner.SKIP_MARK)
+    ok &= _check("sessions ingested + decompose anchored on summary kref",
+                 march["status"] == "ingested"
+                 and decompose_calls[0]["kref"] == "kref://cap/2/0")
+    return ok
+
+
+def test_batch_partial_failure_resumes() -> bool:
+    tmp = Path(tempfile.mkdtemp(prefix="backfill-ing-test-"))
+    make_staging(tmp)
+    recorder = BatchReflectRecorder(fail_index=1)  # first call: row 1 rejected
+    try:
+        _run_batch(tmp, recorder, [])
+        crashed = False
+    except RuntimeError:
+        crashed = True
+    persisted = json.loads((tmp / "staging.json").read_text())
+    # newest-first: the failing first call is the MAY session (1 row) — row 1
+    # doesn't exist there, so the failure lands on MARCH's decision row.
+    march = next(s for s in persisted["sessions"] if s["source_session_id"] == "march")
+    ok = _check("partial batch failure raises for retry", crashed)
+    ok &= _check("successful rows marked before the raise",
+                 march["captures"][0]["ingested_kref"].startswith("kref://cap/")
+                 and not march["captures"][1]["ingested_kref"])
+
+    recorder2 = BatchReflectRecorder()
+    runner, staging = _run_batch(tmp, recorder2, [])
+    march2 = next(s for s in staging["sessions"] if s["source_session_id"] == "march")
+    ok &= _check("resume retries only the failed row",
+                 len(recorder2.calls) == 1
+                 and len(recorder2.calls[0]["captures"]) == 1
+                 and recorder2.calls[0]["captures"][0]["title"].startswith("Chose bge-m3")
+                 and march2["status"] == "ingested")
+    return ok
 
 
 def test_feature_gate() -> bool:
@@ -390,6 +494,8 @@ def main() -> int:
         ("dropped_event_dates_warns", test_dropped_event_dates_warns),
         ("ontology_disabled_skip", test_ontology_disabled_skip),
         ("response_is_screened", test_response_is_screened),
+        ("batch_replay", test_batch_replay),
+        ("batch_partial_failure_resumes", test_batch_partial_failure_resumes),
         ("decompose_resume_window", test_decompose_resume_window),
         ("wrapper_env_pinning", test_wrapper_env_pinning),
         ("main_full_run_writes_log", test_main_full_run_writes_log),

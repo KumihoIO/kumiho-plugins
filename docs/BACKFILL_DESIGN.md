@@ -334,9 +334,12 @@ The host agent reads each packet and appends to staging. Rules the prompt encode
      whose metadata is what recall surfaces — replaying newest→oldest makes the
      *earliest* mention the last-stacked revision, so the surfaced `event_date` is
      the true origin (verified by a stacking regression fixture: same decision,
-     two dates → recalled `event_date` == earliest). *Interim mechanism*: once
-     kumiho-server#43's order-independent `min(event_date)`-on-stack semantics
-     land (below), the anchor no longer depends on replay order at all.
+     two dates → recalled `event_date` == earliest). *Status check (2026-07-15):
+     kumiho-server#43 shipped **without** `min(event_date)`-on-stack, so replay
+     order remains the load-bearing mechanism; order-independent min-merge stays
+     a future server ask. Within one batched session, same-item rows apply in
+     request order (last = `latest`) — session-internal captures share dates, so
+     this is benign; across sessions the newest→oldest schedule carries it.*
    - **Per session, two reflect calls** (kref determinism): first
      `tool_memory_reflect(session_id="backfill:<source_session_id>",
      response=<digest>, captures=[captures[0]], discover_edges=false)` — its single
@@ -364,32 +367,40 @@ semantics.)
 **Consolidation is not called** on backfill sessions; the typed graph comes from the
 staged decompose triples, and Dream State can enrich later like any other memory.
 
-**Throughput & write reliability
-([kumiho-server#43](https://github.com/KumihoIO/kumiho-server/issues/43))**:
-phase 1 ships **serial** — two reflect calls per session, one store per capture —
-correct and simple. Measured on loopback CE (#43 prototype): client-side
-concurrency caps at ×1.67 even at RTT≈0 (the *server write path* is the ceiling)
-and naive concurrent bursts intermittently hit Neo4j deadlocks — and a bulk burst
-into a fresh graph is exactly backfill's shape — so client-side concurrency is not
-the fix and is deliberately not used. The fix is server-side batching
-(`BatchCreateRevisions`, #43), realized **inside** `tool_memory_reflect`
-(SDK adoption tracked as
-[kumiho-SDKs#71](https://github.com/KumihoIO/kumiho-SDKs/issues/71)): its
-per-capture store loop becomes one batch call, the runner's semantics don't change,
-and no direct-store fork appears. Interactions specified now so #43/#71 can honor
-them:
+**Throughput & write reliability — SHIPPED
+([kumiho-server#43](https://github.com/KumihoIO/kumiho-server/issues/43) →
+server 1.6.2/1.6.3, `kumiho` 0.10.7, kumiho-memory 0.17.0 /
+[kumiho-SDKs#71](https://github.com/KumihoIO/kumiho-SDKs/issues/71))**:
+the original measurements stand (client-side concurrency capped at ×1.67 on
+loopback with Neo4j deadlocks under bulk bursts — client concurrency was never
+the fix and is still not used). The batch landed exactly where the design put
+it — **inside** `tool_memory_reflect`: `kumiho.mcp_server.tool_memory_store_batch`
+carries the single-store semantics (space resolution, stacking, local
+auto-artifact via #43's per-row artifacts, tags, bundles, DERIVED_FROM edges)
+over one `BatchCreateRevisions` transaction and one chunked embedding pass, and
+reflect routes through it when the caller supplies an `idempotency_prefix`
+(live conversational reflects keep the loop byte-identical). The ingest runner
+feature-detects the contract (`idempotency_prefix` in the reflect schema) and
+sends **one batched reflect per session**, falling back to per-capture calls on
+kumiho-memory 0.16.2. How the specified interactions actually resolved:
 
-   - **One idempotency key, two layers**: the per-capture `content_sha256` is
-     passed as #43's per-item idempotency key — a DB-level `MERGE` no-op on
-     resubmit, independently of (and consistent with) the staging-level marks.
-   - **Order-independent valid-time**: #43 stacking takes `min(event_date)` across
-     revisions of a stacked item, so batching cannot reintroduce the newest-wins
-     clobber that replay order currently guards against.
-   - **Known residual**: the per-capture stack-*search* (`find_similar_item`)
-     round-trip is not batched by #43 — negligible on a fresh graph (create-path,
-     fast misses), relevant for re-runs against a populated graph.
-   - **Keyless unaffected**: batch write is a deterministic server call; reflect
-     already sends `discover_edges: false`.
+   - **Idempotency**: the server contract is `{prefix}:{row_index}` recorded
+     in-transaction (not a per-row content key). The runner therefore derives a
+     **content-addressed prefix** — `backfill:<session>:<sha256(row hashes)[:12]>`
+     — so identical retries replay as server-side no-ops while any change in the
+     row set gets a fresh prefix instead of matching stale indices. Staging
+     marks stay the second, independent resume layer.
+   - **Per-capture kref mapping**: reflect ≥ 0.17.0 returns `capture_results`,
+     positionally 1:1 including failed rows — the exact-marking problem that
+     forced the per-capture loop is solved at the source; failed rows stay
+     unmarked and retry next run.
+   - **Order-independent valid-time**: **did not ship** — see the replay-order
+     bullet above; newest→oldest remains load-bearing.
+   - **Known residual (confirmed)**: the per-capture stack-*search*
+     (`find_similar_item`) round-trip is not batched — negligible on a fresh
+     graph, relevant for re-runs against a populated one.
+   - **Keyless unaffected**: the batch write is a deterministic server call;
+     every reflect call still sends `discover_edges: false`.
 
 ## Provenance & dedup
 
@@ -454,8 +465,8 @@ agent sessions work at all).
 | Repo / issue | Status | What it does for backfill | Blocking? |
 | --- | --- | --- | --- |
 | [kumiho-SDKs#68](https://github.com/KumihoIO/kumiho-SDKs/issues/68) / [PR #69](https://github.com/KumihoIO/kumiho-SDKs/pull/69) — `event_date` on reflect captures | **shipped** (kumiho-memory 0.16.2) | the valid-time write path every capture uses | **Yes — satisfied** (feature-gated at ingest) |
-| [kumiho-server#43](https://github.com/KumihoIO/kumiho-server/issues/43) — `BatchCreateRevisions` bulk-write RPC | open | ingest throughput + deadlock-free bulk writes; `min(event_date)`-on-stack order independence (skipping undated revisions) | No — phase 1 ships serial |
-| [kumiho-SDKs#71](https://github.com/KumihoIO/kumiho-SDKs/issues/71) — batch-aware reflect (adopts #43) | open | reflect's per-capture loop → one batch call; runner unchanged; staging `content_sha256` becomes the DB-level idempotency key | No — transparent speedup when it lands |
+| [kumiho-server#43](https://github.com/KumihoIO/kumiho-server/issues/43) — `BatchCreateRevisions` bulk-write RPC | **shipped** (server 1.6.2; per-row artifacts 1.6.3) | single-transaction bulk writes, `{prefix}:{row_index}` idempotency, batched embeddings. `min(event_date)`-on-stack did **not** ship — replay order stays load-bearing | Satisfied |
+| [kumiho-SDKs#71](https://github.com/KumihoIO/kumiho-SDKs/issues/71) — batch-aware reflect (adopts #43) | **implemented** (kumiho 0.10.7 `tool_memory_store_batch` + kumiho-memory 0.17.0 reflect `idempotency_prefix`/`capture_results`; release pending) | runner sends one batched reflect per session (feature-detected, content-addressed prefix); per-capture fallback on 0.16.2. Plugin floors bump to 0.17.0/0.10.7 once released | No — fallback keeps 0.16.2 working |
 | [kumiho-SDKs#70](https://github.com/KumihoIO/kumiho-SDKs/issues/70) — rank-time valid-time (event-proximity enable + agent-supplied `query_time`) | open | backfilled `event_date` anchors become rank-effective **retroactively**; until then dates are surfaced-only | No — E2E asserts surfaced dates only |
 
 ## Testing

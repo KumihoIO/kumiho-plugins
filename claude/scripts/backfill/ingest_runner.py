@@ -18,24 +18,24 @@ Per docs/BACKFILL_DESIGN.md Stage 2:
   two steps run over every decompose entity / fact / relation (hit -> drop
   the triple, not the session)
 * replay        — sessions newest -> oldest (earliest mention ends up the
-  last-stacked revision, so the surfaced ``event_date`` is the origin);
-  one ``tool_memory_reflect`` call per capture with ``discover_edges: false``
-  so per-capture krefs and resume marks are exact
+  last-stacked revision, so the surfaced ``event_date`` is the origin), with
+  ``discover_edges: false`` on every call; two wire shapes, feature-detected:
+  ONE batched reflect per session with a content-addressed
+  ``idempotency_prefix`` when kumiho-memory >= 0.17.0 exposes the bulk
+  contract (kumiho-SDKs#71 / kumiho-server#43 — single transaction, aligned
+  ``capture_results``), else one reflect call per capture (exact marking on
+  0.16.2 — reflect's ``stored_krefs`` alone can't map mid-batch failures)
 * decompose     — anchored to the summary capture's kref; skipped gracefully
   when the result reports the ontology is disabled
-* marking       — staging is rewritten atomically after every capture, so an
-  interrupted run resumes at the exact capture
-
-One reflect call per capture deviates from the design's two-call sketch on
-purpose: reflect's ``stored_krefs`` only appends successes, so a mid-batch
-store failure would leave kref->capture mapping ambiguous. Serial-per-capture
-keeps marking exact; kumiho-SDKs#71 (batch-aware reflect) supersedes this
-loop wholesale once BatchCreateRevisions lands.
+* marking       — staging is rewritten atomically after every write, so an
+  interrupted run resumes exactly; batched retries replay committed rows as
+  server-side no-ops via the idempotency prefix
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -65,19 +65,33 @@ def save_staging(staging: dict, path: Path) -> None:
     os.replace(tmp, path)
 
 
-def feature_gate() -> str:
-    """Empty string when reflect supports event_date, else the refusal message."""
+def _reflect_schema_props() -> tuple[dict, dict]:
+    """(top-level properties, capture-item properties) of the reflect schema."""
     from kumiho_memory import mcp_tools
 
     for tool in mcp_tools.MEMORY_TOOLS:
         if tool.get("name") == "kumiho_memory_reflect":
-            props = (tool.get("inputSchema", {}).get("properties", {})
-                     .get("captures", {}).get("items", {}).get("properties", {}))
-            if "event_date" in props:
-                return ""
-            break
+            props = tool.get("inputSchema", {}).get("properties", {})
+            cap_props = (props.get("captures", {}).get("items", {})
+                         .get("properties", {}))
+            return props, cap_props
+    return {}, {}
+
+
+def feature_gate() -> str:
+    """Empty string when reflect supports event_date, else the refusal message."""
+    _, cap_props = _reflect_schema_props()
+    if "event_date" in cap_props:
+        return ""
     return ("kumiho-memory too old: reflect captures lack event_date "
             "(needs >= 0.16.2) — re-run /kumiho-onboard to upgrade")
+
+
+def batch_capable() -> bool:
+    """True when reflect supports the bulk-replay contract (kumiho-memory
+    >= 0.17.0: idempotency_prefix + positionally-aligned capture_results)."""
+    props, _ = _reflect_schema_props()
+    return "idempotency_prefix" in props
 
 
 def screen_capture(redactor, errcls, cap: dict) -> dict | None:
@@ -161,13 +175,35 @@ def render_payload(sessions: list[dict]) -> None:
     print(f"\n=== {len(sessions)} sessions, {total} captures ===\n")
 
 
+def _wire_capture(screened: dict) -> dict:
+    return {
+        "type": screened["type"],
+        "title": screened["title"],
+        "content": screened["content"],
+        "event_date": screened.get("event_date", ""),
+        "tags": screened.get("tags") or [],
+    }
+
+
 def ingest_session(sess: dict, staging: dict, staging_file: Path,
-                   reflect, decompose, redactor, errcls) -> dict:
-    """Replay one session; returns counters. Staging saved after every capture."""
+                   reflect, decompose, redactor, errcls,
+                   use_batch: bool = False) -> dict:
+    """Replay one session; returns counters. Staging saved after every write.
+
+    Two wire shapes, same semantics:
+    * batch (kumiho-memory >= 0.17.0): ONE reflect call for all pending
+      captures with a content-addressed ``idempotency_prefix`` — the server
+      records prefix:row_index in-transaction, so a crash-and-retry replays
+      committed rows as no-ops; per-capture krefs come back positionally in
+      ``capture_results``.
+    * fallback: one reflect call per capture (exact marking on 0.16.2).
+    """
     stats = {"stored": 0, "screened": 0, "already": 0, "dropped_triples": 0}
     sid = f"backfill:{sess['source_session_id']}"
     captures = sess.get("captures") or []
 
+    # Screen first (marks are wire-shape-independent).
+    pending: list[tuple[dict, dict]] = []  # (staging capture, screened wire copy)
     for cap in captures:
         if cap.get("ingested_kref"):
             stats["already"] += 1
@@ -179,33 +215,71 @@ def ingest_session(sess: dict, staging: dict, staging_file: Path,
             save_staging(staging, staging_file)
             _warn(f"capture screened out (credential shape): {cap.get('title', '')[:60]!r}")
             continue
-        # Screened text only ever leaves the machine — the summary's anonymized
-        # content doubles as the buffered digest response.
-        response = (screened["content"] if screened.get("type") == "summary"
-                    else screened["title"])
+        pending.append((cap, screened))
+
+    if pending and use_batch:
+        # Prefix is content-addressed over the exact row set: identical
+        # retries replay as no-ops, while any change in rows (new captures,
+        # different screening) gets a fresh prefix instead of matching the
+        # server's stale prefix:index records.
+        row_key = hashlib.sha256("\x00".join(
+            c.get("content_sha256", "") for c, _ in pending).encode()).hexdigest()[:12]
+        summary_screened = next(
+            (s for _, s in pending if s.get("type") == "summary"), pending[0][1])
         result = reflect({
             "session_id": sid,
-            "response": response,
-            "captures": [{
-                "type": screened["type"],
-                "title": screened["title"],
-                "content": screened["content"],
-                "event_date": screened.get("event_date", ""),
-                "tags": screened.get("tags") or [],
-            }],
+            "response": summary_screened["content"],
+            "captures": [_wire_capture(s) for _, s in pending],
             "discover_edges": False,
+            "idempotency_prefix": f"backfill:{sess['source_session_id']}:{row_key}",
         })
         if result.get("dropped_event_dates"):
-            _warn(f"STAGING BUG: reflect dropped event_date {result['dropped_event_dates']} "
-                  f"for {cap.get('title', '')[:60]!r} — staging validation should have caught this")
-        krefs = result.get("stored_krefs") or []
-        if not krefs:
+            _warn(f"STAGING BUG: reflect dropped event_date "
+                  f"{result['dropped_event_dates']} — staging validation "
+                  "should have caught this")
+        rows = result.get("capture_results")
+        if not isinstance(rows, list) or len(rows) != len(pending):
             raise RuntimeError(
-                f"reflect stored nothing for capture {cap.get('title', '')[:60]!r} "
-                f"(session {sess['source_session_id']}) — aborting so resume can retry")
-        cap["ingested_kref"] = krefs[0]
-        stats["stored"] += 1
+                "batch reflect did not return aligned capture_results "
+                f"({len(pending)} captures) — aborting so resume can retry")
+        for (cap, _), row in zip(pending, rows):
+            kref = row.get("revision_kref", "")
+            if kref:
+                cap["ingested_kref"] = kref
+                stats["stored"] += 1
+            else:
+                _warn(f"batch row failed for {cap.get('title', '')[:60]!r}: "
+                      f"{row.get('error', 'unknown')} — will retry next run")
         save_staging(staging, staging_file)
+        if any(not c.get("ingested_kref") for c, _ in pending):
+            raise RuntimeError(
+                f"session {sess['source_session_id']} has failed batch rows — "
+                "aborting so resume can retry")
+    elif pending:
+        for cap, screened in pending:
+            # Screened text only ever leaves the machine — the summary's
+            # anonymized content doubles as the buffered digest response.
+            response = (screened["content"] if screened.get("type") == "summary"
+                        else screened["title"])
+            result = reflect({
+                "session_id": sid,
+                "response": response,
+                "captures": [_wire_capture(screened)],
+                "discover_edges": False,
+            })
+            if result.get("dropped_event_dates"):
+                _warn(f"STAGING BUG: reflect dropped event_date "
+                      f"{result['dropped_event_dates']} for "
+                      f"{cap.get('title', '')[:60]!r} — staging validation "
+                      "should have caught this")
+            krefs = result.get("stored_krefs") or []
+            if not krefs:
+                raise RuntimeError(
+                    f"reflect stored nothing for capture {cap.get('title', '')[:60]!r} "
+                    f"(session {sess['source_session_id']}) — aborting so resume can retry")
+            cap["ingested_kref"] = krefs[0]
+            stats["stored"] += 1
+            save_staging(staging, staging_file)
 
     anchor = captures[0].get("ingested_kref", "") if captures else ""
     dec = sess.get("decompose") or {}
@@ -277,12 +351,18 @@ def main() -> int:
         "kumiho_memory_decompose", lambda _args: {"errors": ["decompose tool unavailable"]})
     redactor = PIIRedactor()
 
+    use_batch = batch_capable()
+    _log("write path: " + ("batched reflect (one transaction per session)"
+                           if use_batch else
+                           "per-capture reflect (kumiho-memory < 0.17.0 — "
+                           "upgrade via /kumiho-onboard for batched ingest)"))
+
     totals = {"stored": 0, "screened": 0, "already": 0, "dropped_triples": 0, "sessions": 0}
     kref_sample: list[str] = []
     for sess in todo:
         _log(f"session {sess['source_session_id']} ({sess.get('ended_at', '')[:10]})")
         stats = ingest_session(sess, staging, staging_file, reflect, decompose,
-                               redactor, CredentialDetectedError)
+                               redactor, CredentialDetectedError, use_batch=use_batch)
         for key, val in stats.items():
             totals[key] += val
         totals["sessions"] += 1
