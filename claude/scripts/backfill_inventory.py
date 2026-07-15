@@ -145,6 +145,18 @@ def _text_of(content) -> str:
     return ""
 
 
+def _msg_content(rec: dict) -> str:
+    """message.content text, tolerant of a null/non-dict message field.
+
+    dict.get("message", {}) returns the *value* (which may be null), not the
+    default, so a record with ``"message": null`` (or a string) would crash a
+    naive ``.get("content")``. Scanning an unknown corpus must never crash on
+    a single odd record.
+    """
+    msg = rec.get("message")
+    return _text_of(msg.get("content", "")) if isinstance(msg, dict) else ""
+
+
 # Harness-generated user records (slash-command echoes, task notifications,
 # reminders) are transcript plumbing, not the human speaking.
 _HARNESS_PREFIXES = ("<command-name>", "<command-message>", "<local-command-stdout>",
@@ -174,7 +186,7 @@ def _is_human_user_record(rec: dict) -> bool:
     entrypoint = str(rec.get("entrypoint", "") or "")
     if entrypoint.startswith("sdk"):
         return False
-    text = _text_of(rec.get("message", {}).get("content", "")).strip()
+    text = _msg_content(rec).strip()
     if not text or text.startswith(_HARNESS_PREFIXES):
         return False
     return True
@@ -191,11 +203,17 @@ def parse_claude_session(path: Path) -> dict | None:
     first_ts = last_ts = ""
     dropped = {"sidechain": 0, "meta_or_compact": 0, "tool_result": 0, "non_external": 0}
 
-    with open(path, encoding="utf-8", errors="replace") as fh:
+    try:
+        handle = open(path, encoding="utf-8", errors="replace")
+    except OSError:
+        return None  # transcript vanished/rotated since manifest — skip, don't abort the batch
+    with handle as fh:
         for line in fh:
             try:
                 rec = json.loads(line)
             except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if not isinstance(rec, dict):  # valid JSON but not an object -> skip, never crash the scan
                 continue
             rtype = rec.get("type")
             # Title priority: custom-title beats ai-title; last-prompt records
@@ -232,10 +250,10 @@ def parse_claude_session(path: Path) -> dict | None:
                 if not _is_human_user_record(rec):
                     dropped["non_external"] += 1
                     continue
-                text = _text_of(rec.get("message", {}).get("content", ""))
+                text = _msg_content(rec)
                 messages.append((ts, "user", text))
             else:
-                text = _text_of(rec.get("message", {}).get("content", ""))
+                text = _msg_content(rec)
                 if text.strip():
                     messages.append((ts, "assistant", text))
 
@@ -404,9 +422,12 @@ def _excerpt(ts: str, role: str, text: str, limit: int) -> str:
 def build_packet(meta: dict) -> str:
     msgs = meta["messages"]
     parts = [
-        f"# Session packet: {anonymize(meta['title'])}",
+        "# Session packet",
         "",
         UNTRUSTED_BANNER,
+        # The title is transcript-derived (falls back to the first human message),
+        # so it lives below the banner, inside the untrusted-data fence.
+        f"- title (untrusted, transcript-derived): {anonymize(meta['title'])}",
         f"- source_session_id: `{meta['source_session_id']}`",
         f"- project_dir: `{meta['project_dir']}`  branch: `{meta.get('git_branch', '')}`",
         f"- span: {meta['started_at']} .. {meta['ended_at']}  "
@@ -511,6 +532,38 @@ def validate_captures(payload: dict) -> list[str]:
     return errors
 
 
+def validate_decompose(payload: dict) -> list[str]:
+    """Reject a malformed decompose block early — the rubric's triple shape is
+    LLM-authored, so catch bare strings / wrong types here rather than letting
+    them crash the ingest runner mid-upload."""
+    dec = payload.get("decompose")
+    if dec in (None, {}):
+        return []
+    if not isinstance(dec, dict):
+        return ["decompose must be an object with entities/facts/relations"]
+    errors = []
+    required = {"entities": ("name",), "facts": ("statement",),
+                "relations": ("subject", "predicate", "object")}
+    for kind, fields in required.items():
+        items = dec.get(kind)
+        if items is None:
+            continue
+        if not isinstance(items, list):
+            errors.append(f"decompose.{kind} must be a list")
+            continue
+        for j, item in enumerate(items):
+            if not isinstance(item, dict):
+                errors.append(
+                    f"decompose.{kind}[{j}] must be an object, not {type(item).__name__} "
+                    "(entities: {name,type}, facts: {statement,about}, "
+                    "relations: {subject,predicate,object})")
+                continue
+            for f in fields:
+                if not str(item.get(f, "")).strip():
+                    errors.append(f"decompose.{kind}[{j}].{f} is required")
+    return errors
+
+
 def cmd_stage(args) -> int:
     staging = load_staging()
     sess = next((s for s in staging["sessions"]
@@ -534,7 +587,7 @@ def cmd_stage(args) -> int:
     except (OSError, json.JSONDecodeError) as exc:
         print(f"stage: cannot read captures file {args.captures_file!r}: {exc}", file=sys.stderr)
         return 1
-    errors = validate_captures(payload)
+    errors = validate_captures(payload) + validate_decompose(payload)
     if errors:
         print("stage: validation failed:", file=sys.stderr)
         for err in errors:

@@ -121,18 +121,40 @@ def screen_decompose(redactor, errcls, dec: dict) -> tuple[dict, int]:
 
     out: dict = {}
     for ent in dec.get("entities") or []:
-        cleaned = clean([str(ent.get("name", ""))])
+        if not isinstance(ent, dict):  # malformed agent output (e.g. a bare string) -> drop, never crash
+            dropped += 1
+            continue
+        # Every free-text field a triple carries must pass the same screen —
+        # the name AND the type label (a credential/PII can hide in either).
+        cleaned = clean([str(ent.get("name", "")), str(ent.get("type", ""))])
         if cleaned is None:
             dropped += 1
             continue
-        out.setdefault("entities", []).append(dict(ent, name=cleaned[0]))
+        new = dict(ent, name=cleaned[0])
+        if "type" in ent:
+            new["type"] = cleaned[1]
+        out.setdefault("entities", []).append(new)
     for fact in dec.get("facts") or []:
-        cleaned = clean([str(fact.get("statement", ""))])
+        if not isinstance(fact, dict):
+            dropped += 1
+            continue
+        # about[] references entity names by value — screen them too, else a
+        # credential that appears only as an about-entry reaches the server raw.
+        about = [str(a) for a in (fact.get("about") or [])]
+        cleaned = clean([str(fact.get("statement", "")), str(fact.get("type", ""))] + about)
         if cleaned is None:
             dropped += 1
             continue
-        out.setdefault("facts", []).append(dict(fact, statement=cleaned[0]))
+        new = dict(fact, statement=cleaned[0])
+        if "type" in fact:
+            new["type"] = cleaned[1]
+        if "about" in fact:
+            new["about"] = cleaned[2:]
+        out.setdefault("facts", []).append(new)
     for rel in dec.get("relations") or []:
+        if not isinstance(rel, dict):
+            dropped += 1
+            continue
         parts = [str(rel.get(k, "")) for k in ("subject", "predicate", "object")]
         cleaned = clean(parts)
         if cleaned is None:
@@ -281,7 +303,14 @@ def ingest_session(sess: dict, staging: dict, staging_file: Path,
             stats["stored"] += 1
             save_staging(staging, staging_file)
 
-    anchor = captures[0].get("ingested_kref", "") if captures else ""
+    # Anchor decompose to the first genuinely-stored capture — never a screened
+    # (SKIP_MARK) one — so a screened summary can't silently drop the session's
+    # whole ontology while later captures stored fine.
+    anchor = next(
+        (c.get("ingested_kref") for c in captures
+         if c.get("ingested_kref") and c.get("ingested_kref") != SKIP_MARK),
+        "",
+    )
     dec = sess.get("decompose") or {}
     if dec and anchor and anchor != SKIP_MARK and not sess.get("decomposed"):
         screened_dec, dropped = screen_decompose(redactor, errcls, dec)

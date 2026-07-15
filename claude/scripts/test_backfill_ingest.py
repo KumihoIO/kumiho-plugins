@@ -12,6 +12,7 @@ Usage (from claude/scripts/):
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import importlib.util
 import io
@@ -76,6 +77,22 @@ def install_fake(reflect_fn, decompose_fn, with_event_date: bool = True,
     sys.modules["kumiho_memory"] = pkg
     sys.modules["kumiho_memory.mcp_tools"] = mcp_tools
     sys.modules["kumiho_memory.privacy"] = privacy
+
+
+# The fake above must never leak into a later-collected test (e.g. the inventory
+# suite does `Path(kumiho_memory.__file__)`). Snapshot the real entries once and
+# restore them at exit — restore to whatever was there, never blind-pop.
+_FAKE_MODULE_KEYS = ("kumiho_memory", "kumiho_memory.mcp_tools", "kumiho_memory.privacy")
+_ORIG_MODULES = {k: sys.modules.get(k) for k in _FAKE_MODULE_KEYS}
+
+
+@atexit.register
+def _restore_real_modules() -> None:
+    for key, orig in _ORIG_MODULES.items():
+        if orig is None:
+            sys.modules.pop(key, None)
+        else:
+            sys.modules[key] = orig
 
 
 def load_runner():

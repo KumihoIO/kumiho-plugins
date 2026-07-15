@@ -34,8 +34,8 @@ def main() -> int:
         ),
         "KUMIHO_MCP_LOG_LEVEL": ("${KUMIHO_MCP_LOG_LEVEL:-INFO}", "INFO"),
         "KUMIHO_CLAUDE_PACKAGE_SPEC": (
-            "${KUMIHO_CLAUDE_PACKAGE_SPEC:-kumiho[mcp]>=0.10.5 kumiho-memory[all]>=0.12.1}",
-            "kumiho[mcp]>=0.10.5 kumiho-memory[all]>=0.12.1",
+            "${KUMIHO_CLAUDE_PACKAGE_SPEC:-kumiho[mcp]>=0.10.7 kumiho-memory[all]>=0.17.0}",
+            "kumiho[mcp]>=0.10.7 kumiho-memory[all]>=0.17.0",
         ),
         # empty default -> cleared (equivalent to unset: cloud mode)
         "KUMIHO_CLAUDE_MODE": ("${KUMIHO_CLAUDE_MODE:-}", None),

@@ -273,6 +273,9 @@ def test_stage_validation(home: Path) -> bool:
 def main() -> int:
     home = Path(tempfile.mkdtemp(prefix="backfill-inv-test-"))
     os.environ["HOME"] = str(home)
+    # Path.home() resolves via USERPROFILE on Windows (HOME is ignored there),
+    # so redirect both to keep the synthetic-corpus scan hermetic cross-platform.
+    os.environ["USERPROFILE"] = str(home)
     os.environ["KUMIHO_BACKFILL_HOME"] = str(home / ".kumiho" / "backfill")
 
     tests = (

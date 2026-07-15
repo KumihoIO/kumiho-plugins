@@ -73,7 +73,10 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/backfill_inventory.py"
      commands it suggests.
    - **`decompose`**: from your *captures* (not the raw packet), a handful of
      `entities` (reusable named hubs — reuse names across sessions so hubs
-     merge), `facts` (each `about` its entities), and `relations`.
+     merge), `facts` (each `about` its entities), and `relations`. Every item
+     is an **object, never a bare string** — exact shape:
+     `{"entities": [{"name": str, "type": str}], "facts": [{"statement": str, "about": [str]}], "relations": [{"subject": str, "predicate": str, "object": str}]}`.
+     (`INV stage` validates this shape and rejects malformed triples.)
 
 4. **Teaser.** After the last packet, show the user what was learned: capture
    counts by type, the five most interesting findings (one line each), and
@@ -97,10 +100,11 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/backfill_inventory.py"
    python "${CLAUDE_PLUGIN_ROOT}/scripts/backfill_ingest.py" --yes
    ```
 
-   The runner replays newest→oldest through `kumiho_memory_reflect`
-   (per-capture, `event_date` attached, edge discovery off), screens every
-   capture and decompose triple, and marks progress per capture — an
-   interrupted run resumes exactly where it stopped; re-runs are no-ops.
+   The runner replays newest→oldest through `kumiho_memory_reflect` (one
+   batched call per session when kumiho-memory ≥ 0.17.0, else one call per
+   capture; `event_date` attached, edge discovery off), screens every capture
+   and decompose triple, and marks progress per capture — an interrupted run
+   resumes exactly where it stopped; re-runs are no-ops.
 
    - Exit code 3 → kumiho-memory is older than 0.16.2: run `/kumiho-onboard`
      to upgrade, then retry.

@@ -340,12 +340,14 @@ The host agent reads each packet and appends to staging. Rules the prompt encode
      a future server ask. Within one batched session, same-item rows apply in
      request order (last = `latest`) — session-internal captures share dates, so
      this is benign; across sessions the newest→oldest schedule carries it.*
-   - **Per session, two reflect calls** (kref determinism): first
-     `tool_memory_reflect(session_id="backfill:<source_session_id>",
-     response=<digest>, captures=[captures[0]], discover_edges=false)` — its single
-     `stored_krefs[0]` is the anchor kref; then a second reflect with the remaining
-     captures, also `discover_edges: false`, each capture carrying `event_date` +
-     tags. Any `dropped_event_dates` in a result is a staging bug — logged loudly.
+   - **Per session, one reflect (feature-detected)**: on kumiho-memory ≥ 0.17.0 a
+     single batched `tool_memory_reflect(session_id="backfill:<source_session_id>",
+     response=<digest>, captures=[…all…], discover_edges=false, idempotency_prefix=…)`
+     — per-capture krefs come back positionally in `capture_results`; on 0.16.2 it
+     falls back to one reflect per capture (anchor = `stored_krefs[0]`). Either way
+     each capture carries `event_date` + tags, and the decompose anchor is the first
+     genuinely-stored (non-screened) capture kref. Any `dropped_event_dates` in a
+     result is a staging bug — logged loudly.
    - **Decompose**: `tool_memory_decompose(kref=<anchor kref>, …)` with the
      screened triples. The ontology gate is keyed off the **result** — the handler
      returns `{"errors": ["ontology is disabled…"]}` when `KUMIHO_MEMORY_ONTOLOGY`
