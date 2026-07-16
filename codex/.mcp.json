@@ -1,0 +1,9 @@
+{
+  "kumiho-memory": {
+    "command": "python",
+    "args": ["${PLUGIN_ROOT}/scripts/run_kumiho_mcp.py"],
+    "env": {
+      "KUMIHO_MEMORY_CODE": "1"
+    }
+  }
+}

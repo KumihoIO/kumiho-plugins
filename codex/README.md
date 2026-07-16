@@ -1,13 +1,39 @@
-# Kumiho Memory for OpenAI Codex CLI
+# Kumiho Memory for OpenAI Codex
 
 Graph-native persistent memory (working memory + consolidation + ontology
-+ **Decision Memory**) for [Codex CLI](https://github.com/openai/codex),
-backed by the same `kumiho-memory` MCP server the Claude plugin uses.
++ **Decision Memory**) for [Codex](https://github.com/openai/codex) —
+CLI, IDE extension, and the merged ChatGPT desktop app — backed by the
+same `kumiho-memory` MCP server the Claude plugin uses.
+
+## Install (plugin era — Codex with `codex plugin`)
+
+```bash
+codex plugin marketplace add KumihoIO/kumiho-plugins
+codex plugin add kumiho-memory@kumiho-plugins
+```
+
+Verified on codex-cli 0.134.0: Codex reads this repo's
+`.claude-plugin/marketplace.json` directly (Claude plugin format compat),
+snapshots the plugin into `$CODEX_HOME/plugins/cache/`, and registers the
+`kumiho-memory` MCP server with the bundled env defaults (`codex mcp list`
+shows it enabled). Newer Codex builds that prefer the native
+`.codex-plugin` root manifest resolve to the Codex-tailored plugin under
+`./codex` instead — both paths deliver the same memory server.
+
+> ⚠️ Prefer the `owner/repo` (git) form above. Adding a **local path** as
+> a marketplace snapshots the working tree verbatim — including untracked
+> files like `.env.local` (secrets!) — into the plugin cache.
+
+Auth is unchanged: `kumiho-auth login` once for cloud, or CE env vars
+(`KUMIHO_CLAUDE_MODE=ce`, optional `KUMIHO_CLAUDE_SERVER_ENDPOINT`) — the
+launcher hydrates credentials from `~/.kumiho` / settings at spawn time.
+
+## Legacy setup (pre-plugin Codex)
 
 Requires a full `kumiho-plugins` checkout (the launcher and ingest worker
-are shared with `claude/` — one source of truth, monorepo-relative paths).
-
-## Setup
+are shared with `claude/` — one source of truth, monorepo-relative paths;
+plugin snapshots instead use the vendored launcher copy guarded by
+`test_launcher_parity.py`).
 
 ### Cloud (kumiho.cloud tenant)
 
