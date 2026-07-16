@@ -12,16 +12,23 @@ codex plugin marketplace add KumihoIO/kumiho-plugins
 codex plugin add kumiho-memory@kumiho-plugins
 ```
 
-Verified on codex-cli 0.134.0: Codex reads this repo's
+Verified on codex-cli **0.134.0 and 0.144.5** (git-source marketplace,
+isolated `CODEX_HOME`): both builds read this repo's
 `.claude-plugin/marketplace.json` directly (Claude plugin format compat),
-snapshots the **claude/-sourced** plugin into `$CODEX_HOME/plugins/cache/`,
-and registers the `kumiho-memory` MCP server (`codex mcp list` shows it
-enabled — registration verified; an authenticated spawn/tool call was not
-exercised). On that build the installed skills are the Claude ones; the
-Codex-tailored plugin under `./codex` (this directory, with its own
-`.codex-plugin` manifest, skill, and `.mcp.json`) targets newer builds
-that prefer the native root manifest — untested until such a build is
-available.
+snapshot the **claude/-sourced** plugin into `$CODEX_HOME/plugins/cache/`
+— including its skills and `hooks/hooks.json` — and register the
+`kumiho-memory` MCP server (`codex mcp get` shows it enabled with the
+bundled env; registration verified, an authenticated spawn/tool call was
+not exercised, so `${CLAUDE_PLUGIN_ROOT}` expansion at spawn time remains
+unverified). **The Claude plugin is effectively the Codex plugin.**
+
+The Codex-tailored plugin under `./codex` (its `.codex-plugin` manifest,
+skill, and `.mcp.json`) is **forward-compat only**: no build through
+0.144.5 consumes the root `.codex-plugin/marketplace.json`. It is kept in
+lockstep (version-parity test) for the day Codex prefers its native
+manifest. Hook execution under Codex (the claude `hooks/hooks.json` that
+ships in the snapshot) is likewise unverified — the hook scripts are
+inert when unsupported.
 
 > ⚠️ Prefer the `owner/repo` (git) form above. Adding a **local path** as
 > a marketplace snapshots the working tree verbatim — including untracked

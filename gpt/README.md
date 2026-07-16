@@ -22,8 +22,15 @@ ChatGPT ──OAuth (code+PKCE, DCR)──▶ gateway ──Bearer-checked rever
 > gateway implements (HTTPS + SSE/streamable-HTTP, OAuth 2.1 + PKCE + DCR,
 > RFC 9728/8414/7591 discovery) is unchanged in the merged desktop app's
 > developer mode. For the *coding* side of the merged app, the
-> [`codex/`](../codex/README.md) plugin covers local stdio memory; bundling
-> this connector into that plugin via `.app.json` is planned (Phase 3).
+> [`codex/`](../codex/README.md) plugin covers local stdio memory.
+> Bundling this connector into that plugin via `.app.json` is **blocked on
+> two externals** (checked 2026-07-16): the `.app.json` schema is not
+> published (absent from the plugin spec; `codex app-server
+> generate-json-schema` emits the app-server RPC protocol, not the
+> manifest), and a static bundle needs a stable connector URL — CE URLs
+> are per-install tunnels and no hosted Kumiho connector URL exists yet.
+> Unblocks: a published schema (or a first-party plugin's `.app.json` to
+> reference) plus a hosted connector endpoint.
 
 ---
 
