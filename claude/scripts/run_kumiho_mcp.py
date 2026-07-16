@@ -921,11 +921,28 @@ def _configure_llm_fallback() -> None:
     os.environ.setdefault("KUMIHO_LLM_PROVIDER", "openai")
     os.environ.setdefault("OPENAI_API_KEY", "kumiho-claude-fallback")
     os.environ.setdefault("KUMIHO_LLM_BASE_URL", "http://127.0.0.1:9/v1")
-    print(
-        "[kumiho-claude] No LLM API key detected. "
-        "Using fail-fast local fallback for summarization.",
-        file=sys.stderr,
+    # Name the concrete consequences and the remedy: the dead-port fallback is
+    # deliberate (fail-fast), but without this detail operators only discover
+    # the degradation by noticing edges_discovered:0 and reading this source.
+    remedy = (
+        "set KUMIHO_LLM_BASE_URL to an OpenAI-compatible endpoint "
+        "(e.g. a local Ollama server) or set KUMIHO_LLM_API_KEY / "
+        "OPENAI_API_KEY / ANTHROPIC_API_KEY"
     )
+    if _ce_mode_enabled():
+        print(
+            "[kumiho-claude] CE mode has no LLM configured: edge discovery and "
+            "consolidation summaries are disabled (keyless tools like reflect, "
+            f"decompose, and code_capture still work). To enable them, {remedy}.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "[kumiho-claude] No LLM API key detected. Using fail-fast local "
+            "fallback for summarization: edge discovery and consolidation "
+            f"summaries are disabled. To enable them, {remedy}.",
+            file=sys.stderr,
+        )
 
 
 def main() -> int:
