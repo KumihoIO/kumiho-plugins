@@ -14,11 +14,14 @@ codex plugin add kumiho-memory@kumiho-plugins
 
 Verified on codex-cli 0.134.0: Codex reads this repo's
 `.claude-plugin/marketplace.json` directly (Claude plugin format compat),
-snapshots the plugin into `$CODEX_HOME/plugins/cache/`, and registers the
-`kumiho-memory` MCP server with the bundled env defaults (`codex mcp list`
-shows it enabled). Newer Codex builds that prefer the native
-`.codex-plugin` root manifest resolve to the Codex-tailored plugin under
-`./codex` instead — both paths deliver the same memory server.
+snapshots the **claude/-sourced** plugin into `$CODEX_HOME/plugins/cache/`,
+and registers the `kumiho-memory` MCP server (`codex mcp list` shows it
+enabled — registration verified; an authenticated spawn/tool call was not
+exercised). On that build the installed skills are the Claude ones; the
+Codex-tailored plugin under `./codex` (this directory, with its own
+`.codex-plugin` manifest, skill, and `.mcp.json`) targets newer builds
+that prefer the native root manifest — untested until such a build is
+available.
 
 > ⚠️ Prefer the `owner/repo` (git) form above. Adding a **local path** as
 > a marketplace snapshots the working tree verbatim — including untracked
@@ -66,9 +69,12 @@ Append [`AGENTS.md`](AGENTS.md) to your project's `AGENTS.md`. It wires the
 two-reflex protocol (engage → reflect) and the Decision Memory rule:
 *ask `kumiho_code_why` before modifying unfamiliar code.*
 
-## Decision auto-capture (recommended)
+## Decision auto-capture (full checkout only)
 
-Codex has no lifecycle hooks, so capture rides on git itself:
+With a full `kumiho-plugins` checkout, capture can ride on git itself
+(plugin snapshots do not include the shared ingest worker — the installer
+refuses to write a dead hook there; agent-driven `kumiho_code_capture`
+covers snapshots):
 
 ```bash
 python codex/scripts/install_git_hook.py /path/to/your/repo

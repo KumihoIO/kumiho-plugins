@@ -37,8 +37,9 @@ and reuse existing entity names so hubs merge across sessions.
 first** — prior decisions, their rationale, verbatim evidence, and whether
 they were later reversed (`superseded_by`) come back in one call. Never
 re-litigate a decision the graph already explains; if you change it
-anyway, say why, and write the new rationale into your commit message —
-the post-commit capture hook mines it back into the graph automatically.
+anyway, say why — and capture the new rationale yourself with
+`kumiho_code_capture` right after the commit (capturing the why is YOUR
+job; this plugin installs no git hook, so nothing happens automatically).
 
 When you commit code that embodies a real choice — an alternative picked
 over another, a default set, a reversal, a measured trade-off — call
@@ -59,4 +60,6 @@ skip captured commits at zero LLM cost).
 - Compare each memory's `created_at` to today's date; prefer recent
   memories when they conflict with stale ones.
 - After 20+ exchanges or at session end, call
-  `kumiho_memory_consolidate(session_id=...)`.
+  `kumiho_memory_consolidate(session_id=...)`. Codex does not supply a
+  session id — derive a stable one yourself (e.g. `{repo}-{YYYY-MM-DD}`)
+  and reuse it for every reflect/consolidate call in the same session.

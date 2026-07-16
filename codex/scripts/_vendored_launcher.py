@@ -520,6 +520,20 @@ def _try_sync_token_to_config(config_path: Path, token: str) -> bool:
         return False
 
 
+def _desktop_bootstrap_enabled() -> bool:
+    """Claude Desktop config writes are for Claude hosts only.
+
+    The launcher is shared with other hosts (the codex plugin vendors a
+    copy and sets ``KUMIHO_CLAUDE_HOST=codex``).  A non-Claude host must
+    never create or rewrite Claude Desktop config files: on a machine
+    without Claude Desktop that fabricates config trees, and on a machine
+    WITH it, it could repoint Desktop at another host's plugin snapshot or
+    another tenant's token.
+    """
+    host = (os.getenv("KUMIHO_CLAUDE_HOST", "") or "").strip().lower()
+    return host in ("", "claude", "claude-code", "claude-desktop", "cowork")
+
+
 def _bootstrap_desktop_server_entries() -> None:
     """Ensure Claude Desktop configs have a kumiho-memory server entry.
 
@@ -549,8 +563,10 @@ def _bootstrap_desktop_server_entries() -> None:
     }
     # Include the resolved token if one is available so Claude Desktop picks
     # it up immediately on the next restart (no extra /kumiho-onboard step needed).
+    # Never in CE mode: CE runs tokenless, and a stale cloud login cached in
+    # ~/.kumiho must not leak into a Desktop config file as plaintext.
     token = _clean_token_candidate((os.getenv("KUMIHO_AUTH_TOKEN", "") or "").strip())
-    if token and not _looks_like_placeholder(token):
+    if token and not _looks_like_placeholder(token) and not _ce_mode_enabled():
         server_entry["env"]["KUMIHO_AUTH_TOKEN"] = token
 
     for desktop_path in _claude_desktop_config_paths():
@@ -966,12 +982,15 @@ def main() -> int:
     _hydrate_env_from_local_config()
     # The Desktop server-entry self-heal is auth-independent (its token embed is
     # already guarded), so it runs in both modes — otherwise a CE user's stale
-    # entry would never be repaired after a plugin upgrade.
-    _bootstrap_desktop_server_entries()
+    # entry would never be repaired after a plugin upgrade.  Claude hosts only:
+    # a vendored copy running under codex must never touch Desktop configs.
+    if _desktop_bootstrap_enabled():
+        _bootstrap_desktop_server_entries()
     # CE / self-hosted mode is tokenless and server-authenticated: skip the
     # cloud-token sync and auth warnings so they do not fire spuriously.
     if not _ce_mode_enabled():
-        _sync_token_to_desktop_config()
+        if _desktop_bootstrap_enabled():
+            _sync_token_to_desktop_config()
         _validate_auth_token()
         _warn_auth()
     try:

@@ -38,6 +38,10 @@ def main() -> None:
         )
         raise SystemExit(1)
     os.environ.setdefault("KUMIHO_CLAUDE_DISCOVERY_USER_AGENT", CODEX_USER_AGENT)
+    # Identify the host: the shared launcher gates Claude-Desktop config
+    # writes (bootstrap + token sync) on this, so a codex-spawned run can
+    # never create or rewrite another host's config files.
+    os.environ["KUMIHO_CLAUDE_HOST"] = "codex"
     sys.argv[0] = str(launcher)
     runpy.run_path(str(launcher), run_name="__main__")
 

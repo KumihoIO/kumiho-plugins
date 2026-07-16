@@ -30,6 +30,16 @@ _WORKER = (
 
 
 def main() -> int:
+    if not _WORKER.exists():
+        print(
+            "[kumiho-codex] Ingest worker not found at "
+            f"{_WORKER} — the git hook requires a full kumiho-plugins "
+            "checkout (plugin snapshots do not include claude/). Clone the "
+            "repo and run this installer from there, or rely on "
+            "kumiho_code_capture from the agent instead.",
+            file=sys.stderr,
+        )
+        return 1
     repo = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     probe = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "--git-dir"],
