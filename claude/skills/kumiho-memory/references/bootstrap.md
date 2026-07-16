@@ -11,9 +11,12 @@ kumiho_get_revision_by_tag(
 )
 ```
 
-If that returns not-found, retry **once** with the space-qualified kref before
-concluding this is a first session — self-hosted CE servers do not resolve the
-space-less shorthand, only cloud does:
+If that returns not-found — **or any error that reads as the kref itself
+being unresolvable** (e.g. INVALID_ARGUMENT / FAILED_PRECONDITION on the
+space-less form; server versions may classify it differently) — retry
+**once** with the space-qualified kref before concluding this is a first
+session. Self-hosted CE servers do not resolve the space-less shorthand,
+only cloud does:
 
 ```text
 kumiho_get_revision_by_tag(
