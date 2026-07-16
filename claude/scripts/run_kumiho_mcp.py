@@ -912,8 +912,20 @@ def _configure_llm_fallback() -> None:
     if base_url and not _looks_like_placeholder(base_url):
         os.environ.setdefault("KUMIHO_LLM_PROVIDER", "openai")
         os.environ.setdefault("OPENAI_API_KEY", "kumiho-local-llm")
+        # A base URL alone is not enough: the openai-provider model default
+        # (gpt-4o) is almost never served by self-hosted endpoints, so the
+        # enrichment calls would still fail — say so instead of implying done.
+        model_hint = ""
+        if not (os.getenv("KUMIHO_LLM_MODEL", "") or "").strip():
+            model_hint = (
+                " KUMIHO_LLM_MODEL is not set, so the provider default "
+                "(gpt-4o) is used — self-hosted servers typically do not "
+                "serve it; set KUMIHO_LLM_MODEL to a model your endpoint "
+                "hosts (e.g. llama3.1)."
+            )
         print(
-            f"[kumiho-claude] Using self-provided LLM endpoint {base_url} for summarization.",
+            f"[kumiho-claude] Using self-provided LLM endpoint {base_url} for "
+            f"summarization.{model_hint}",
             file=sys.stderr,
         )
         return
@@ -921,28 +933,24 @@ def _configure_llm_fallback() -> None:
     os.environ.setdefault("KUMIHO_LLM_PROVIDER", "openai")
     os.environ.setdefault("OPENAI_API_KEY", "kumiho-claude-fallback")
     os.environ.setdefault("KUMIHO_LLM_BASE_URL", "http://127.0.0.1:9/v1")
-    # Name the concrete consequences and the remedy: the dead-port fallback is
-    # deliberate (fail-fast), but without this detail operators only discover
-    # the degradation by noticing edges_discovered:0 and reading this source.
-    remedy = (
-        "set KUMIHO_LLM_BASE_URL to an OpenAI-compatible endpoint "
-        "(e.g. a local Ollama server) or set KUMIHO_LLM_API_KEY / "
-        "OPENAI_API_KEY / ANTHROPIC_API_KEY"
+    # Keyless is the plugin's default posture, not a degraded mode: the core
+    # memory tools do their extraction in the in-loop agent and need no LLM.
+    # Only the optional enrichment paths call one, and the placeholder config
+    # above (dummy key + dead-port base URL) makes those calls fail fast
+    # instead of hanging on a missing endpoint.
+    mode = "CE mode" if _ce_mode_enabled() else "no API key detected"
+    print(
+        f"[kumiho-claude] Keyless operation ({mode}): core memory tools "
+        "(reflect, decompose, code_capture, code_why, recall) fully work "
+        "without an LLM. Optional LLM enrichment (automatic edge discovery, "
+        "consolidation summaries) is off — a fail-fast placeholder LLM config "
+        "is pinned (dummy OPENAI_API_KEY, dead-port KUMIHO_LLM_BASE_URL). To "
+        "opt in, set KUMIHO_LLM_BASE_URL to an OpenAI-compatible endpoint AND "
+        "KUMIHO_LLM_MODEL to a model it serves (e.g. a local Ollama with "
+        "llama3.1), or set KUMIHO_LLM_API_KEY / OPENAI_API_KEY / "
+        "ANTHROPIC_API_KEY.",
+        file=sys.stderr,
     )
-    if _ce_mode_enabled():
-        print(
-            "[kumiho-claude] CE mode has no LLM configured: edge discovery and "
-            "consolidation summaries are disabled (keyless tools like reflect, "
-            f"decompose, and code_capture still work). To enable them, {remedy}.",
-            file=sys.stderr,
-        )
-    else:
-        print(
-            "[kumiho-claude] No LLM API key detected. Using fail-fast local "
-            "fallback for summarization: edge discovery and consolidation "
-            f"summaries are disabled. To enable them, {remedy}.",
-            file=sys.stderr,
-        )
 
 
 def main() -> int:
