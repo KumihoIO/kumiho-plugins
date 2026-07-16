@@ -16,23 +16,34 @@ from pathlib import Path
 
 CODEX_USER_AGENT = "kumiho-codex/0.1.0"
 
-_LAUNCHER = (
+#: Resolution order: the monorepo-relative claude launcher (dev checkouts —
+#: always the freshest), then the vendored copy shipped inside this plugin
+#: (marketplace snapshots copy only the plugin directory, so ../claude does
+#: not exist there). test_launcher_parity.py guards the vendored copy
+#: against drifting from the canonical claude/scripts version.
+_LAUNCHER_CANDIDATES = (
     Path(__file__).resolve().parent.parent.parent
-    / "claude" / "scripts" / "run_kumiho_mcp.py"
+    / "claude" / "scripts" / "run_kumiho_mcp.py",
+    Path(__file__).resolve().parent / "_vendored_launcher.py",
 )
 
 
 def main() -> None:
-    if not _LAUNCHER.exists():
+    launcher = next((p for p in _LAUNCHER_CANDIDATES if p.exists()), None)
+    if launcher is None:
         print(
-            f"[kumiho-codex] Shared launcher not found at {_LAUNCHER} — "
-            "the codex integration requires the full kumiho-plugins checkout.",
+            "[kumiho-codex] No launcher found (looked for the monorepo "
+            f"claude launcher and the vendored copy): {_LAUNCHER_CANDIDATES}",
             file=sys.stderr,
         )
         raise SystemExit(1)
     os.environ.setdefault("KUMIHO_CLAUDE_DISCOVERY_USER_AGENT", CODEX_USER_AGENT)
-    sys.argv[0] = str(_LAUNCHER)
-    runpy.run_path(str(_LAUNCHER), run_name="__main__")
+    # Identify the host: the shared launcher gates Claude-Desktop config
+    # writes (bootstrap + token sync) on this, so a codex-spawned run can
+    # never create or rewrite another host's config files.
+    os.environ["KUMIHO_CLAUDE_HOST"] = "codex"
+    sys.argv[0] = str(launcher)
+    runpy.run_path(str(launcher), run_name="__main__")
 
 
 if __name__ == "__main__":
