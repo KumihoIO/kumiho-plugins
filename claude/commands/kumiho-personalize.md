@@ -20,8 +20,21 @@ preserved in revision history.
    )
    ```
 
-   If the item doesn't exist, tell the user: "No identity found yet — start
-   a new session and I'll walk you through the full onboarding." Then stop.
+   If that returns not-found, retry once with the space-qualified kref —
+   self-hosted CE servers do not resolve the space-less shorthand:
+
+   ```text
+   kumiho_get_revision_by_tag(
+     item_kref = "kref://CognitiveMemory/personal/agent.instruction",
+     tag       = "published"
+   )
+   ```
+
+   Use whichever kref resolved for **all** subsequent steps.
+
+   If the item doesn't exist at either kref, tell the user: "No identity
+   found yet — start a new session and I'll walk you through the full
+   onboarding." Then stop.
 
    Parse the metadata fields from the current revision so you can show the
    user what's currently set.
@@ -53,7 +66,7 @@ preserved in revision history.
 
    ```text
    kumiho_create_revision(
-     item_kref = "kref://CognitiveMemory/agent.instruction",
+     item_kref = "<item_kref that resolved in step 1>",
      metadata  = { ...existing_metadata, ...updated_fields }
    )
    ```

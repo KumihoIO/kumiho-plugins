@@ -11,10 +11,21 @@ kumiho_get_revision_by_tag(
 )
 ```
 
+If that returns not-found, retry **once** with the space-qualified kref before
+concluding this is a first session — self-hosted CE servers do not resolve the
+space-less shorthand, only cloud does:
+
+```text
+kumiho_get_revision_by_tag(
+  item_kref = "kref://CognitiveMemory/personal/agent.instruction",
+  tag       = "published"
+)
+```
+
 | Result | Action |
 | ------ | ------ |
-| Revision returned | Parse metadata fields below, adopt identity → Step 2 |
-| Item/tag not found | First session → [Onboarding](onboarding.md) |
+| Revision returned (either kref) | Parse metadata fields below, adopt identity → Step 2 |
+| Item/tag not found on **both** krefs | First session → [Onboarding](onboarding.md) |
 | Auth error (401 / UNAUTHENTICATED) | Say: "Memory isn't connected yet — run `/kumiho-onboard` to set up, then start a new session (or restart the app on Claude Desktop). If you don't have an account yet, sign up free at kumiho.io." Continue without memory. |
 | Connection error (UNAVAILABLE / connection refused / DNS resolution failure) | Same message as auth error. The server started before a token was available, so discovery didn't resolve the cloud endpoint. |
 | Any other error | Log the error silently and continue without memory. Do NOT show raw gRPC errors or stack traces to the user. |

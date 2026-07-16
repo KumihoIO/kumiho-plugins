@@ -26,14 +26,26 @@ Introduce yourself, explain persistent memory, proactively address privacy:
 
 Auto-detect timezone. Infer primary tools from usage over time.
 
-## Persist BEFORE Greeting (all three must succeed)
+## Persist BEFORE Greeting (all four must succeed)
 
-**A.** `kumiho_create_item(space_path="CognitiveMemory", item_name="agent", kind="instruction")`
+**0.** Ensure storage exists — fresh tenants (especially self-hosted CE) start
+completely empty, so provision before creating the item:
+- `kumiho_list_projects()` → if `CognitiveMemory` is missing, `kumiho_create_project(name="CognitiveMemory")`
+- `kumiho_get_spaces(project_name="CognitiveMemory")` → if `personal` is missing, `kumiho_create_space(project_name="CognitiveMemory", space_name="personal")`
 
-**B.** `kumiho_create_revision(item_kref="kref://CognitiveMemory/agent.instruction", metadata={agent_name, user_name, user_languages, communication_tone, verbosity, user_role, user_expertise_level, primary_tools:"", artifact_dir, timezone, interaction_rules, memory_behaviour:"balanced"})`
+**A.** `kumiho_create_item(space_path="CognitiveMemory/personal", item_name="agent", kind="instruction")`
+If this fails because the item **already exists** (a previous onboarding
+partially completed), that is fine — continue to B. Do not retry A in a loop.
 
-**C.** `kumiho_tag_revision(revision_kref="kref://CognitiveMemory/agent.instruction?r=1", tag="published")`
+**B.** `kumiho_create_revision(item_kref="kref://CognitiveMemory/personal/agent.instruction", metadata={agent_name, user_name, user_languages, communication_tone, verbosity, user_role, user_expertise_level, primary_tools:"", artifact_dir, timezone, interaction_rules, memory_behaviour:"balanced"})`
+**Capture the revision kref from the response** — do not assume `r=1`; on a
+recovery re-run the item may already carry earlier revisions.
 
-**D.** Only after A-C succeed, welcome personally. If any fail, retry — don't skip persistence.
+**C.** `kumiho_tag_revision(revision_kref="<revision kref returned by B>", tag="published")`
+Always tag the revision B just created, never a hardcoded revision number —
+tagging a stale revision would publish outdated preferences permanently.
+
+**D.** Only after 0 + A-C succeed, welcome personally. If a step fails for any
+other reason, retry that step — don't skip persistence.
 
 To update preferences later: new revision + move `published` tag. Never delete old revisions.
