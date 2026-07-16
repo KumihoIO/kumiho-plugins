@@ -18,6 +18,13 @@ ChatGPT ──OAuth (code+PKCE, DCR)──▶ gateway ──Bearer-checked rever
 > self-hosted CE backend. Paid/managed Cloud uses Kumiho's hosted connector —
 > you don't need this local tool for that.
 
+> **Merged ChatGPT×Codex app (July 2026):** the connector contract this
+> gateway implements (HTTPS + SSE/streamable-HTTP, OAuth 2.1 + PKCE + DCR,
+> RFC 9728/8414/7591 discovery) is unchanged in the merged desktop app's
+> developer mode. For the *coding* side of the merged app, the
+> [`codex/`](../codex/README.md) plugin covers local stdio memory; bundling
+> this connector into that plugin via `.app.json` is planned (Phase 3).
+
 ---
 
 ## Prerequisites

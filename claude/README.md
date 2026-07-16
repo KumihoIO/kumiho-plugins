@@ -3,8 +3,12 @@
 Persistent graph-native memory plugin for Claude. Runs a local Kumiho MCP
 server with `kumiho-memory` so Claude **remembers you across sessions**.
 
-Version: **0.16.0** | Requires: `kumiho>=0.10.7`, `kumiho-memory>=0.17.1`
+Version: **0.17.2** | Requires: `kumiho>=0.10.8`, `kumiho-memory>=0.17.3`
 (installed automatically into an isolated venv — nothing to `pip install`)
+
+Also consumable by **OpenAI Codex** — Codex reads this repo's marketplace
+manifest directly (verified on codex-cli 0.134.0); see
+[`codex/README.md`](../codex/README.md) for the Codex-tailored plugin.
 
 ## Quick install
 
@@ -214,7 +218,7 @@ gRPC endpoint via control-plane discovery, and launches the MCP server.
 Default package spec:
 
 ```text
-kumiho[mcp]>=0.10.7 kumiho-memory[all]>=0.17.1
+kumiho[mcp]>=0.10.8 kumiho-memory[all]>=0.17.3
 ```
 
 ## Self-hosted (Community Edition)

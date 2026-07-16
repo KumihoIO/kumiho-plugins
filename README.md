@@ -44,12 +44,30 @@ Full guide, hooks, Decision Memory, and Cloud-vs-CE details:
 | Store | managed Neo4j + Redis | **you run** Neo4j + Redis + embedding via [kumiho-server-community](https://github.com/KumihoIO/kumiho-server-community) |
 | Setup | `/kumiho-onboard <TOKEN>` | `/kumiho-onboard ce` |
 
-## Other hosts
+## Install for OpenAI Codex
 
-This repo also ships Kumiho memory integrations for other agents —
-[`codex/`](codex/) (OpenAI Codex CLI), [`gpt/`](gpt/), [`openclaw/`](openclaw/),
-[`n8n/`](n8n/), [`comfyui/`](comfyui/). The Claude Code plugin lives in
-[`claude/`](claude/).
+Since the July 2026 ChatGPT×Codex merger, Codex ships the same plugin
+model — and it reads this repo's marketplace manifest directly (verified
+on codex-cli 0.134.0):
+
+```bash
+codex plugin marketplace add KumihoIO/kumiho-plugins
+codex plugin add kumiho-memory@kumiho-plugins
+```
+
+Details, the Codex-tailored native plugin, and the legacy setup script:
+**[codex/README.md](codex/README.md)**.
+
+## All integrations
+
+| Host | Directory | What it is |
+|---|---|---|
+| **Claude Code / Desktop / Cowork** | [`claude/`](claude/README.md) | Full plugin: skills (two-reflex protocol), MCP server, hooks, Decision Memory, History Backfill |
+| **OpenAI Codex** (CLI · IDE · merged ChatGPT app) | [`codex/`](codex/README.md) | Codex plugin (`.codex-plugin` native + Claude-manifest compat) with Codex-tailored skill and vendored launcher |
+| **ChatGPT** (remote connector) | [`gpt/`](gpt/README.md) | `kumiho-gpt-connect` — OAuth 2.1 remote MCP connector gateway (developer mode / Apps SDK contract) |
+| **OpenClaw** | [`openclaw/`](openclaw/README.md) | Full code plugin (`@kumiho/openclaw-kumiho`) with tools + setup wizard |
+| **n8n** | [`n8n/`](n8n/README.md) | `n8n-nodes-kumiho` workflow nodes |
+| **ComfyUI** | [`comfyui/`](comfyui/README.md) | Custom nodes for asset/graph workflows |
 
 ## Links
 
