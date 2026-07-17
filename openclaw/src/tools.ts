@@ -6,6 +6,8 @@
  * operations.
  *
  * Tools:
+ *   memory_engage   - Two-reflex: recall + context building before responding
+ *   memory_reflect  - Two-reflex: buffer response + store captures with provenance
  *   memory_search   - Query memories by natural language
  *   memory_store    - Explicitly save a fact/decision/summary
  *   memory_get      - Retrieve a specific memory by kref
@@ -15,8 +17,15 @@
  *   memory_dream    - Trigger Dream State maintenance
  */
 
-import type { KumihoClient } from "./client.js";
-import type { ResolvedConfig, MemoryScope, MemoryType, MemoryEntry, KumihoLLMConfig } from "./types.js";
+import { isUnknownToolError, type KumihoClient } from "./client.js";
+import type {
+  ResolvedConfig,
+  MemoryScope,
+  MemoryType,
+  MemoryEntry,
+  KumihoLLMConfig,
+  ReflectCapture,
+} from "./types.js";
 import { creativeCaptureHandler, creativeJobStatusHandler, creativeRecallHandler } from "./creative.js";
 import { GEMINI_OPENAI_BASE_URL, normalizeConfiguredLlmProvider } from "./llm.js";
 
@@ -64,6 +73,106 @@ function resolveDreamModelConfig(
 // ---------------------------------------------------------------------------
 
 export const TOOL_SCHEMAS = {
+  memory_engage: {
+    description:
+      "Engage memory before responding — recall + context building in one call. " +
+      "Use when the topic might have deeper history than the auto-recalled context shows. " +
+      "Returns recalled memories and source_krefs; hold the source_krefs and pass them to " +
+      "memory_reflect so new captures get provenance edges. At most one engage per response — " +
+      "the server deduplicates identical queries within a short window (vary the query if " +
+      "results come back deduplicated). Never say \"I don't remember\" without engaging first.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        query: {
+          type: "string",
+          description: "Natural-language query derived from the user's current message",
+        },
+        limit: {
+          type: "number",
+          description: "Max results to return (default: 5)",
+        },
+        spacePath: {
+          type: "string",
+          description:
+            "Restrict search to a specific space path (e.g. CognitiveMemory/Skills for skill discovery)",
+        },
+        graphAugmented: {
+          type: "boolean",
+          description:
+            "Enable graph-augmented recall for indirect or chain-of-decision questions (default: false)",
+        },
+      },
+      required: ["query"],
+    },
+  },
+
+  memory_reflect: {
+    description:
+      "Reflect after responding — store structured captures (decisions, preferences, facts, " +
+      "corrections) with provenance links, and buffer a summary of your response for session " +
+      "continuity. Use after a substantive exchange; when the user says \"remember this\" you " +
+      "MUST capture it here. Use absolute dates in capture titles (\"on Mar 8\", not \"today\"). " +
+      "Pass sourceKrefs from memory_engage (or the auto-recalled memory krefs) to create " +
+      "DERIVED_FROM edges. Skip this tool entirely for trivial exchanges — the plugin already " +
+      "buffers your full response automatically.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        response: {
+          type: "string",
+          description:
+            "One-line summary of the response you are giving (must be non-empty)",
+        },
+        captures: {
+          type: "array",
+          description:
+            "Structured facts to store. Each becomes a graph memory with provenance links.",
+          items: {
+            type: "object",
+            properties: {
+              type: {
+                type: "string",
+                description:
+                  "Memory type: decision, preference, fact, correction, architecture, " +
+                  "implementation, synthesis, reflection, summary, skill",
+              },
+              title: {
+                type: "string",
+                description: "Short title with absolute dates (e.g. 'Chose gRPC on Mar 27')",
+              },
+              content: { type: "string", description: "Content to store" },
+              tags: {
+                type: "array",
+                items: { type: "string" },
+                description: "Classification tags",
+              },
+              eventDate: {
+                type: "string",
+                description:
+                  "ISO-8601 date the captured event actually happened (YYYY-MM-DD). " +
+                  "Omit when unknown; never guess.",
+              },
+            },
+            required: ["type", "title", "content"],
+          },
+        },
+        sourceKrefs: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Krefs from memory_engage results (or auto-recalled memories) — creates " +
+            "DERIVED_FROM edges to the memories that informed this response",
+        },
+        spaceHint: {
+          type: "string",
+          description: "Default space path for captures (e.g. personal/preferences)",
+        },
+      },
+      required: ["response"],
+    },
+  },
+
   memory_search: {
     description:
       "Search Kumiho long-term memory using a natural language query. " +
@@ -343,6 +452,8 @@ export interface ToolContext {
   currentSessionId: string | null;
   logger: { info: (msg: string) => void; error: (msg: string) => void };
   getToken?: () => Promise<string>;
+  /** Krefs recalled for the current turn — default provenance for memory_reflect. */
+  getSourceKrefs?: () => string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +467,114 @@ function formatMemoryEntry(entry: MemoryEntry): string {
   if (entry.kref) parts.push(`Kref: ${entry.kref}`);
   if (entry.score != null) parts.push(`Score: ${entry.score.toFixed(2)}`);
   return parts.join("\n");
+}
+
+export async function handleMemoryEngage(
+  ctx: ToolContext,
+  params: { query: string; limit?: number; spacePath?: string; graphAugmented?: boolean },
+): Promise<string> {
+  const limit = params.limit ?? ctx.config.topK;
+  const spacePaths = params.spacePath ? [params.spacePath] : undefined;
+
+  try {
+    const engaged = await ctx.client.memoryEngage({
+      query: params.query,
+      limit,
+      spacePaths,
+      minScore: ctx.config.searchThreshold,
+      graphAugmented: params.graphAugmented,
+    });
+
+    if (engaged.deduplicated) {
+      return (
+        "Deduplicated: an identical recall already ran for this response. " +
+        "Reuse the memories already in context, or vary the query."
+      );
+    }
+
+    if (engaged.results.length === 0) {
+      return "No memories found matching your query.";
+    }
+
+    const body = engaged.results.map(formatMemoryEntry).join("\n\n");
+    return (
+      `${body}\n\n` +
+      `source_krefs (pass to memory_reflect for provenance):\n` +
+      engaged.sourceKrefs.map((k) => `- ${k}`).join("\n")
+    );
+  } catch (err) {
+    if (!isUnknownToolError(err)) throw err;
+    // Pre-composite backend — same recall, no server-side context building.
+    return handleMemorySearch(ctx, { query: params.query, limit, spacePath: params.spacePath });
+  }
+}
+
+export async function handleMemoryReflect(
+  ctx: ToolContext,
+  params: {
+    response: string;
+    captures?: ReflectCapture[];
+    sourceKrefs?: string[];
+    spaceHint?: string;
+  },
+): Promise<string> {
+  const response = params.response?.trim();
+  if (!response) {
+    return "memory_reflect requires a non-empty response summary.";
+  }
+
+  const sessionId = ctx.currentSessionId;
+  if (!sessionId) {
+    return "No active session to reflect into.";
+  }
+
+  const sourceKrefs =
+    params.sourceKrefs?.length ? params.sourceKrefs : ctx.getSourceKrefs?.() ?? [];
+
+  try {
+    const result = await ctx.client.memoryReflect({
+      sessionId,
+      response,
+      captures: params.captures,
+      sourceKrefs,
+      spacePath: params.spaceHint,
+    });
+
+    const lines = [
+      `Reflected: response buffered, ${result.captures_stored} capture(s) stored.`,
+    ];
+    if (result.stored_krefs?.length) {
+      lines.push(...result.stored_krefs.map((k) => `- ${k}`));
+    }
+    if (result.edges_discovered > 0) {
+      lines.push(`Edges discovered: ${result.edges_discovered}`);
+    }
+    return lines.join("\n");
+  } catch (err) {
+    if (!isUnknownToolError(err)) throw err;
+
+    // Pre-composite backend — store each capture individually with the same
+    // DERIVED_FROM provenance; the response buffering is already handled by
+    // the plugin's auto-capture hook.
+    const captures = params.captures ?? [];
+    if (captures.length === 0) {
+      return "Backend does not support reflect and no captures were provided; nothing stored.";
+    }
+    const krefs: string[] = [];
+    for (const cap of captures) {
+      const stored = await ctx.client.memoryStore({
+        type: (cap.type as MemoryType) ?? "fact",
+        title: cap.title,
+        summary: cap.content,
+        assistantText: cap.content,
+        tags: cap.tags,
+        spaceHint: cap.spaceHint ?? params.spaceHint,
+        sourceRevisionKrefs: sourceKrefs.length ? sourceKrefs : undefined,
+      });
+      krefs.push(stored.revision_kref || stored.item_kref);
+    }
+    return `Stored ${krefs.length} capture(s):\n${krefs.map((k) => `- ${k}`).join("\n")}`;
+  }
 }
 
 export async function handleMemorySearch(
@@ -588,6 +807,10 @@ export const TOOL_HANDLERS: Record<
   ToolName,
   (ctx: ToolContext, params: Record<string, unknown>) => Promise<string>
 > = {
+  memory_engage: (ctx, p) =>
+    handleMemoryEngage(ctx, p as Parameters<typeof handleMemoryEngage>[1]),
+  memory_reflect: (ctx, p) =>
+    handleMemoryReflect(ctx, p as Parameters<typeof handleMemoryReflect>[1]),
   memory_search: (ctx, p) =>
     handleMemorySearch(ctx, p as Parameters<typeof handleMemorySearch>[1]),
   memory_store: (ctx, p) =>

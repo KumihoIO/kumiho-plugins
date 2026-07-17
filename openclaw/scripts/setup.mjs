@@ -8,7 +8,8 @@
  *  3. Ensure pip is available
  *  4. Upgrade pip + install kumiho[mcp] + kumiho-memory[all]
  *  5. Verify kumiho.mcp_server
- *  6. Authenticate with Kumiho Cloud
+ *  6. Choose backend (Kumiho Cloud or self-hosted CE), then authenticate
+ *     with Kumiho Cloud — skipped for CE, which runs tokenless
  *  7. Configure Dream State schedule
  *  8. Choose LLM model for Dream State   (cost-aware, lightweight recommended)
  *  9. Choose LLM model for Consolidation (cost-aware, smarter recommended)
@@ -22,6 +23,7 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createConnection } from "node:net";
 import readline from "node:readline";
 
 let detectOpenClawHostAuth;
@@ -272,6 +274,47 @@ const CONSOLIDATION_MODELS = [
 ];
 
 // ---------------------------------------------------------------------------
+// Backend selection (Kumiho Cloud vs self-hosted CE)
+// ---------------------------------------------------------------------------
+
+const CE_DEFAULT_ENDPOINT = "127.0.0.1:9190";
+const CE_DEFAULT_REDIS_URL = "redis://127.0.0.1:6379";
+
+const BACKENDS = [
+  {
+    key: "cloud",
+    label: "Kumiho Cloud",
+    note: "managed backend — sign in with your kumiho.io account",
+    recommended: true,
+  },
+  {
+    key: "ce",
+    label: "Self-hosted Community Edition (CE)",
+    note: "your own kumiho-server CE — tokenless, fully offline, no cloud login",
+  },
+];
+
+/** Best-effort TCP reachability probe for the CE gRPC endpoint. Never fatal. */
+function probeTcp(endpoint, timeoutMs = 1500) {
+  const [host, portRaw] = endpoint.split(":");
+  const port = parseInt(portRaw, 10);
+  if (!host || !port) return Promise.resolve(null); // unparseable — skip probe
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (up) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(up);
+    };
+    const socket = createConnection({ host, port });
+    socket.once("connect", () => done(true));
+    socket.once("error", () => done(false));
+    socket.setTimeout(timeoutMs, () => done(false));
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Cost info display
 // ---------------------------------------------------------------------------
 
@@ -441,7 +484,44 @@ if (verify.status !== 0 || !verify.stdout.includes("ok")) {
 }
 ok("kumiho.mcp_server verified.");
 
-// 6. Authenticate -------------------------------------------------------------
+// 6. Choose backend, then authenticate ----------------------------------------
+// A temporary readline asks the backend question and is closed BEFORE the
+// Python login runs — the auth CLI takes stdin with stdio: "inherit", and the
+// main wizard readline is only created after it finishes (see below).
+let ceSelection = null; // { endpoint, redisUrl } when CE is chosen
+{
+  const backendRl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const backendChoice = await selectOption(
+    backendRl,
+    "Which Kumiho backend should this OpenClaw use?",
+    BACKENDS,
+  );
+
+  if (backendChoice.key === "ce") {
+    console.log();
+    console.log(`  CE runs tokenless against your own kumiho-server deployment.`);
+    console.log(`  ${c.dim}Deploy it first: https://github.com/kumihoclouds/kumiho-server${c.reset}`);
+    console.log();
+    const ceEndpoint = await askFreeText(backendRl, "CE gRPC endpoint (host:port)", CE_DEFAULT_ENDPOINT);
+    const ceRedisUrl = await askFreeText(backendRl, "CE working-memory Redis URL", CE_DEFAULT_REDIS_URL);
+    ceSelection = { endpoint: ceEndpoint, redisUrl: ceRedisUrl };
+
+    const reachable = await probeTcp(ceEndpoint);
+    if (reachable === true) {
+      ok(`CE endpoint ${ceEndpoint} is reachable.`);
+    } else if (reachable === false) {
+      warn(
+        `CE endpoint ${ceEndpoint} is not reachable right now.\n` +
+        `  Setup will continue — start kumiho-server CE before using the plugin.`,
+      );
+    }
+  }
+  backendRl.close();
+}
+
+if (ceSelection) {
+  ok("CE backend selected — Kumiho Cloud login skipped (CE runs tokenless).");
+} else {
 const checkAuth = spawnSync(
   VENV_PYTHON,
   ["-c", `
@@ -494,6 +574,7 @@ if (authStatus.startsWith("logged_in:")) {
   } else {
     ok("Authenticated and credentials saved to ~/.kumiho/kumiho_authentication.json");
   }
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -570,6 +651,12 @@ if (forceExplicitMemoryProvider) {
 // Dream State LLM model ------------------------------------------------------
 console.log();
 console.log(`${c.bold}Step ${wizardStep++} / ${totalWizardSteps}  —  LLM Model for Dream State${c.reset}`);
+if (ceSelection) {
+  console.log();
+  console.log(`  ${c.dim}CE note: the keyless core memory tools (engage, reflect, recall) need no LLM.${c.reset}`);
+  console.log(`  ${c.dim}Dream State and consolidation summaries are the only features that call one —${c.reset}`);
+  console.log(`  ${c.dim}pick "Use agent default" to stay fully keyless, or a local endpoint via KUMIHO_LLM_BASE_URL.${c.reset}`);
+}
 if (selectedMemoryProvider) {
   console.log();
   console.log(`  ${c.bold}Dream State${c.reset} classifies and enriches existing memories.`);
@@ -784,6 +871,7 @@ ok(`Preferences saved to ~/.kumiho/preferences.json`);
 // Offer to update openclaw.json ----------------------------------------------
 const openClawPluginConfig = buildOpenClawPluginConfig({
   pythonPath: VENV_PYTHON,
+  ...(ceSelection ? { ce: ceSelection } : {}),
   ...(finalCron && scheduleChoice.key !== "off" ? { dreamStateSchedule: finalCron } : {}),
   dreamModelChoice,
   consolidationModelChoice,
@@ -875,6 +963,15 @@ const configLines = [
   { text: `      ${c.dim}// Optional: set userId if you want a fixed identity override${c.reset}`, comma: false },
   { text: `      ${c.dim}// "userId": "your-user-id",${c.reset}`, comma: false },
 ];
+if (ceSelection) {
+  configLines.push(
+    { text: `      ${c.cyan}"ce"${c.reset}: {`, comma: false },
+    { text: `        ${c.cyan}"enabled"${c.reset}: true,`, comma: false },
+    { text: `        ${c.cyan}"endpoint"${c.reset}: "${ceSelection.endpoint}",`, comma: false },
+    { text: `        ${c.cyan}"redisUrl"${c.reset}: "${ceSelection.redisUrl}"`, comma: false },
+    { text: `      }`, comma: true },
+  );
+}
 if (forceExplicitMemoryProvider) {
   configLines.push(
     { text: `      ${c.dim}// Direct memory-provider credentials live in ~/.kumiho/preferences.json${c.reset}`, comma: false },

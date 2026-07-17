@@ -232,3 +232,117 @@ describe("KumihoClient memory management wire contract", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Composite two-reflex tools — memoryEngage / memoryReflect
+// ---------------------------------------------------------------------------
+
+describe("KumihoClient memoryEngage", () => {
+  it("maps params to snake_case and results to MemoryEntry shape", async () => {
+    const call = vi.fn().mockResolvedValue({
+      context: "recalled context",
+      results: [
+        {
+          kref: "kref://memory/1?r=2",
+          type: "fact",
+          title: "Dark mode",
+          summary: "User prefers dark mode",
+          created_at: "2026-07-01T00:00:00Z",
+          score: 0.9,
+        },
+      ],
+      source_krefs: ["kref://memory/1?r=2"],
+      count: 1,
+    });
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+
+    const result = await client.memoryEngage({
+      query: "editor theme",
+      limit: 3,
+      spacePaths: ["CognitiveMemory/personal"],
+      minScore: 0.3,
+      graphAugmented: true,
+    });
+
+    expect(call).toHaveBeenCalledWith("kumiho_memory_engage", {
+      query: "editor theme",
+      limit: 3,
+      space_paths: ["CognitiveMemory/personal"],
+      memory_types: undefined,
+      min_score: 0.3,
+      graph_augmented: true,
+    });
+    expect(result.context).toBe("recalled context");
+    expect(result.sourceKrefs).toEqual(["kref://memory/1?r=2"]);
+    expect(result.results[0].title).toBe("Dark mode");
+    expect(result.results[0].timestamp).toBe("2026-07-01T00:00:00Z");
+    expect(result.deduplicated).toBe(false);
+  });
+
+  it("surfaces the server-side dedup flag", async () => {
+    const call = vi.fn().mockResolvedValue({
+      context: "",
+      results: [],
+      source_krefs: [],
+      deduplicated: true,
+    });
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+
+    const result = await client.memoryEngage({ query: "same query twice" });
+
+    expect(result.deduplicated).toBe(true);
+    expect(result.results).toEqual([]);
+  });
+});
+
+describe("KumihoClient memoryReflect", () => {
+  it("maps captures to snake_case and uses an extended timeout", async () => {
+    const call = vi.fn().mockResolvedValue({
+      buffered: true,
+      captures_stored: 1,
+      edges_discovered: 2,
+      stored_krefs: ["kref://capture/1?r=1"],
+    });
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+
+    const result = await client.memoryReflect({
+      sessionId: "personal:user-x:20260717:001",
+      response: "Summarized the CE rollout plan.",
+      captures: [
+        {
+          type: "decision",
+          title: "Chose CE endpoint default on Jul 17",
+          content: "Default CE endpoint is 127.0.0.1:9190",
+          tags: ["ce"],
+          eventDate: "2026-07-17",
+        },
+      ],
+      sourceKrefs: ["kref://memory/1?r=2"],
+      spacePath: "personal",
+    });
+
+    expect(call).toHaveBeenCalledWith(
+      "kumiho_memory_reflect",
+      {
+        session_id: "personal:user-x:20260717:001",
+        response: "Summarized the CE rollout plan.",
+        captures: [
+          {
+            type: "decision",
+            title: "Chose CE endpoint default on Jul 17",
+            content: "Default CE endpoint is 127.0.0.1:9190",
+            tags: ["ce"],
+            space_hint: undefined,
+            event_date: "2026-07-17",
+          },
+        ],
+        source_krefs: ["kref://memory/1?r=2"],
+        space_path: "personal",
+        discover_edges: undefined,
+      },
+      120_000,
+    );
+    expect(result.captures_stored).toBe(1);
+    expect(result.stored_krefs).toEqual(["kref://capture/1?r=1"]);
+  });
+});

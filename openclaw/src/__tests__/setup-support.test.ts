@@ -127,4 +127,28 @@ describe("setup-support", () => {
     });
     expect(pluginConfig).not.toHaveProperty("llm");
   });
+
+  it("includes CE routing in the plugin config when the wizard selects CE", () => {
+    const pluginConfig = buildOpenClawPluginConfig({
+      pythonPath: "/home/test/.kumiho/venv/bin/python",
+      ce: { endpoint: "127.0.0.1:9190", redisUrl: "redis://127.0.0.1:6379" },
+    });
+
+    expect(pluginConfig).toMatchObject({
+      mode: "local",
+      ce: {
+        enabled: true,
+        endpoint: "127.0.0.1:9190",
+        redisUrl: "redis://127.0.0.1:6379",
+      },
+    });
+  });
+
+  it("omits the ce block entirely for cloud setups", () => {
+    const pluginConfig = buildOpenClawPluginConfig({
+      pythonPath: "/home/test/.kumiho/venv/bin/python",
+    });
+
+    expect(pluginConfig).not.toHaveProperty("ce");
+  });
 });
