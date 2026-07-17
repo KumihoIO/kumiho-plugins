@@ -105,6 +105,15 @@ declare module "node:readline" {
   export function createInterface(options: { input: ReadableInput }): Interface;
 }
 
+declare module "node:url" {
+  export class URL {
+    constructor(input: string, base?: string);
+    hostname: string;
+    port: string;
+    protocol: string;
+  }
+}
+
 declare module "node:crypto" {
   export interface Hash {
     update(data: string | Buffer): Hash;

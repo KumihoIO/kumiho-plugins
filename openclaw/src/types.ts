@@ -31,6 +31,23 @@ export interface KumihoPrivacyConfig {
   storeTranscriptions?: boolean;
 }
 
+/**
+ * Self-hosted Community Edition (CE) settings — local mode only.
+ *
+ * When enabled, the spawned Python SDK talks to a local kumiho-server CE
+ * over gRPC instead of Kumiho Cloud: control-plane discovery and cloud auth
+ * are skipped, and working memory uses a local Redis. Mirrors the Claude
+ * plugin's KUMIHO_CLAUDE_MODE=ce behavior.
+ */
+export interface KumihoCEConfig {
+  /** Route the local Python SDK at a self-hosted CE server. Default: false. */
+  enabled?: boolean;
+  /** CE gRPC endpoint (host:port). Setting this alone also enables CE. Default: "127.0.0.1:9190". */
+  endpoint?: string;
+  /** Local Redis URL for CE working memory. Default: "redis://127.0.0.1:6379". */
+  redisUrl?: string;
+}
+
 /** Configuration for local mode (MCP stdio bridge). */
 export interface KumihoLocalConfig {
   /** Python executable path. Default: "python" */
@@ -119,6 +136,8 @@ export interface KumihoPluginConfig {
   llm?: KumihoLLMConfig;
   /** Privacy settings */
   privacy?: KumihoPrivacyConfig;
+  /** Self-hosted Community Edition settings (local mode only) */
+  ce?: KumihoCEConfig;
   /** Local mode settings (MCP stdio bridge) */
   local?: KumihoLocalConfig;
 }
@@ -155,6 +174,8 @@ export interface ResolvedConfig {
   /** LLM provider name corresponding to hostLlmApiKey ("anthropic" | "openai" | ""). */
   hostLlmProvider: string;
   privacy: Required<KumihoPrivacyConfig>;
+  /** Self-hosted CE routing. enabled=false in cloud mode and by default. */
+  ce: Required<KumihoCEConfig>;
   local: Required<Pick<KumihoLocalConfig, "pythonPath" | "command" | "timeout">> &
     Pick<KumihoLocalConfig, "args" | "env" | "cwd">;
 }
@@ -190,6 +211,44 @@ export interface MemoryRetrieveResult {
   item_krefs: string[];
   revision_krefs: string[];
   spaces_used: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Composite two-reflex types (engage / reflect)
+// ---------------------------------------------------------------------------
+
+/** Result of kumiho_memory_engage — recall + context building in one call. */
+export interface EngageResult {
+  /** Pre-built context string from the backend (title + summary lines). */
+  context: string;
+  /** Recalled memories mapped into MemoryEntry shape. */
+  results: MemoryEntry[];
+  /** Krefs of the recalled memories — pass to reflect for DERIVED_FROM edges. */
+  sourceKrefs: string[];
+  /** True when the server deduplicated an identical recall within its window. */
+  deduplicated?: boolean;
+}
+
+/** A structured capture stored via kumiho_memory_reflect. */
+export interface ReflectCapture {
+  /** decision, preference, fact, correction, architecture, implementation, synthesis, reflection, summary, skill */
+  type: string;
+  /** Short title with absolute dates (e.g. "Chose gRPC on Mar 27"). */
+  title: string;
+  content: string;
+  tags?: string[];
+  /** Space path hint for this capture. Overrides the call-level spacePath. */
+  spaceHint?: string;
+  /** ISO-8601 date the captured event actually happened (valid-time). */
+  eventDate?: string;
+}
+
+/** Result of kumiho_memory_reflect. */
+export interface ReflectResult {
+  buffered: boolean;
+  captures_stored: number;
+  edges_discovered: number;
+  stored_krefs: string[];
 }
 
 // ---------------------------------------------------------------------------

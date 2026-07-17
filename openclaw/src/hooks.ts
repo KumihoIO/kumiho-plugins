@@ -11,7 +11,7 @@
  * to the cloud, and PII is redacted before upload.
  */
 
-import type { KumihoClient } from "./client.js";
+import { isUnknownToolError, type KumihoClient } from "./client.js";
 import type { PIIRedactor } from "./privacy.js";
 import type { ArtifactManager } from "./artifacts.js";
 import type { ResolvedConfig, MemoryEntry, ChannelInfo, ChatMessage } from "./types.js";
@@ -37,7 +37,23 @@ export interface HookState {
    * agent_end (while the user reads the response). Consumed instantly on the
    * next before_prompt_build with zero added latency.
    */
-  prefetchedRecall: { contextInjection: string; memories: MemoryEntry[] } | null;
+  prefetchedRecall: {
+    contextInjection: string;
+    memories: MemoryEntry[];
+    sourceKrefs: string[];
+  } | null;
+  /**
+   * Krefs of the memories recalled for the current turn. Passed to
+   * kumiho_memory_reflect as source_krefs so captures get DERIVED_FROM
+   * provenance edges back to the memories that informed the response.
+   */
+  sourceKrefs: string[];
+  /**
+   * Set when the backend rejected kumiho_memory_engage as an unknown tool
+   * (pre-composite kumiho-memory). Recall falls back to memoryRetrieve for
+   * the rest of the session instead of re-probing every turn.
+   */
+  engageUnsupported: boolean;
 }
 
 export function createHookState(): HookState {
@@ -50,7 +66,74 @@ export function createHookState(): HookState {
     identityStoredFor: new Set(),
     prefetchedRecall: null,
     memoryInstructionsInjected: false,
+    sourceKrefs: [],
+    engageUnsupported: false,
   };
+}
+
+/**
+ * Recall memories for a query — kumiho_memory_engage when available,
+ * kumiho_memory_retrieve otherwise.
+ *
+ * Engage is the composite two-reflex primitive: one call does recall +
+ * context building and returns source_krefs for provenance, and the server
+ * deduplicates identical recalls within a window so the plugin's automatic
+ * recall and the agent's explicit memory_engage don't do double work.
+ *
+ * Falls back to memoryRetrieve when:
+ *   - the backend predates the composite tools (unknown-tool error; the
+ *     failure is remembered on state so it's probed once per session), or
+ *   - a non-default project is configured — the backend composite tools are
+ *     fixed to the server's default project (CognitiveMemory).
+ */
+async function recallForQuery(
+  client: KumihoClient,
+  config: ResolvedConfig,
+  query: string,
+  state?: Pick<HookState, "engageUnsupported">,
+  spacePaths?: string[],
+): Promise<MemoryEntry[]> {
+  const engageFn = (client as Partial<KumihoClient>).memoryEngage;
+  const canEngage =
+    typeof engageFn === "function" &&
+    config.project === "CognitiveMemory" &&
+    !state?.engageUnsupported;
+
+  if (canEngage) {
+    try {
+      const engaged = await client.memoryEngage({
+        query,
+        limit: config.topK,
+        spacePaths,
+        minScore: config.searchThreshold,
+      });
+      // Deduplicated = an identical recall already consumed the server's
+      // dedup window (e.g. the per-turn double prefetch fires the same
+      // query twice) and came back EMPTY. Fall through to retrieve — it has
+      // no dedup guard — so a dedup hit never overwrites a good prefetched
+      // result with an empty one.
+      if (!engaged.deduplicated) {
+        return engaged.results;
+      }
+    } catch (err) {
+      // Latch the unsupported flag only for unknown-tool errors, but degrade
+      // to retrieve on ANY engage failure — auto-recall must never break the
+      // conversation because a composite tool misbehaved (e.g. a cloud
+      // backend whose error body matches none of the unknown-tool phrases).
+      if (isUnknownToolError(err) && state) state.engageUnsupported = true;
+    }
+  }
+
+  return client.memoryRetrieve({
+    query,
+    limit: config.topK,
+    spacePaths,
+  });
+}
+
+/** Krefs of the recalled memories, for reflect's source_krefs provenance. */
+function toSourceKrefs(memories: MemoryEntry[]): string[] {
+  return memories.map((m) => m.kref).filter(Boolean);
 }
 
 /**
@@ -91,12 +174,17 @@ export async function prefetchMemories(
   client: KumihoClient,
   config: ResolvedConfig,
   query: string,
-): Promise<{ contextInjection: string; memories: MemoryEntry[] }> {
-  const memories = await client.memoryRetrieve({ query, limit: config.topK });
+  state?: Pick<HookState, "engageUnsupported">,
+): Promise<{ contextInjection: string; memories: MemoryEntry[]; sourceKrefs: string[] }> {
+  const memories = await recallForQuery(client, config, query, state);
   const relevant = memories.filter(
     (m) => m.score == null || m.score >= config.searchThreshold,
   );
-  return { contextInjection: formatRecalledMemories(relevant), memories: relevant };
+  return {
+    contextInjection: formatRecalledMemories(relevant),
+    memories: relevant,
+    sourceKrefs: toSourceKrefs(relevant),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -119,11 +207,16 @@ export async function prefetchMemories(
  */
 const MEMORY_AGENT_INSTRUCTIONS = [
   "<kumiho_instructions>",
-  "You have Kumiho long-term memory — a persistent graph of the user's preferences, decisions, facts, and past work across conversations.",
+  "You have Kumiho long-term memory — a persistent graph of the user's preferences, decisions, facts, and past work across conversations. Relevant memories are auto-recalled into <kumiho_memory> each turn.",
   "",
-  "Use `memory_search` proactively when the user asks about past decisions, preferences, prior work, or anything discussed before — never say \"I don't remember\" without searching first. Use `memory_store` when the user states a preference, decision, or correction, or when you produce a significant deliverable. Weave recalled context naturally without narrating the lookup. Use absolute dates when storing (\"on Mar 8\", not \"today\").",
+  "TWO REFLEXES:",
+  "- ENGAGE (before responding): when the topic might have deeper history than the auto-recalled context shows, call `memory_engage` ONCE with a query derived from the user's current message. Never say \"I don't remember\" without engaging first. Hold the returned source_krefs for reflect. At most one engage per response — the server deduplicates identical queries.",
+  "- REFLECT (after responding): after a substantive exchange, call `memory_reflect` with a one-line summary of your response and structured captures (decisions, preferences, facts, corrections). Pass source_krefs from engage or from the auto-recalled memories so provenance edges link the capture to what informed it. Use absolute dates in titles (\"on Mar 8\", not \"today\"). Skip captures for trivial exchanges.",
   "",
-  "Skill Discovery: When you need specialized behavioral guidance (creative output tracking, graph traversal, privacy rules, session management), search for skills: `memory_search` with query about what you need and spacePath \"CognitiveMemory/Skills\". Cache discovered skills in your working context for the session.",
+  "When the user says \"remember this\", \"keep this in mind\", or \"note that\", you MUST capture it via `memory_reflect`.",
+  "Weave recalled context naturally without narrating the lookup — no \"let me check my memory\".",
+  "",
+  "Skill Discovery: When you need specialized behavioral guidance (creative output tracking, graph traversal, privacy rules, session management), search for skills: `memory_engage` with a query about what you need and spacePath \"CognitiveMemory/Skills\". Cache discovered skills in your working context for the session.",
   "</kumiho_instructions>",
 ].join("\n");
 
@@ -291,11 +384,7 @@ export async function autoRecall(
       ...channelMeta,
       timestamp: new Date().toISOString(),
     }),
-    client.memoryRetrieve({
-      query: recallQuery,
-      limit: config.topK,
-      spacePaths,
-    }),
+    recallForQuery(client, config, recallQuery, state, spacePaths),
   ]);
 
   // Filter by similarity threshold
@@ -304,6 +393,7 @@ export async function autoRecall(
   );
 
   state.recalledMemories = relevant;
+  state.sourceKrefs = toSourceKrefs(relevant);
 
   // Inject memory instructions on the first turn only
   const includeInstructions = !state.memoryInstructionsInjected;

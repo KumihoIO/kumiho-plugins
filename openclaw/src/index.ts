@@ -21,6 +21,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { execFile } from "node:child_process";
+import { URL } from "node:url";
 
 // ---------------------------------------------------------------------------
 // Preferences loader — reads ~/.kumiho/preferences.json written by kumiho-setup
@@ -259,7 +260,7 @@ async function getAuthToken(): Promise<string> {
   return "";
 }
 
-import { KumihoClient, KumihoApiError, createTransport, McpTransport, type Transport } from "./client.js";
+import { KumihoClient, KumihoApiError, ceChildEnv, createTransport, McpTransport, type Transport } from "./client.js";
 import { McpBridgeError, type McpToolDefinition } from "./mcp-bridge.js";
 import { PIIRedactor } from "./privacy.js";
 import { ArtifactManager } from "./artifacts.js";
@@ -308,6 +309,7 @@ export type {
   KumihoPluginConfig,
   ResolvedConfig,
   KumihoLocalConfig,
+  KumihoCEConfig,
   MemoryEntry,
   MemoryType,
   MemoryScope,
@@ -319,11 +321,57 @@ export type {
   CreativeCaptureParams,
   CreativeCaptureResult,
   CreativeItem,
+  EngageResult,
+  ReflectCapture,
+  ReflectResult,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Config resolution
 // ---------------------------------------------------------------------------
+
+// Self-hosted Community Edition (CE) defaults. Mirrors the Claude plugin's
+// CE backend: the Python SDK routes to a loopback CE server when no auth
+// token is set, with KUMIHO_LOCAL_SERVER_ENDPOINT overriding the gRPC target
+// and a local Redis URL backing CE working memory.
+const CE_DEFAULT_ENDPOINT = "127.0.0.1:9190";
+const CE_DEFAULT_REDIS_URL = "redis://127.0.0.1:6379";
+const CE_MODE_VALUES = new Set(["ce", "community", "self-hosted", "self_hosted", "selfhosted"]);
+
+/**
+ * Whether the user asked for CE routing — explicit config flag/endpoint, or
+ * the plugin-specific env opt-ins. Shared by resolveConfig and the cloud-mode
+ * "ce is ignored" warning so no opt-in form is silently dropped.
+ */
+function ceOptInRequested(raw: KumihoPluginConfig): boolean {
+  const ceModeEnv = (process.env.KUMIHO_OPENCLAW_MODE ?? "").trim().toLowerCase();
+  const ceEndpointEnv = (process.env.KUMIHO_OPENCLAW_SERVER_ENDPOINT ?? "").trim();
+  return (
+    raw.ce?.enabled ??
+    (Boolean((raw.ce?.endpoint ?? "").trim()) ||
+      CE_MODE_VALUES.has(ceModeEnv) ||
+      Boolean(ceEndpointEnv))
+  );
+}
+
+/** Normalize "http://host:port/path" or "host:port" to "host:port" for gRPC. */
+function normalizeCeEndpoint(raw: string | undefined): string {
+  const target = (raw ?? "").trim();
+  if (!target) return "";
+  if (target.includes("://")) {
+    try {
+      const url = new URL(target);
+      if (!url.hostname) return "";
+      const port =
+        url.port ||
+        (url.protocol === "http:" || url.protocol === "grpc:" ? "80" : "443");
+      return `${url.hostname}:${port}`;
+    } catch {
+      return "";
+    }
+  }
+  return target.split("/")[0];
+}
 
 function resolveConfig(
   raw: KumihoPluginConfig,
@@ -369,6 +417,29 @@ function resolveConfig(
   const mergedConsolidationModel = mergeLlmConfig(prefs.consolidation?.model, raw.consolidationModel);
   const mergedSharedLlm = mergeLlmConfig(prefs.llm, raw.llm);
 
+  // Self-hosted CE (local mode only). Opt-in via config, or via env for
+  // parity with the Claude plugin: KUMIHO_OPENCLAW_MODE=ce (or community /
+  // self-hosted), or setting KUMIHO_OPENCLAW_SERVER_ENDPOINT alone.
+  //
+  // The SDK-generic KUMIHO_LOCAL_SERVER_ENDPOINT is honored as the endpoint
+  // VALUE once CE is enabled, but deliberately does NOT enable CE by itself:
+  // other tools on the same machine (e.g. the Claude plugin's CE setup)
+  // export it, and a leftover shell export must not silently reroute a
+  // cloud-backed OpenClaw away from the user's cloud memory.
+  const ceRequested = ceOptInRequested(raw);
+  const ce = {
+    enabled: mode === "local" && ceRequested,
+    endpoint:
+      normalizeCeEndpoint(raw.ce?.endpoint) ||
+      normalizeCeEndpoint(process.env.KUMIHO_OPENCLAW_SERVER_ENDPOINT) ||
+      normalizeCeEndpoint(process.env.KUMIHO_LOCAL_SERVER_ENDPOINT) ||
+      CE_DEFAULT_ENDPOINT,
+    redisUrl:
+      (raw.ce?.redisUrl ?? "").trim() ||
+      (process.env.UPSTASH_REDIS_URL ?? "").trim() ||
+      CE_DEFAULT_REDIS_URL,
+  };
+
   return {
     mode,
     apiKey,
@@ -398,6 +469,7 @@ function resolveConfig(
       localArtifacts: raw.privacy?.localArtifacts ?? true,
       storeTranscriptions: raw.privacy?.storeTranscriptions ?? true,
     },
+    ce,
     local: {
       pythonPath: raw.local?.pythonPath ?? "python",
       command: raw.local?.command ?? "kumiho-mcp",
@@ -830,15 +902,45 @@ async function ensureRuntimeStarted(
       if (startPromise === null) {
         startPromise = (async () => {
           if (state.transport instanceof McpTransport) {
-            try {
-              const authToken = await getAuthToken();
-              state.transport.addEnv({ KUMIHO_AUTH_TOKEN: authToken });
-            } catch (err) {
-              logger.warn(`Could not inject KUMIHO_AUTH_TOKEN: ${(err as Error).message}`);
+            if (state.config.ce.enabled) {
+              // CE runs tokenless against the self-hosted server — injecting
+              // a cached cloud token here would flip the Python SDK back to
+              // control-plane discovery. The CE env (endpoint, empty token,
+              // local Redis) was applied in the McpTransport constructor.
+              logger.info(
+                `Kumiho CE mode: routing to self-hosted endpoint ${state.config.ce.endpoint} ` +
+                  "(control-plane discovery and cloud auth skipped)",
+              );
+            } else {
+              try {
+                const authToken = await getAuthToken();
+                state.transport.addEnv({ KUMIHO_AUTH_TOKEN: authToken });
+              } catch (err) {
+                logger.warn(`Could not inject KUMIHO_AUTH_TOKEN: ${(err as Error).message}`);
+              }
             }
 
             if (state.config.local.env && Object.keys(state.config.local.env).length > 0) {
               state.transport.addEnv(state.config.local.env);
+              if (state.config.ce.enabled) {
+                // Re-assert CE routing after user local.env (addEnv is
+                // last-write-wins): a leftover cloud token or endpoint in
+                // local.env would flip the Python SDK back to control-plane
+                // discovery, silently defeating CE mode.
+                const ceEnv = ceChildEnv(state.config.ce);
+                const conflicts = Object.keys(ceEnv).filter(
+                  (key) =>
+                    key in state.config.local.env! &&
+                    state.config.local.env![key] !== ceEnv[key],
+                );
+                if (conflicts.length > 0) {
+                  logger.warn(
+                    `Kumiho CE mode: overriding local.env ${conflicts.join(", ")} ` +
+                      "to keep CE routing (remove them from local.env to silence this)",
+                  );
+                }
+                state.transport.addEnv(ceEnv);
+              }
             }
           }
 
@@ -985,8 +1087,18 @@ export default {
     artifacts = new ArtifactManager(config.artifactDir);
     hookState = createHookState();
 
+    if (config.mode === "cloud" && ceOptInRequested(rawConfig)) {
+      api.logger.warn(
+        "Kumiho: CE routing was requested (ce config, KUMIHO_OPENCLAW_MODE, or " +
+          "KUMIHO_OPENCLAW_SERVER_ENDPOINT) but is ignored in cloud mode — CE applies to " +
+          'the local Python SDK only. Set mode: "local" to use a self-hosted CE server; ' +
+          "until then conversations continue flowing to Kumiho Cloud.",
+      );
+    }
+
     api.logger.info(
-      `Kumiho memory initialized (mode: ${config.mode}, project: ${config.project}, ` +
+      `Kumiho memory initialized (mode: ${config.mode}${config.ce.enabled ? ` + CE @ ${config.ce.endpoint}` : ""}, ` +
+        `project: ${config.project}, ` +
         `autoRecall: ${config.autoRecall}, autoCapture: ${config.autoCapture})`,
     );
 
@@ -1002,6 +1114,7 @@ export default {
       },
       logger: api.logger,
       getToken: () => getAuthToken(),
+      getSourceKrefs: () => hookState?.sourceKrefs ?? [],
     };
 
     // Custom TypeScript tool names (these have value-add logic and take priority)
@@ -1485,12 +1598,13 @@ export default {
           // Stale-while-revalidate: use prefetched result instantly (0ms latency),
           // then kick off a fresh background prefetch for the next turn.
           recallResult = state.hookState.prefetchedRecall;
+          state.hookState.sourceKrefs = state.hookState.prefetchedRecall.sourceKrefs;
           state.hookState.prefetchedRecall = null;
           // Store the user message and update state — prefetchMemories is read-only
           // and does not do this, so without this call every turn after the first
           // would silently drop the user message from the session buffer.
           await recordUserTurn(state.client, state.config, state.hookState, message);
-          void prefetchMemories(state.client, state.config, message)
+          void prefetchMemories(state.client, state.config, message, state.hookState)
             .then((r) => { state.hookState.prefetchedRecall = r; })
             .catch(() => {});
         } else {
@@ -1543,10 +1657,18 @@ export default {
         );
 
         // Prefetch memories for the next turn while the user reads this response.
-        // Result is stored in prefetchedRecall and consumed instantly by before_prompt_build.
-        if (config?.autoRecall && state.hookState.lastUserMessage) {
+        // Result is stored in prefetchedRecall and consumed instantly by
+        // before_prompt_build. On warm turns before_prompt_build already fired a
+        // refresh prefetch with this same query — skip the duplicate here when
+        // its result is cached, so the identical query doesn't hit the backend's
+        // engage dedup window twice per turn.
+        if (
+          config?.autoRecall &&
+          state.hookState.lastUserMessage &&
+          !state.hookState.prefetchedRecall
+        ) {
           const queryForNext = state.hookState.lastUserMessage;
-          void prefetchMemories(state.client, state.config, queryForNext)
+          void prefetchMemories(state.client, state.config, queryForNext, state.hookState)
             .then((r) => { state.hookState.prefetchedRecall = r; })
             .catch(() => {});
         }
@@ -1678,6 +1800,20 @@ export function createKumihoMemory(rawConfig: KumihoPluginConfig = {}) {
         query,
         limit: limit ?? cfg.topK,
       });
+    },
+
+    /** Engage memory before responding — recall + context + source krefs. */
+    async engage(query: string, limit?: number) {
+      return kumihoClient.memoryEngage({
+        query,
+        limit: limit ?? cfg.topK,
+        minScore: cfg.searchThreshold,
+      });
+    },
+
+    /** Reflect after responding — buffer response + store captures with provenance. */
+    async reflect(params: Parameters<typeof kumihoClient.memoryReflect>[0]) {
+      return kumihoClient.memoryReflect(params);
     },
 
     /** Store a fact/decision/summary in long-term memory. */

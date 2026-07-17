@@ -2,8 +2,8 @@
   "id": "openclaw-kumiho",
   "kind": "memory",
   "pythonDependencies": {
-    "kumiho": ">=0.9.16",
-    "kumiho-memory": ">=0.3.16"
+    "kumiho": ">=0.10.8",
+    "kumiho-memory": ">=0.17.3"
   },
   "uiHints": {
     "mode": {
@@ -102,6 +102,11 @@
       "label": "Privacy Settings",
       "advanced": true,
       "help": "Fine-grained control over what data reaches Kumiho Cloud."
+    },
+    "ce": {
+      "label": "Self-hosted CE",
+      "advanced": true,
+      "help": "Route the local Python SDK at a self-hosted kumiho-server Community Edition (tokenless gRPC + local Redis) instead of Kumiho Cloud. Local mode only."
     },
     "local": {
       "label": "Local Mode Settings",
@@ -250,6 +255,27 @@
             "type": "boolean",
             "default": true,
             "description": "Store voice/image transcription text in Kumiho"
+          }
+        }
+      },
+      "ce": {
+        "type": "object",
+        "description": "Self-hosted Community Edition (local mode only): route the Python SDK at a local kumiho-server CE instead of Kumiho Cloud. Cloud auth and control-plane discovery are skipped; working memory uses a local Redis.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable CE routing. Also enabled implicitly by setting ce.endpoint, KUMIHO_OPENCLAW_MODE=ce, or KUMIHO_OPENCLAW_SERVER_ENDPOINT."
+          },
+          "endpoint": {
+            "type": "string",
+            "default": "127.0.0.1:9190",
+            "description": "CE gRPC endpoint (host:port). Setting this alone enables CE mode."
+          },
+          "redisUrl": {
+            "type": "string",
+            "default": "redis://127.0.0.1:6379",
+            "description": "Local Redis URL for CE working memory."
           }
         }
       },

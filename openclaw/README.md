@@ -15,7 +15,7 @@ Your agent forgets everything between sessions. This plugin fixes that — it wa
 │    ├── Auto-Recall / Auto-Capture hooks                 │
 │    ├── Idle consolidation timer                         │
 │    ├── Dream State scheduler                            │
-│    ├── 10 agent tools                                   │
+│    ├── 12 agent tools                                   │
 │    └── McpBridge ──stdin/stdout──► kumiho-mcp (Python)  │
 │                                       ├── kumiho-memory │
 │                                       ├── Redis buffer  │
@@ -24,7 +24,7 @@ Your agent forgets everything between sessions. This plugin fixes that — it wa
 └─────────────────────────────────────────────────────────┘
 ```
 
-> **Cloud mode** is also available — HTTPS calls to Kumiho Cloud, no Python process needed. See [Configuration](#configuration).
+> **Cloud mode** is also available — HTTPS calls to Kumiho Cloud, no Python process needed. And local mode can target a **self-hosted Community Edition (CE)** server instead of Kumiho Cloud — fully offline, tokenless. See [Configuration](#configuration).
 
 ## Quick Start
 
@@ -68,14 +68,16 @@ The setup wizard now includes GPT-5-sized OpenAI presets for Dream State and Con
 | Feature | Description |
 | ------- | ----------- |
 | **Auto-Recall** | Relevant memories injected into context before each agent response |
+| **Two-Reflex Memory** | `memory_engage` / `memory_reflect` — same engage/reflect model as the Claude plugin, with DERIVED_FROM provenance edges |
 | **Zero-Latency Recall** | Stale-while-revalidate prefetch — recall adds 0ms on turn 2+ |
 | **Auto-Capture** | Facts extracted and stored after each agent response |
+| **Self-hosted CE** | Local mode can target a kumiho-server Community Edition — tokenless, fully offline |
 | **Two-Track Consolidation** | Session flushed to graph on message threshold *or* idle timeout |
 | **Creative Memory** | Track creative outputs (docs, code, plans) with full graph lineage |
 | **Cross-Channel** | Memories follow the user across WhatsApp, Slack, Telegram, etc. |
 | **Privacy-First** | Raw conversations and media stay local; only summaries go to graph DB |
 | **PII Redaction** | Emails, phone numbers, SSNs redacted before upload |
-| **10 Agent Tools** | Explicit memory operations the AI can invoke |
+| **12 Agent Tools** | Explicit memory operations the AI can invoke |
 | **Dream State** | Scheduled memory maintenance and edge discovery |
 | **Local Artifacts** | Conversation logs and media stored on your filesystem |
 | **Local-first** | Everything runs on your machine — no server to deploy |
@@ -192,6 +194,34 @@ If `kumiho-mcp` is in a virtualenv or a non-default Python path:
 }
 ```
 
+### Local Mode — Self-hosted Community Edition (CE)
+
+Run everything offline against a [kumiho-server CE](https://github.com/kumihoclouds/kumiho-server) deployment (Neo4j + Redis + embedding model bundled). CE runs tokenless — cloud auth and control-plane discovery are skipped entirely:
+
+```json5
+{
+  "plugins": {
+    "entries": {
+      "openclaw-kumiho": {
+        "enabled": true,
+        "config": {
+          "userId": "your-user-id",
+          "ce": {
+            "enabled": true,
+            "endpoint": "127.0.0.1:9190",          // CE gRPC (default)
+            "redisUrl": "redis://127.0.0.1:6379"   // CE working memory (default)
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+The `kumiho-setup` wizard asks **Cloud vs CE** up front — choosing CE skips the cloud login entirely and writes this `ce` block into openclaw.json for you. Setting `ce.endpoint` alone also enables CE, and env-var opt-in works too (parity with the Claude plugin): `KUMIHO_OPENCLAW_MODE=ce`, or just set `KUMIHO_OPENCLAW_SERVER_ENDPOINT=host:9190`. The SDK-generic `KUMIHO_LOCAL_SERVER_ENDPOINT` is honored as the endpoint *value* once CE is enabled, but deliberately does **not** enable CE by itself — a leftover export from another tool's CE setup must not silently reroute a cloud-backed gateway.
+
+> CE applies to local mode only — it routes the spawned Python SDK at your server. Deploy kumiho-server CE first; point summarization at a local LLM with `KUMIHO_LLM_BASE_URL` (e.g. Ollama) or the keyless core tools work without one.
+
 ### Cloud Mode
 
 Skip `kumiho-setup` and use an API key instead:
@@ -218,6 +248,10 @@ Skip `kumiho-setup` and use an API key instead:
 ```bash
 # Cloud mode
 export KUMIHO_API_TOKEN="kh_live_abc123..."
+
+# Self-hosted CE (local mode) — either enables CE without touching openclaw.json
+export KUMIHO_OPENCLAW_MODE=ce
+export KUMIHO_OPENCLAW_SERVER_ENDPOINT=127.0.0.1:9190
 
 # LLM keys — set by OpenClaw during onboarding; forwarded to the Python process automatically
 
@@ -268,6 +302,13 @@ export KUMIHO_MEMORY_ARTIFACT_ROOT="~/.kumiho/artifacts"
             "storeTranscriptions": true  // Upload voice/image transcriptions
           },
 
+          // Self-hosted Community Edition (local mode only)
+          "ce": {
+            "enabled": false,                      // Route Python SDK at a local CE server
+            "endpoint": "127.0.0.1:9190",          // CE gRPC endpoint
+            "redisUrl": "redis://127.0.0.1:6379"   // CE working memory Redis
+          },
+
           // Dream State (auto-loaded from ~/.kumiho/preferences.json if omitted)
           "dreamStateSchedule": "0 3 * * *",   // Cron — "off" to disable
           "dreamStateModel": { "provider": "openai", "model": "gpt-5-mini" },
@@ -297,10 +338,12 @@ export KUMIHO_MEMORY_ARTIFACT_ROOT="~/.kumiho/artifacts"
 
 ## Agent Tools
 
-The plugin exposes 10 tools the AI can invoke during conversations:
+The plugin exposes 12 tools the AI can invoke during conversations:
 
 | Tool | Description |
 |------|-------------|
+| `memory_engage` | Two-reflex recall: memories + context + `source_krefs` in one call, before responding |
+| `memory_reflect` | Two-reflex capture: store decisions/preferences/facts with DERIVED_FROM provenance, after responding |
 | `memory_search` | Query memories by natural language |
 | `memory_store` | Explicitly save a fact, decision, or summary |
 | `memory_get` | Retrieve a specific memory by kref |
@@ -312,14 +355,21 @@ The plugin exposes 10 tools the AI can invoke during conversations:
 | `creative_job_status` | Check the status and resulting krefs of an async creative capture |
 | `creative_recall` | List creative outputs for a project space |
 
+### The Two Reflexes
+
+The plugin injects first-turn instructions teaching the agent the same two-reflex model the Claude plugin uses:
+
+- **Engage** (before responding): when the topic might have deeper history than the auto-recalled context shows, the agent calls `memory_engage` once with a query derived from the user's message. The server deduplicates identical recalls, so the automatic hook and the agent never do double work.
+- **Reflect** (after responding): after a substantive exchange, the agent calls `memory_reflect` with structured captures. `source_krefs` from engage (or the auto-recalled memories) become DERIVED_FROM edges, so every capture traces back to what informed it.
+
 ### Example Interactions
 
 ```text
 User:  "Remember that I prefer dark mode in all my editors"
-Agent: calls memory_store → type: "fact", content: "User prefers dark mode..."
+Agent: calls memory_reflect → captures: [{ type: "preference", title: "Prefers dark mode (Jul 17)", ... }]
 
 User:  "What do I prefer for my editor theme?"
-Agent: calls memory_search → query: "editor theme preferences"
+Agent: calls memory_engage → query: "editor theme preferences"
 
 User:  "Save this blog draft to my blog-jan26 project"
 Agent: calls creative_capture → title: "Blog Draft", content: "<draft text>",
@@ -388,6 +438,17 @@ await memory.start(); // Spawns Python process + MCP handshake
 // Recall memories
 const results = await memory.recall("user preferences");
 
+// Two-reflex: engage before responding, reflect after
+const engaged = await memory.engage("user preferences");
+await memory.reflect({
+  sessionId: "personal:user-x:20260717:001",
+  response: "Noted the communication preference.",
+  captures: [
+    { type: "preference", title: "Prefers async communication (Jul 17)", content: "..." },
+  ],
+  sourceKrefs: engaged.sourceKrefs, // DERIVED_FROM provenance
+});
+
 // Store a fact
 await memory.store("User prefers async communication", {
   type: "fact",
@@ -419,11 +480,11 @@ The Kumiho plugins share the same Neo4j + Redis backend, `CognitiveMemory` graph
 
 | Capability        | Claude Code                                 | OpenClaw                                      |
 | ----------------- | ------------------------------------------- | --------------------------------------------- |
-| Tool syntax       | `kumiho_memory_recall(...)`                 | `memory_search(...)` / `creative_capture(...)` |
+| Tool syntax       | `kumiho_memory_engage(...)` / `kumiho_memory_reflect(...)` | `memory_engage(...)` / `memory_reflect(...)` |
 | Behavioral rules  | Discovery-first SKILL.md + SessionStart context | TypeScript hooks + injected memory instructions |
 | Session bootstrap | SessionStart hook + SKILL bootstrap         | TypeScript identity bootstrap in `before_prompt_build` |
-| Recall behavior   | Agent-triggered recall guided by SKILL      | Automatic `before_prompt_build` hook           |
-| Capture behavior  | Agent-triggered `store` / `add_response`    | Automatic `agent_end` buffering + capture      |
+| Recall behavior   | Agent-triggered engage guided by SKILL      | Automatic engage in `before_prompt_build` + agent `memory_engage` |
+| Capture behavior  | Agent-triggered `reflect` with captures     | Automatic `agent_end` buffering + agent `memory_reflect` captures |
 | Consolidation     | Agent-triggered                             | Threshold + idle timer + manual tool           |
 | Dream State       | `/dream-state` command                      | Config schedule + manual tool                  |
 | Setup wizard      | `python scripts/setup.py`                   | `npx kumiho-setup`                             |

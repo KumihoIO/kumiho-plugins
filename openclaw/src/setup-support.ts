@@ -267,9 +267,20 @@ export function buildOpenClawPluginConfig(input: {
   dreamStateSchedule?: string;
   dreamModelChoice?: SetupOption<ExplicitMemoryProvider>;
   consolidationModelChoice?: SetupOption<ExplicitMemoryProvider>;
+  /** Self-hosted Community Edition routing chosen in the wizard. */
+  ce?: { endpoint: string; redisUrl: string };
 }): Record<string, unknown> {
   return {
     mode: "local",
+    ...(input.ce
+      ? {
+          ce: {
+            enabled: true,
+            endpoint: input.ce.endpoint,
+            redisUrl: input.ce.redisUrl,
+          },
+        }
+      : {}),
     ...(input.dreamStateSchedule ? { dreamStateSchedule: input.dreamStateSchedule } : {}),
     ...(input.dreamModelChoice?.provider
       ? {

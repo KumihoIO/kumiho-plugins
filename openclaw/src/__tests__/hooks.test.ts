@@ -33,6 +33,7 @@ const baseConfig: ResolvedConfig = {
   hostLlmApiKey: "",
   hostLlmProvider: "",
   privacy: { uploadSummariesOnly: false, localArtifacts: true, storeTranscriptions: true },
+  ce: { enabled: false, endpoint: "127.0.0.1:9190", redisUrl: "redis://127.0.0.1:6379" },
   local: { pythonPath: "python", command: "kumiho-mcp", timeout: 30000 },
 };
 
@@ -1007,5 +1008,132 @@ describe("prefetchMemories", () => {
 
     expect(chatAdd).not.toHaveBeenCalled();
     expect(state.messageCount).toBe(5); // unchanged
+  });
+});
+
+// ---------------------------------------------------------------------------
+// autoRecall / prefetchMemories — engage two-reflex path
+// (prefetchMemories already imported above)
+// ---------------------------------------------------------------------------
+
+describe("autoRecall — engage path", () => {
+  const engageConfig: ResolvedConfig = { ...baseConfig, topK: 5, searchThreshold: 0.0 };
+
+  const engagedMemories = [
+    { kref: "kref://m/1?r=1", type: "fact", title: "A", summary: "a", topics: [] },
+    { kref: "kref://m/2?r=3", type: "decision", title: "B", summary: "b", topics: [] },
+  ];
+
+  it("prefers memoryEngage and records sourceKrefs on state", async () => {
+    const memoryEngage = vi.fn().mockResolvedValue({
+      context: "ctx",
+      results: engagedMemories,
+      sourceKrefs: ["kref://m/1?r=1", "kref://m/2?r=3"],
+    });
+    const memoryRetrieve = vi.fn();
+    const client = {
+      chatAdd: vi.fn().mockResolvedValue(undefined),
+      memoryEngage,
+      memoryRetrieve,
+    } as unknown as KumihoClient;
+    const state = createHookState();
+
+    const result = await autoRecall(client, engageConfig, state, "what did we decide?");
+
+    expect(memoryEngage).toHaveBeenCalledOnce();
+    expect(memoryRetrieve).not.toHaveBeenCalled();
+    expect(state.sourceKrefs).toEqual(["kref://m/1?r=1", "kref://m/2?r=3"]);
+    expect(result.memories).toHaveLength(2);
+  });
+
+  it("falls back to memoryRetrieve on unknown-tool errors and remembers for the session", async () => {
+    const memoryEngage = vi
+      .fn()
+      .mockRejectedValue(new Error("Unknown tool: kumiho_memory_engage"));
+    const memoryRetrieve = vi.fn().mockResolvedValue(engagedMemories);
+    const client = {
+      chatAdd: vi.fn().mockResolvedValue(undefined),
+      memoryEngage,
+      memoryRetrieve,
+    } as unknown as KumihoClient;
+    const state = createHookState();
+
+    await autoRecall(client, engageConfig, state, "first turn");
+    await autoRecall(client, engageConfig, state, "second turn");
+
+    expect(memoryEngage).toHaveBeenCalledOnce(); // probed once, then remembered
+    expect(memoryRetrieve).toHaveBeenCalledTimes(2);
+    expect(state.engageUnsupported).toBe(true);
+    expect(state.sourceKrefs).toEqual(["kref://m/1?r=1", "kref://m/2?r=3"]);
+  });
+
+  it("falls back to memoryRetrieve when engage is deduplicated — never caches a dedup-empty result", async () => {
+    const memoryEngage = vi.fn().mockResolvedValue({
+      context: "",
+      results: [],
+      sourceKrefs: [],
+      deduplicated: true,
+    });
+    const memoryRetrieve = vi.fn().mockResolvedValue(engagedMemories);
+    const client = {
+      chatAdd: vi.fn().mockResolvedValue(undefined),
+      memoryEngage,
+      memoryRetrieve,
+    } as unknown as KumihoClient;
+    const state = createHookState();
+
+    const result = await autoRecall(client, engageConfig, state, "same query twice");
+
+    expect(memoryRetrieve).toHaveBeenCalledOnce();
+    expect(result.memories).toHaveLength(2);
+    expect(state.sourceKrefs).toEqual(["kref://m/1?r=1", "kref://m/2?r=3"]);
+    expect(state.engageUnsupported).toBe(false); // dedup is not "unsupported"
+  });
+
+  it("degrades to memoryRetrieve on non-unknown-tool engage errors without latching the flag", async () => {
+    const memoryEngage = vi.fn().mockRejectedValue(new Error("Kumiho API kumiho_memory_engage failed: 500 internal"));
+    const memoryRetrieve = vi.fn().mockResolvedValue(engagedMemories);
+    const client = {
+      chatAdd: vi.fn().mockResolvedValue(undefined),
+      memoryEngage,
+      memoryRetrieve,
+    } as unknown as KumihoClient;
+    const state = createHookState();
+
+    const result = await autoRecall(client, engageConfig, state, "flaky backend");
+
+    expect(memoryRetrieve).toHaveBeenCalledOnce();
+    expect(result.memories).toHaveLength(2);
+    expect(state.engageUnsupported).toBe(false); // transient — probe again next turn
+  });
+
+  it("skips engage for non-default projects — composite tools are fixed to CognitiveMemory", async () => {
+    const memoryEngage = vi.fn();
+    const memoryRetrieve = vi.fn().mockResolvedValue([]);
+    const client = {
+      chatAdd: vi.fn().mockResolvedValue(undefined),
+      memoryEngage,
+      memoryRetrieve,
+    } as unknown as KumihoClient;
+    const state = createHookState();
+
+    await autoRecall(client, { ...engageConfig, project: "WorkMemory" }, state, "hello");
+
+    expect(memoryEngage).not.toHaveBeenCalled();
+    expect(memoryRetrieve).toHaveBeenCalledOnce();
+  });
+
+  it("prefetchMemories returns sourceKrefs for the reflect reflex", async () => {
+    const memoryEngage = vi.fn().mockResolvedValue({
+      context: "ctx",
+      results: [engagedMemories[0]],
+      sourceKrefs: ["kref://m/1?r=1"],
+    });
+    const client = { memoryEngage } as unknown as KumihoClient;
+
+    const result = await prefetchMemories(client, engageConfig, "query", createHookState());
+
+    expect(result.sourceKrefs).toEqual(["kref://m/1?r=1"]);
+    expect(result.memories).toHaveLength(1);
   });
 });

@@ -13,10 +13,13 @@ import type {
   ChatMessage,
   CreativeCaptureParams,
   CreativeCaptureResult,
+  EngageResult,
   KumihoLLMConfig,
   MemoryEntry,
   MemoryStoreResult,
   MemoryType,
+  ReflectCapture,
+  ReflectResult,
   ResolvedConfig,
   WorkingMemoryState,
   DreamStateStats,
@@ -118,6 +121,43 @@ export class KumihoApiError extends Error {
     super(message);
     this.name = "KumihoApiError";
   }
+}
+
+/**
+ * True when the error indicates the backend does not expose the tool at all
+ * (pre-composite kumiho-memory or a cloud API without the tool). Used to
+ * fall back from engage/reflect to the legacy retrieve/store path.
+ *
+ * A cloud 404 counts too: HttpTransport wraps a missing-route response as
+ * KumihoApiError with the raw body, which need not contain any of the
+ * MCP-style "unknown tool" phrases.
+ */
+export function isUnknownToolError(err: unknown): boolean {
+  if (err instanceof KumihoApiError && err.status === 404) return true;
+  const message = (err as Error)?.message?.toLowerCase() ?? "";
+  return (
+    message.includes("unknown tool") ||
+    message.includes("tool not found") ||
+    message.includes("method not found") ||
+    message.includes("unsupported tool")
+  );
+}
+
+/**
+ * Child-process env that routes the Python SDK at a self-hosted CE server.
+ * A cached cloud token or inherited endpoint would flip the SDK back to
+ * control-plane discovery, so both are cleared alongside the CE target.
+ * Shared by the McpTransport constructor and the runtime re-assert after
+ * user-supplied local.env is applied.
+ */
+export function ceChildEnv(ce: { endpoint: string; redisUrl: string }): Record<string, string> {
+  return {
+    KUMIHO_LOCAL_SERVER_ENDPOINT: ce.endpoint,
+    KUMIHO_AUTH_TOKEN: "",
+    KUMIHO_SERVER_ENDPOINT: "",
+    KUMIHO_SERVER_ADDRESS: "",
+    UPSTASH_REDIS_URL: ce.redisUrl,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -237,6 +277,14 @@ export class McpTransport implements Transport {
       timeout: config.local.timeout,
       logger,
     });
+
+    // Self-hosted CE: point the Python SDK at the local kumiho-server and
+    // run tokenless. Applied at construction so the standalone
+    // createKumihoMemory() path gets CE routing too, not just the plugin's
+    // ensureRuntimeStarted() (which re-asserts it after user local.env).
+    if (config.ce.enabled) {
+      this.bridge.addEnv(ceChildEnv(config.ce));
+    }
   }
 
   /** Inject env vars before the subprocess is spawned. Must be called before start(). */
@@ -478,6 +526,93 @@ export class KumihoClient {
     );
 
     return entries;
+  }
+
+  // -----------------------------------------------------------------------
+  // Composite two-reflex tools (engage / reflect)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Engage memory before responding — recall + context building in one call.
+   *
+   * The backend deduplicates identical queries within a short window and
+   * returns `deduplicated: true` with empty results; callers should treat
+   * that as "already recalled this turn", not as a miss.
+   *
+   * Note: the backend composite tools operate on the server's default
+   * project (CognitiveMemory) — there is no per-call project parameter.
+   */
+  async memoryEngage(params: {
+    query: string;
+    limit?: number;
+    spacePaths?: string[];
+    memoryTypes?: string[];
+    minScore?: number;
+    graphAugmented?: boolean;
+  }): Promise<EngageResult> {
+    const raw = await this.transport.call<{
+      context?: string;
+      results?: Array<Record<string, unknown>>;
+      source_krefs?: string[];
+      deduplicated?: boolean;
+    }>("kumiho_memory_engage", {
+      query: params.query,
+      limit: params.limit,
+      space_paths: params.spacePaths,
+      memory_types: params.memoryTypes,
+      min_score: params.minScore,
+      graph_augmented: params.graphAugmented,
+    });
+
+    const results = (raw.results ?? [])
+      .map((entry) => mapMemoryEntry(entry))
+      .filter((entry) => Boolean(entry.kref));
+
+    return {
+      context: coerceString(raw.context),
+      results,
+      sourceKrefs: Array.isArray(raw.source_krefs)
+        ? raw.source_krefs.filter((k): k is string => typeof k === "string" && k.length > 0)
+        : results.map((entry) => entry.kref),
+      deduplicated: raw.deduplicated === true,
+    };
+  }
+
+  /**
+   * Reflect after responding — buffer the assistant response and store
+   * structured captures with DERIVED_FROM provenance edges in one call.
+   *
+   * `response` must be non-empty (the backend rejects empty buffer writes).
+   * Capture stores + edge discovery can be slow, so this uses a 2-minute
+   * timeout instead of the default 30s.
+   */
+  async memoryReflect(params: {
+    sessionId: string;
+    response: string;
+    captures?: ReflectCapture[];
+    sourceKrefs?: string[];
+    spacePath?: string;
+    discoverEdges?: boolean;
+  }): Promise<ReflectResult> {
+    return this.transport.call<ReflectResult>(
+      "kumiho_memory_reflect",
+      {
+        session_id: params.sessionId,
+        response: params.response,
+        captures: params.captures?.map((cap) => ({
+          type: cap.type,
+          title: cap.title,
+          content: cap.content,
+          tags: cap.tags,
+          space_hint: cap.spaceHint,
+          event_date: cap.eventDate,
+        })),
+        source_krefs: params.sourceKrefs,
+        space_path: params.spacePath,
+        discover_edges: params.discoverEdges,
+      },
+      2 * 60 * 1000,
+    );
   }
 
   // -----------------------------------------------------------------------

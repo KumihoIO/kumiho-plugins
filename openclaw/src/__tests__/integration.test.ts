@@ -86,7 +86,8 @@ function makeLocalConfig(): ResolvedConfig {
     hostLlmApiKey: "",
     hostLlmProvider: "",
     privacy: { uploadSummariesOnly: true, localArtifacts: true, storeTranscriptions: true },
-    local: { pythonPath: "python", command: "kumiho-mcp", timeout: 30000 },
+    ce: { enabled: false, endpoint: "127.0.0.1:9190", redisUrl: "redis://127.0.0.1:6379" },
+  local: { pythonPath: "python", command: "kumiho-mcp", timeout: 30000 },
   };
 }
 
