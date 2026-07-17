@@ -127,14 +127,37 @@ export class KumihoApiError extends Error {
  * True when the error indicates the backend does not expose the tool at all
  * (pre-composite kumiho-memory or a cloud API without the tool). Used to
  * fall back from engage/reflect to the legacy retrieve/store path.
+ *
+ * A cloud 404 counts too: HttpTransport wraps a missing-route response as
+ * KumihoApiError with the raw body, which need not contain any of the
+ * MCP-style "unknown tool" phrases.
  */
 export function isUnknownToolError(err: unknown): boolean {
+  if (err instanceof KumihoApiError && err.status === 404) return true;
   const message = (err as Error)?.message?.toLowerCase() ?? "";
   return (
     message.includes("unknown tool") ||
     message.includes("tool not found") ||
-    message.includes("method not found")
+    message.includes("method not found") ||
+    message.includes("unsupported tool")
   );
+}
+
+/**
+ * Child-process env that routes the Python SDK at a self-hosted CE server.
+ * A cached cloud token or inherited endpoint would flip the SDK back to
+ * control-plane discovery, so both are cleared alongside the CE target.
+ * Shared by the McpTransport constructor and the runtime re-assert after
+ * user-supplied local.env is applied.
+ */
+export function ceChildEnv(ce: { endpoint: string; redisUrl: string }): Record<string, string> {
+  return {
+    KUMIHO_LOCAL_SERVER_ENDPOINT: ce.endpoint,
+    KUMIHO_AUTH_TOKEN: "",
+    KUMIHO_SERVER_ENDPOINT: "",
+    KUMIHO_SERVER_ADDRESS: "",
+    UPSTASH_REDIS_URL: ce.redisUrl,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -256,18 +279,11 @@ export class McpTransport implements Transport {
     });
 
     // Self-hosted CE: point the Python SDK at the local kumiho-server and
-    // run tokenless. A cached cloud token or inherited endpoint would flip
-    // the SDK back to control-plane discovery, so both are cleared here.
-    // Applied at construction so the standalone createKumihoMemory() path
-    // gets CE routing too, not just the plugin's ensureRuntimeStarted().
+    // run tokenless. Applied at construction so the standalone
+    // createKumihoMemory() path gets CE routing too, not just the plugin's
+    // ensureRuntimeStarted() (which re-asserts it after user local.env).
     if (config.ce.enabled) {
-      this.bridge.addEnv({
-        KUMIHO_LOCAL_SERVER_ENDPOINT: config.ce.endpoint,
-        KUMIHO_AUTH_TOKEN: "",
-        KUMIHO_SERVER_ENDPOINT: "",
-        KUMIHO_SERVER_ADDRESS: "",
-        UPSTASH_REDIS_URL: config.ce.redisUrl,
-      });
+      this.bridge.addEnv(ceChildEnv(config.ce));
     }
   }
 

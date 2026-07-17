@@ -107,12 +107,20 @@ async function recallForQuery(
         spacePaths,
         minScore: config.searchThreshold,
       });
-      // Deduplicated = an identical recall already ran this turn; the empty
-      // result set is correct, not an error.
-      return engaged.results;
+      // Deduplicated = an identical recall already consumed the server's
+      // dedup window (e.g. the per-turn double prefetch fires the same
+      // query twice) and came back EMPTY. Fall through to retrieve — it has
+      // no dedup guard — so a dedup hit never overwrites a good prefetched
+      // result with an empty one.
+      if (!engaged.deduplicated) {
+        return engaged.results;
+      }
     } catch (err) {
-      if (!isUnknownToolError(err)) throw err;
-      if (state) state.engageUnsupported = true;
+      // Latch the unsupported flag only for unknown-tool errors, but degrade
+      // to retrieve on ANY engage failure — auto-recall must never break the
+      // conversation because a composite tool misbehaved (e.g. a cloud
+      // backend whose error body matches none of the unknown-tool phrases).
+      if (isUnknownToolError(err) && state) state.engageUnsupported = true;
     }
   }
 

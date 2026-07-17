@@ -147,6 +147,11 @@ export const TOOL_SCHEMAS = {
                 items: { type: "string" },
                 description: "Classification tags",
               },
+              spaceHint: {
+                type: "string",
+                description:
+                  "Space path hint for this capture; overrides the call-level spaceHint",
+              },
               eventDate: {
                 type: "string",
                 description:
@@ -476,37 +481,73 @@ export async function handleMemoryEngage(
   const limit = params.limit ?? ctx.config.topK;
   const spacePaths = params.spacePath ? [params.spacePath] : undefined;
 
-  try {
-    const engaged = await ctx.client.memoryEngage({
-      query: params.query,
-      limit,
-      spacePaths,
-      minScore: ctx.config.searchThreshold,
-      graphAugmented: params.graphAugmented,
-    });
+  // The composite engage is fixed to the server's default project — for a
+  // custom project, go straight to the project-scoped retrieve path (same
+  // guard the automatic recall hook enforces).
+  if (ctx.config.project === "CognitiveMemory") {
+    try {
+      const engaged = await ctx.client.memoryEngage({
+        query: params.query,
+        limit,
+        spacePaths,
+        minScore: ctx.config.searchThreshold,
+        graphAugmented: params.graphAugmented,
+      });
 
-    if (engaged.deduplicated) {
-      return (
-        "Deduplicated: an identical recall already ran for this response. " +
-        "Reuse the memories already in context, or vary the query."
-      );
+      if (!engaged.deduplicated) {
+        if (engaged.results.length === 0) {
+          return "No memories found matching your query.";
+        }
+        const body = engaged.results.map(formatMemoryEntry).join("\n\n");
+        return (
+          `${body}\n\n` +
+          `source_krefs (pass to memory_reflect for provenance):\n` +
+          engaged.sourceKrefs.map((k) => `- ${k}`).join("\n")
+        );
+      }
+      // Deduplicated: an identical recall consumed the server's dedup window
+      // — usually the plugin's automatic prompt-build prefetch, whose results
+      // are cached for the NEXT turn and are NOT in the agent's context.
+      // Fall through to retrieve (no dedup guard) so the agent still gets
+      // real results instead of a pointer to context that doesn't exist.
+    } catch (err) {
+      if (!isUnknownToolError(err)) throw err;
+      // Pre-composite backend — same recall, no server-side context building.
     }
-
-    if (engaged.results.length === 0) {
-      return "No memories found matching your query.";
-    }
-
-    const body = engaged.results.map(formatMemoryEntry).join("\n\n");
-    return (
-      `${body}\n\n` +
-      `source_krefs (pass to memory_reflect for provenance):\n` +
-      engaged.sourceKrefs.map((k) => `- ${k}`).join("\n")
-    );
-  } catch (err) {
-    if (!isUnknownToolError(err)) throw err;
-    // Pre-composite backend — same recall, no server-side context building.
-    return handleMemorySearch(ctx, { query: params.query, limit, spacePath: params.spacePath });
   }
+
+  return handleMemorySearch(ctx, { query: params.query, limit, spacePath: params.spacePath });
+}
+
+/**
+ * Store captures directly via memory_store with DERIVED_FROM provenance —
+ * the reflect path for custom projects, sessionless contexts, and
+ * pre-composite backends. Response buffering is not replicated here; the
+ * plugin's auto-capture hook already buffers the real assistant response.
+ */
+async function storeCapturesDirect(
+  ctx: ToolContext,
+  captures: ReflectCapture[],
+  sourceKrefs: string[],
+  spaceHint?: string,
+): Promise<string> {
+  const krefs: string[] = [];
+  for (const cap of captures) {
+    const stored = await ctx.client.memoryStore({
+      type: (cap.type as MemoryType) ?? "fact",
+      title: cap.title,
+      summary: cap.content,
+      assistantText: cap.content,
+      tags: cap.tags,
+      spaceHint: cap.spaceHint ?? spaceHint,
+      sourceRevisionKrefs: sourceKrefs.length ? sourceKrefs : undefined,
+      // Valid-time: mirror the composite path's event_date stamping so
+      // temporal recall works the same on the fallback path.
+      metadata: cap.eventDate ? { event_date: cap.eventDate } : undefined,
+    });
+    krefs.push(stored.revision_kref || stored.item_kref);
+  }
+  return `Stored ${krefs.length} capture(s):\n${krefs.map((k) => `- ${k}`).join("\n")}`;
 }
 
 export async function handleMemoryReflect(
@@ -523,58 +564,50 @@ export async function handleMemoryReflect(
     return "memory_reflect requires a non-empty response summary.";
   }
 
-  const sessionId = ctx.currentSessionId;
-  if (!sessionId) {
-    return "No active session to reflect into.";
-  }
-
   const sourceKrefs =
     params.sourceKrefs?.length ? params.sourceKrefs : ctx.getSourceKrefs?.() ?? [];
+  const captures = params.captures ?? [];
+  const sessionId = ctx.currentSessionId;
 
-  try {
-    const result = await ctx.client.memoryReflect({
-      sessionId,
-      response,
-      captures: params.captures,
-      sourceKrefs,
-      spacePath: params.spaceHint,
-    });
-
-    const lines = [
-      `Reflected: response buffered, ${result.captures_stored} capture(s) stored.`,
-    ];
-    if (result.stored_krefs?.length) {
-      lines.push(...result.stored_krefs.map((k) => `- ${k}`));
-    }
-    if (result.edges_discovered > 0) {
-      lines.push(`Edges discovered: ${result.edges_discovered}`);
-    }
-    return lines.join("\n");
-  } catch (err) {
-    if (!isUnknownToolError(err)) throw err;
-
-    // Pre-composite backend — store each capture individually with the same
-    // DERIVED_FROM provenance; the response buffering is already handled by
-    // the plugin's auto-capture hook.
-    const captures = params.captures ?? [];
-    if (captures.length === 0) {
-      return "Backend does not support reflect and no captures were provided; nothing stored.";
-    }
-    const krefs: string[] = [];
-    for (const cap of captures) {
-      const stored = await ctx.client.memoryStore({
-        type: (cap.type as MemoryType) ?? "fact",
-        title: cap.title,
-        summary: cap.content,
-        assistantText: cap.content,
-        tags: cap.tags,
-        spaceHint: cap.spaceHint ?? params.spaceHint,
-        sourceRevisionKrefs: sourceKrefs.length ? sourceKrefs : undefined,
+  // The composite reflect buffers into a session and is fixed to the
+  // server's default project — use it only when both hold. Everything else
+  // (custom project, sessionless context, pre-composite backend) stores the
+  // captures directly so "remember this" is never silently dropped.
+  if (sessionId && ctx.config.project === "CognitiveMemory") {
+    try {
+      const result = await ctx.client.memoryReflect({
+        sessionId,
+        response,
+        captures: params.captures,
+        sourceKrefs,
+        spacePath: params.spaceHint,
       });
-      krefs.push(stored.revision_kref || stored.item_kref);
+
+      const lines = [
+        `Reflected: response buffered, ${result.captures_stored} capture(s) stored.`,
+      ];
+      if (result.stored_krefs?.length) {
+        lines.push(...result.stored_krefs.map((k) => `- ${k}`));
+      }
+      if (result.edges_discovered > 0) {
+        lines.push(`Edges discovered: ${result.edges_discovered}`);
+      }
+      return lines.join("\n");
+    } catch (err) {
+      if (!isUnknownToolError(err)) throw err;
+      // Pre-composite backend — fall through to direct capture stores.
     }
-    return `Stored ${krefs.length} capture(s):\n${krefs.map((k) => `- ${k}`).join("\n")}`;
   }
+
+  if (captures.length === 0) {
+    return (
+      "Nothing stored — no captures were provided and the composite reflect " +
+      "is unavailable here (no active session, custom project, or a backend " +
+      "without kumiho_memory_reflect). The plugin buffers your response " +
+      "automatically; call memory_reflect with captures to store facts."
+    );
+  }
+  return storeCapturesDirect(ctx, captures, sourceKrefs, params.spaceHint);
 }
 
 export async function handleMemorySearch(

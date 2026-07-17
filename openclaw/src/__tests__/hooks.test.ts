@@ -1067,6 +1067,46 @@ describe("autoRecall — engage path", () => {
     expect(state.sourceKrefs).toEqual(["kref://m/1?r=1", "kref://m/2?r=3"]);
   });
 
+  it("falls back to memoryRetrieve when engage is deduplicated — never caches a dedup-empty result", async () => {
+    const memoryEngage = vi.fn().mockResolvedValue({
+      context: "",
+      results: [],
+      sourceKrefs: [],
+      deduplicated: true,
+    });
+    const memoryRetrieve = vi.fn().mockResolvedValue(engagedMemories);
+    const client = {
+      chatAdd: vi.fn().mockResolvedValue(undefined),
+      memoryEngage,
+      memoryRetrieve,
+    } as unknown as KumihoClient;
+    const state = createHookState();
+
+    const result = await autoRecall(client, engageConfig, state, "same query twice");
+
+    expect(memoryRetrieve).toHaveBeenCalledOnce();
+    expect(result.memories).toHaveLength(2);
+    expect(state.sourceKrefs).toEqual(["kref://m/1?r=1", "kref://m/2?r=3"]);
+    expect(state.engageUnsupported).toBe(false); // dedup is not "unsupported"
+  });
+
+  it("degrades to memoryRetrieve on non-unknown-tool engage errors without latching the flag", async () => {
+    const memoryEngage = vi.fn().mockRejectedValue(new Error("Kumiho API kumiho_memory_engage failed: 500 internal"));
+    const memoryRetrieve = vi.fn().mockResolvedValue(engagedMemories);
+    const client = {
+      chatAdd: vi.fn().mockResolvedValue(undefined),
+      memoryEngage,
+      memoryRetrieve,
+    } as unknown as KumihoClient;
+    const state = createHookState();
+
+    const result = await autoRecall(client, engageConfig, state, "flaky backend");
+
+    expect(memoryRetrieve).toHaveBeenCalledOnce();
+    expect(result.memories).toHaveLength(2);
+    expect(state.engageUnsupported).toBe(false); // transient — probe again next turn
+  });
+
   it("skips engage for non-default projects — composite tools are fixed to CognitiveMemory", async () => {
     const memoryEngage = vi.fn();
     const memoryRetrieve = vi.fn().mockResolvedValue([]);

@@ -294,6 +294,22 @@ const BACKENDS = [
   },
 ];
 
+/** Normalize "http://host:port/path" or "host:port" to "host:port" for gRPC. */
+function normalizeEndpointInput(raw) {
+  let target = (raw ?? "").trim();
+  if (!target) return "";
+  if (target.includes("://")) {
+    try {
+      const url = new URL(target);
+      if (!url.hostname) return target;
+      const port =
+        url.port || (url.protocol === "http:" || url.protocol === "grpc:" ? "80" : "443");
+      target = `${url.hostname}:${port}`;
+    } catch { /* keep as typed */ }
+  }
+  return target.split("/")[0];
+}
+
 /** Best-effort TCP reachability probe for the CE gRPC endpoint. Never fatal. */
 function probeTcp(endpoint, timeoutMs = 1500) {
   const [host, portRaw] = endpoint.split(":");
@@ -502,7 +518,10 @@ let ceSelection = null; // { endpoint, redisUrl } when CE is chosen
     console.log(`  CE runs tokenless against your own kumiho-server deployment.`);
     console.log(`  ${c.dim}Deploy it first: https://github.com/kumihoclouds/kumiho-server${c.reset}`);
     console.log();
-    const ceEndpoint = await askFreeText(backendRl, "CE gRPC endpoint (host:port)", CE_DEFAULT_ENDPOINT);
+    const ceEndpoint =
+      normalizeEndpointInput(
+        await askFreeText(backendRl, "CE gRPC endpoint (host:port)", CE_DEFAULT_ENDPOINT),
+      ) || CE_DEFAULT_ENDPOINT;
     const ceRedisUrl = await askFreeText(backendRl, "CE working-memory Redis URL", CE_DEFAULT_REDIS_URL);
     ceSelection = { endpoint: ceEndpoint, redisUrl: ceRedisUrl };
 
@@ -930,6 +949,21 @@ if (existsSync(OPENCLAW_CONFIG_PATH)) {
   }
 } else {
   warn(`openclaw.json not found at ${OPENCLAW_CONFIG_PATH}`);
+}
+
+// CE was selected but not persisted — without the ce block the plugin boots
+// cloud-backed, and the cloud login above was skipped, so memory calls would
+// fail with no credentials. Make the fix path unmissable.
+if (ceSelection && !openClawConfigUpdated) {
+  console.log();
+  warn(
+    "CE was selected but openclaw.json was NOT updated automatically.\n" +
+    `  The Kumiho Cloud login was skipped, so WITHOUT the "ce" block (printed below)\n` +
+    `  the plugin will boot cloud-backed with no credentials and memory calls will fail.\n` +
+    `  Fix: paste the printed plugin entry INCLUDING the "ce" block into openclaw.json,\n` +
+    `  or set KUMIHO_OPENCLAW_MODE=ce in the gateway environment.\n` +
+    `  (To use Kumiho Cloud instead, run: ${VENV_PYTHON} -m kumiho.auth_cli login)`
+  );
 }
 
 rl.close();

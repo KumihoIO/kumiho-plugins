@@ -218,7 +218,7 @@ Run everything offline against a [kumiho-server CE](https://github.com/kumihoclo
 }
 ```
 
-The `kumiho-setup` wizard asks **Cloud vs CE** up front — choosing CE skips the cloud login entirely and writes this `ce` block into openclaw.json for you. Setting `ce.endpoint` alone also enables CE, and env-var opt-in works too (parity with the Claude plugin): `KUMIHO_OPENCLAW_MODE=ce`, or just set `KUMIHO_LOCAL_SERVER_ENDPOINT=host:9190`.
+The `kumiho-setup` wizard asks **Cloud vs CE** up front — choosing CE skips the cloud login entirely and writes this `ce` block into openclaw.json for you. Setting `ce.endpoint` alone also enables CE, and env-var opt-in works too (parity with the Claude plugin): `KUMIHO_OPENCLAW_MODE=ce`, or just set `KUMIHO_OPENCLAW_SERVER_ENDPOINT=host:9190`. The SDK-generic `KUMIHO_LOCAL_SERVER_ENDPOINT` is honored as the endpoint *value* once CE is enabled, but deliberately does **not** enable CE by itself — a leftover export from another tool's CE setup must not silently reroute a cloud-backed gateway.
 
 > CE applies to local mode only — it routes the spawned Python SDK at your server. Deploy kumiho-server CE first; point summarization at a local LLM with `KUMIHO_LLM_BASE_URL` (e.g. Ollama) or the keyless core tools work without one.
 
@@ -251,7 +251,7 @@ export KUMIHO_API_TOKEN="kh_live_abc123..."
 
 # Self-hosted CE (local mode) — either enables CE without touching openclaw.json
 export KUMIHO_OPENCLAW_MODE=ce
-export KUMIHO_LOCAL_SERVER_ENDPOINT=127.0.0.1:9190
+export KUMIHO_OPENCLAW_SERVER_ENDPOINT=127.0.0.1:9190
 
 # LLM keys — set by OpenClaw during onboarding; forwarded to the Python process automatically
 

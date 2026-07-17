@@ -132,18 +132,35 @@ describe("handleMemoryEngage", () => {
     expect(result).toContain("kref://memory/1?r=1");
   });
 
-  it("reports server-side deduplication instead of an empty miss", async () => {
+  it("falls back to retrieve on server-side deduplication — the dedup'd recall was the hook prefetch, not agent context", async () => {
     const memoryEngage = vi.fn().mockResolvedValue({
       context: "",
       results: [],
       sourceKrefs: [],
       deduplicated: true,
     });
-    const ctx = makeContext({ memoryEngage }, "sess-1");
+    const memoryRetrieve = vi.fn().mockResolvedValue([memoryEntry]);
+    const ctx = makeContext({ memoryEngage, memoryRetrieve }, "sess-1");
 
     const result = await handleMemoryEngage(ctx, { query: "same query" });
 
-    expect(result).toContain("Deduplicated");
+    expect(memoryRetrieve).toHaveBeenCalledOnce();
+    expect(result).toContain("Dark mode");
+  });
+
+  it("skips the composite engage for non-default projects and retrieves project-scoped", async () => {
+    const memoryEngage = vi.fn();
+    const memoryRetrieve = vi.fn().mockResolvedValue([memoryEntry]);
+    const ctx: ToolContext = {
+      ...makeContext({ memoryEngage, memoryRetrieve }, "sess-1"),
+      config: { ...baseConfig, project: "WorkMemory" },
+    };
+
+    const result = await handleMemoryEngage(ctx, { query: "project scoped" });
+
+    expect(memoryEngage).not.toHaveBeenCalled();
+    expect(memoryRetrieve).toHaveBeenCalledOnce();
+    expect(result).toContain("Dark mode");
   });
 
   it("falls back to memory_search on pre-composite backends", async () => {
@@ -197,7 +214,7 @@ describe("handleMemoryReflect", () => {
     expect(result).toContain("non-empty");
   });
 
-  it("falls back to per-capture memoryStore with provenance on pre-composite backends", async () => {
+  it("falls back to per-capture memoryStore with provenance and event_date on pre-composite backends", async () => {
     const memoryReflect = vi.fn().mockRejectedValue(new Error("Unknown tool: kumiho_memory_reflect"));
     const memoryStore = vi.fn().mockResolvedValue({
       item_kref: "kref://item/1",
@@ -209,13 +226,74 @@ describe("handleMemoryReflect", () => {
 
     const result = await handleMemoryReflect(ctx, {
       response: "Stored the decision.",
-      captures: [{ type: "decision", title: "Chose X on Jul 17", content: "X over Y" }],
+      captures: [
+        { type: "decision", title: "Chose X on Jul 17", content: "X over Y", eventDate: "2026-07-17" },
+      ],
       sourceKrefs: ["kref://memory/2?r=1"],
     });
 
     expect(memoryStore).toHaveBeenCalledOnce();
-    const storeArgs = memoryStore.mock.calls[0][0] as { sourceRevisionKrefs?: string[] };
+    const storeArgs = memoryStore.mock.calls[0][0] as {
+      sourceRevisionKrefs?: string[];
+      metadata?: Record<string, unknown>;
+    };
     expect(storeArgs.sourceRevisionKrefs).toEqual(["kref://memory/2?r=1"]);
+    expect(storeArgs.metadata).toEqual({ event_date: "2026-07-17" });
     expect(result).toContain("kref://item/1?r=1");
+  });
+
+  it("skips the composite reflect for non-default projects and stores captures directly", async () => {
+    const memoryReflect = vi.fn();
+    const memoryStore = vi.fn().mockResolvedValue({
+      item_kref: "kref://item/2",
+      revision_kref: "kref://item/2?r=1",
+      space_path: "WorkMemory/personal",
+      summary: "s",
+    });
+    const ctx: ToolContext = {
+      ...makeContext({ memoryReflect, memoryStore }, "sess-1"),
+      config: { ...baseConfig, project: "WorkMemory" },
+    };
+
+    const result = await handleMemoryReflect(ctx, {
+      response: "Noted.",
+      captures: [{ type: "fact", title: "Fact on Jul 17", content: "F" }],
+    });
+
+    expect(memoryReflect).not.toHaveBeenCalled();
+    expect(memoryStore).toHaveBeenCalledOnce();
+    expect(result).toContain("kref://item/2?r=1");
+  });
+
+  it("stores captures directly when no session is active — 'remember this' is never dropped", async () => {
+    const memoryReflect = vi.fn();
+    const memoryStore = vi.fn().mockResolvedValue({
+      item_kref: "kref://item/3",
+      revision_kref: "kref://item/3?r=1",
+      space_path: "CognitiveMemory/personal",
+      summary: "s",
+    });
+    const ctx = makeContext({ memoryReflect, memoryStore }, null);
+
+    const result = await handleMemoryReflect(ctx, {
+      response: "Remembered the preference.",
+      captures: [{ type: "preference", title: "Prefers tabs (Jul 17)", content: "tabs > spaces" }],
+    });
+
+    expect(memoryReflect).not.toHaveBeenCalled();
+    expect(memoryStore).toHaveBeenCalledOnce();
+    expect(result).toContain("kref://item/3?r=1");
+  });
+
+  it("explains itself when there is neither a usable session nor captures", async () => {
+    const memoryReflect = vi.fn();
+    const memoryStore = vi.fn();
+    const ctx = makeContext({ memoryReflect, memoryStore }, null);
+
+    const result = await handleMemoryReflect(ctx, { response: "Just chatting." });
+
+    expect(memoryReflect).not.toHaveBeenCalled();
+    expect(memoryStore).not.toHaveBeenCalled();
+    expect(result).toContain("Nothing stored");
   });
 });

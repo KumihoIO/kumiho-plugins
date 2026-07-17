@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { KumihoClient, type Transport } from "../client.js";
+import { KumihoApiError, KumihoClient, isUnknownToolError, type Transport } from "../client.js";
 
 function makeTransport(call: ReturnType<typeof vi.fn>): Transport {
   return {
@@ -344,5 +344,21 @@ describe("KumihoClient memoryReflect", () => {
     );
     expect(result.captures_stored).toBe(1);
     expect(result.stored_krefs).toEqual(["kref://capture/1?r=1"]);
+  });
+});
+
+describe("isUnknownToolError", () => {
+  it("treats a cloud 404 as unknown-tool even when the body has no MCP phrase", () => {
+    expect(isUnknownToolError(new KumihoApiError("Kumiho API kumiho_memory_engage failed: 404 <html>Not Found</html>", "API_ERROR", 404))).toBe(true);
+  });
+
+  it("does not treat other statuses or messages as unknown-tool", () => {
+    expect(isUnknownToolError(new KumihoApiError("Kumiho API kumiho_memory_engage failed: 500 internal", "API_ERROR", 500))).toBe(false);
+    expect(isUnknownToolError(new Error("connection refused"))).toBe(false);
+  });
+
+  it("matches the MCP unknown-tool phrases", () => {
+    expect(isUnknownToolError(new Error("Unknown tool: kumiho_memory_reflect"))).toBe(true);
+    expect(isUnknownToolError(new Error("unsupported tool"))).toBe(true);
   });
 });

@@ -265,7 +265,7 @@
           "enabled": {
             "type": "boolean",
             "default": false,
-            "description": "Enable CE routing. Also enabled implicitly by setting ce.endpoint, KUMIHO_OPENCLAW_MODE=ce, or KUMIHO_LOCAL_SERVER_ENDPOINT."
+            "description": "Enable CE routing. Also enabled implicitly by setting ce.endpoint, KUMIHO_OPENCLAW_MODE=ce, or KUMIHO_OPENCLAW_SERVER_ENDPOINT."
           },
           "endpoint": {
             "type": "string",

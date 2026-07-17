@@ -6,6 +6,7 @@ import { createKumihoMemory } from "../index.js";
 // environments (e.g. a real UPSTASH_REDIS_URL) don't leak into assertions.
 beforeEach(() => {
   vi.stubEnv("KUMIHO_OPENCLAW_MODE", "");
+  vi.stubEnv("KUMIHO_OPENCLAW_SERVER_ENDPOINT", "");
   vi.stubEnv("KUMIHO_LOCAL_SERVER_ENDPOINT", "");
   vi.stubEnv("UPSTASH_REDIS_URL", "");
 });
@@ -45,9 +46,24 @@ describe("CE config resolution", () => {
     expect(memory.config.ce.enabled).toBe(true);
   });
 
-  it("enables CE via KUMIHO_LOCAL_SERVER_ENDPOINT and uses it as the endpoint", () => {
+  it("enables CE via KUMIHO_OPENCLAW_SERVER_ENDPOINT and uses it as the endpoint", () => {
+    vi.stubEnv("KUMIHO_OPENCLAW_SERVER_ENDPOINT", "192.168.1.10:9190");
+    const memory = createKumihoMemory({ mode: "local" });
+    expect(memory.config.ce.enabled).toBe(true);
+    expect(memory.config.ce.endpoint).toBe("192.168.1.10:9190");
+  });
+
+  it("does NOT enable CE from the SDK-generic KUMIHO_LOCAL_SERVER_ENDPOINT alone", () => {
+    // A leftover shell export from another tool's CE setup (e.g. the Claude
+    // plugin) must not silently reroute a cloud-backed OpenClaw.
     vi.stubEnv("KUMIHO_LOCAL_SERVER_ENDPOINT", "192.168.1.10:9190");
     const memory = createKumihoMemory({ mode: "local" });
+    expect(memory.config.ce.enabled).toBe(false);
+  });
+
+  it("honors KUMIHO_LOCAL_SERVER_ENDPOINT as the endpoint value once CE is enabled", () => {
+    vi.stubEnv("KUMIHO_LOCAL_SERVER_ENDPOINT", "192.168.1.10:9190");
+    const memory = createKumihoMemory({ mode: "local", ce: { enabled: true } });
     expect(memory.config.ce.enabled).toBe(true);
     expect(memory.config.ce.endpoint).toBe("192.168.1.10:9190");
   });

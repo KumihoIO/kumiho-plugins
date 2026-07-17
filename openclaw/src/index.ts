@@ -260,7 +260,7 @@ async function getAuthToken(): Promise<string> {
   return "";
 }
 
-import { KumihoClient, KumihoApiError, createTransport, McpTransport, type Transport } from "./client.js";
+import { KumihoClient, KumihoApiError, ceChildEnv, createTransport, McpTransport, type Transport } from "./client.js";
 import { McpBridgeError, type McpToolDefinition } from "./mcp-bridge.js";
 import { PIIRedactor } from "./privacy.js";
 import { ArtifactManager } from "./artifacts.js";
@@ -338,6 +338,22 @@ const CE_DEFAULT_ENDPOINT = "127.0.0.1:9190";
 const CE_DEFAULT_REDIS_URL = "redis://127.0.0.1:6379";
 const CE_MODE_VALUES = new Set(["ce", "community", "self-hosted", "self_hosted", "selfhosted"]);
 
+/**
+ * Whether the user asked for CE routing — explicit config flag/endpoint, or
+ * the plugin-specific env opt-ins. Shared by resolveConfig and the cloud-mode
+ * "ce is ignored" warning so no opt-in form is silently dropped.
+ */
+function ceOptInRequested(raw: KumihoPluginConfig): boolean {
+  const ceModeEnv = (process.env.KUMIHO_OPENCLAW_MODE ?? "").trim().toLowerCase();
+  const ceEndpointEnv = (process.env.KUMIHO_OPENCLAW_SERVER_ENDPOINT ?? "").trim();
+  return (
+    raw.ce?.enabled ??
+    (Boolean((raw.ce?.endpoint ?? "").trim()) ||
+      CE_MODE_VALUES.has(ceModeEnv) ||
+      Boolean(ceEndpointEnv))
+  );
+}
+
 /** Normalize "http://host:port/path" or "host:port" to "host:port" for gRPC. */
 function normalizeCeEndpoint(raw: string | undefined): string {
   const target = (raw ?? "").trim();
@@ -403,19 +419,20 @@ function resolveConfig(
 
   // Self-hosted CE (local mode only). Opt-in via config, or via env for
   // parity with the Claude plugin: KUMIHO_OPENCLAW_MODE=ce (or community /
-  // self-hosted), or setting KUMIHO_LOCAL_SERVER_ENDPOINT alone.
-  const ceModeEnv = (process.env.KUMIHO_OPENCLAW_MODE ?? "").trim().toLowerCase();
-  const ceEndpointEnv = (process.env.KUMIHO_LOCAL_SERVER_ENDPOINT ?? "").trim();
-  const ceRequested =
-    raw.ce?.enabled ??
-    (Boolean((raw.ce?.endpoint ?? "").trim()) ||
-      CE_MODE_VALUES.has(ceModeEnv) ||
-      Boolean(ceEndpointEnv));
+  // self-hosted), or setting KUMIHO_OPENCLAW_SERVER_ENDPOINT alone.
+  //
+  // The SDK-generic KUMIHO_LOCAL_SERVER_ENDPOINT is honored as the endpoint
+  // VALUE once CE is enabled, but deliberately does NOT enable CE by itself:
+  // other tools on the same machine (e.g. the Claude plugin's CE setup)
+  // export it, and a leftover shell export must not silently reroute a
+  // cloud-backed OpenClaw away from the user's cloud memory.
+  const ceRequested = ceOptInRequested(raw);
   const ce = {
     enabled: mode === "local" && ceRequested,
     endpoint:
       normalizeCeEndpoint(raw.ce?.endpoint) ||
-      normalizeCeEndpoint(ceEndpointEnv) ||
+      normalizeCeEndpoint(process.env.KUMIHO_OPENCLAW_SERVER_ENDPOINT) ||
+      normalizeCeEndpoint(process.env.KUMIHO_LOCAL_SERVER_ENDPOINT) ||
       CE_DEFAULT_ENDPOINT,
     redisUrl:
       (raw.ce?.redisUrl ?? "").trim() ||
@@ -905,6 +922,25 @@ async function ensureRuntimeStarted(
 
             if (state.config.local.env && Object.keys(state.config.local.env).length > 0) {
               state.transport.addEnv(state.config.local.env);
+              if (state.config.ce.enabled) {
+                // Re-assert CE routing after user local.env (addEnv is
+                // last-write-wins): a leftover cloud token or endpoint in
+                // local.env would flip the Python SDK back to control-plane
+                // discovery, silently defeating CE mode.
+                const ceEnv = ceChildEnv(state.config.ce);
+                const conflicts = Object.keys(ceEnv).filter(
+                  (key) =>
+                    key in state.config.local.env! &&
+                    state.config.local.env![key] !== ceEnv[key],
+                );
+                if (conflicts.length > 0) {
+                  logger.warn(
+                    `Kumiho CE mode: overriding local.env ${conflicts.join(", ")} ` +
+                      "to keep CE routing (remove them from local.env to silence this)",
+                  );
+                }
+                state.transport.addEnv(ceEnv);
+              }
             }
           }
 
@@ -1051,10 +1087,12 @@ export default {
     artifacts = new ArtifactManager(config.artifactDir);
     hookState = createHookState();
 
-    if (rawConfig.ce?.enabled && config.mode === "cloud") {
+    if (config.mode === "cloud" && ceOptInRequested(rawConfig)) {
       api.logger.warn(
-        "Kumiho: ce.enabled is ignored in cloud mode — CE routing applies to " +
-          'the local Python SDK only. Set mode: "local" to use a self-hosted CE server.',
+        "Kumiho: CE routing was requested (ce config, KUMIHO_OPENCLAW_MODE, or " +
+          "KUMIHO_OPENCLAW_SERVER_ENDPOINT) but is ignored in cloud mode — CE applies to " +
+          'the local Python SDK only. Set mode: "local" to use a self-hosted CE server; ' +
+          "until then conversations continue flowing to Kumiho Cloud.",
       );
     }
 
@@ -1619,8 +1657,16 @@ export default {
         );
 
         // Prefetch memories for the next turn while the user reads this response.
-        // Result is stored in prefetchedRecall and consumed instantly by before_prompt_build.
-        if (config?.autoRecall && state.hookState.lastUserMessage) {
+        // Result is stored in prefetchedRecall and consumed instantly by
+        // before_prompt_build. On warm turns before_prompt_build already fired a
+        // refresh prefetch with this same query — skip the duplicate here when
+        // its result is cached, so the identical query doesn't hit the backend's
+        // engage dedup window twice per turn.
+        if (
+          config?.autoRecall &&
+          state.hookState.lastUserMessage &&
+          !state.hookState.prefetchedRecall
+        ) {
           const queryForNext = state.hookState.lastUserMessage;
           void prefetchMemories(state.client, state.config, queryForNext, state.hookState)
             .then((r) => { state.hookState.prefetchedRecall = r; })
