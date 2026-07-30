@@ -218,7 +218,7 @@ gRPC endpoint via control-plane discovery, and launches the MCP server.
 Default package spec:
 
 ```text
-kumiho[mcp]>=0.10.8 kumiho-memory[all]>=0.17.3
+kumiho[mcp]>=0.10.8 kumiho-memory[all]>=1.2.0
 ```
 
 ## Self-hosted (Community Edition)
