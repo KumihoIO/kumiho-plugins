@@ -23,13 +23,22 @@ KOREAN = "이것은 절대로 원장에 저장되면 안 되는 매우 독특한
 
 
 def _run_hook(payload: dict, home: Path, env_extra: dict | None = None):
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8",
-           "KUMIHO_CLAUDE_HOME": str(home), **(env_extra or {})}
-    return subprocess.run(
+    # Deliberately does NOT set PYTHONIOENCODING, and feeds raw UTF-8 BYTES.
+    # Production sets neither, and forcing them here made the suite structurally
+    # blind: 78 tests passed green while the shipped hook wrote nothing for any
+    # payload containing an em dash.
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+    env["KUMIHO_CLAUDE_HOME"] = str(home)
+    env.update(env_extra or {})
+    r = subprocess.run(
         [sys.executable, str(SCRIPTS / "reflex-observe.py")],
-        input=json.dumps(payload, ensure_ascii=True),
-        capture_output=True, text=True, encoding="utf-8", env=env, timeout=30,
+        input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        capture_output=True, env=env, timeout=30,
     )
+    r.stdout = r.stdout.decode("utf-8", "replace")
+    r.stderr = r.stderr.decode("utf-8", "replace")
+    return r
 
 
 def _load(name: str):
@@ -171,6 +180,46 @@ def test_append_jsonl_refuses_past_the_byte_cap(tmp_path, monkeypatch):
     p.write_text("x" * (rs._LEDGER_MAX_BYTES + 1), encoding="utf-8")
     assert rs.append_jsonl(p, {"a": 1}) is False
     assert "ledger full" in (tmp_path / "reflex.log").read_text(encoding="utf-8")
+
+
+def test_non_ascii_response_still_records_a_turn(tmp_path):
+    """THE regression test for the bug that shipped green.
+
+    Claude Code writes the hook payload as raw UTF-8; Python on Windows decodes a
+    pipe with the ambient codepage (cp949) under surrogateescape, which does not
+    raise -- so json.loads returned mojibake carrying lone surrogates and the
+    next .encode("utf-8") blew up. Both the ledger line AND the prefetch spawn
+    were lost, silently, exit 0. An em dash was enough, and Claude writes those
+    constantly. Fails on the pre-fix code for every case except "ascii".
+    """
+    for name, msg in (("ascii", "plain"), ("emdash", "we chose X — it worked"),
+                      ("korean", "결제 오류"), ("emoji", "shipped 🚀"),
+                      ("curly", "the “right” call")):
+        home = tmp_path / name
+        home.mkdir(parents=True, exist_ok=True)
+        r = _run_hook({"hook_event_name": "Stop", "session_id": "s1",
+                       "prompt_id": "p1", "last_assistant_message": msg}, home)
+        assert r.returncode == 0, (name, r.stderr)
+        rows = _ledger(home, "s1")
+        assert len(rows) == 1, "%s produced no ledger row" % name
+        assert rows[0]["resp_len"] == len(msg.strip()), name
+        assert len(rows[0]["resp_sha12"]) == 12, name
+
+
+def test_ledger_failure_cannot_cancel_the_prefetch_spawn(tmp_path, monkeypatch):
+    """The spawn is load-bearing; the ledger is bookkeeping. They used to share
+    one try/except, so one bad byte cost both."""
+    mod = _load("reflex-observe.py")
+    calls = []
+    monkeypatch.setattr(mod, "_spawn_prefetch", lambda p, s: calls.append(s))
+    monkeypatch.setattr(mod, "_on_stop", lambda p, s: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setenv("KUMIHO_CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setattr(mod.sys, "stdin", type("F", (), {
+        "buffer": type("B", (), {"read": staticmethod(lambda: json.dumps(
+            {"hook_event_name": "Stop", "session_id": "s1",
+             "last_assistant_message": "x"}).encode("utf-8"))})()})())
+    assert mod.main() == 0
+    assert calls == ["s1"], "prefetch spawn was cancelled by a ledger failure"
 
 
 if __name__ == "__main__":

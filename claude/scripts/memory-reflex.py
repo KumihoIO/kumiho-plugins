@@ -47,8 +47,13 @@ def _int_env(name: str, default: int) -> int:
 
 
 def _read_stdin() -> dict:
+    # Explicit UTF-8: sys.stdin on a Windows pipe uses the ambient codepage
+    # (cp949) with surrogateescape, which silently mojibakes the payload and
+    # persists a corrupted prompt into turn.json -- which is exactly what the
+    # prefetch worker builds its recall query from.
     try:
-        raw = sys.stdin.read()
+        buf = getattr(sys.stdin, "buffer", None)
+        raw = buf.read().decode("utf-8", "replace") if buf else sys.stdin.read()
     except (OSError, ValueError):
         return {}
     if not (raw or "").strip():

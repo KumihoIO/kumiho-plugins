@@ -109,8 +109,18 @@ def _append_overflow(spilled: list) -> None:
 
 
 def _git(repo: str, *args: str) -> str:
-    r = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
-    return r.stdout.strip() if r.returncode == 0 else ""
+    """Read git output as UTF-8.
+
+    Without an explicit encoding, ``text=True`` decodes with the ambient
+    codepage; on cp949 a non-ASCII commit subject raises inside subprocess's
+    reader thread, so ``stdout`` comes back None and ``.strip()`` raises
+    AttributeError -- which is neither OSError nor SubprocessError, so it escapes
+    enqueue() entirely and the commit is dropped. The live log shows 64 such
+    drops, and the queue holds zero non-ASCII subjects: every one was lost.
+    """
+    r = subprocess.run(["git", "-C", repo, *args], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
+    return (r.stdout or "").strip() if r.returncode == 0 else ""
 
 
 def enqueue(repo: str, commit: str = "") -> None:

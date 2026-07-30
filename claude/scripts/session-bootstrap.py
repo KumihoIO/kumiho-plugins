@@ -121,8 +121,11 @@ def _state_dir() -> Path:
 def _read_hook_input() -> dict:
     """Most-defensive stdin read (the idiom from save-session-artifact.py):
     blank or unparseable input degrades to {}, never raises."""
+    # Explicit UTF-8: the hook wire format is UTF-8, but sys.stdin on a Windows
+    # pipe decodes with the ambient codepage (cp949) and surrogateescape.
     try:
-        raw = sys.stdin.read()
+        buf = getattr(sys.stdin, "buffer", None)
+        raw = buf.read().decode("utf-8", "replace") if buf else sys.stdin.read()
     except (OSError, ValueError):
         return {}
     if not (raw or "").strip():

@@ -31,12 +31,18 @@ SCRIPTS = Path(__file__).resolve().parent
 
 def _run_hook(script: str, payload: dict, env_extra: dict | None = None):
     """PATTERN A -- real entrypoint, real stdin, real exit code."""
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8", **(env_extra or {})}
-    return subprocess.run(
+    # No PYTHONIOENCODING, raw UTF-8 bytes -- production conditions.
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+    env.update(env_extra or {})
+    r = subprocess.run(
         [sys.executable, str(SCRIPTS / script)],
-        input=json.dumps(payload, ensure_ascii=True),
-        capture_output=True, text=True, encoding="utf-8", env=env, timeout=30,
+        input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        capture_output=True, env=env, timeout=30,
     )
+    r.stdout = r.stdout.decode("utf-8", "replace")
+    r.stderr = r.stderr.decode("utf-8", "replace")
+    return r
 
 
 def _load(script: str):

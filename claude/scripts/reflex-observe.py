@@ -38,8 +38,16 @@ import reflex_state as rs  # noqa: E402
 
 
 def _read_stdin() -> dict:
+    # Decode the payload as UTF-8 EXPLICITLY. The hook wire format is UTF-8
+    # regardless of locale, but sys.stdin on a Windows pipe uses the ambient
+    # codepage (cp949 here) with surrogateescape -- which does not raise, so
+    # json.loads happily returns mojibake carrying LONE SURROGATES that blow up
+    # on the next .encode("utf-8"). One em dash was enough to silently kill both
+    # the ledger line and the prefetch spawn. errors="replace" keeps it fail-open
+    # and, unlike surrogateescape, can never emit a surrogate downstream.
     try:
-        raw = sys.stdin.read()
+        buf = getattr(sys.stdin, "buffer", None)
+        raw = buf.read().decode("utf-8", "replace") if buf else sys.stdin.read()
     except (OSError, ValueError):
         return {}
     if not (raw or "").strip():
@@ -70,7 +78,9 @@ def _on_stop(payload: dict, session_id: str) -> None:
         "resp_len": len(stripped),
         # sha of the TEXT, never the text: enough to correlate turns, useless
         # for reconstructing anything.
-        "resp_sha12": hashlib.sha256(stripped.encode("utf-8")).hexdigest()[:12] if stripped else "",
+        # errors="replace": a lone surrogate from a mis-decoded payload must not
+        # raise here -- hashing is bookkeeping, and it once took the whole hook down.
+        "resp_sha12": hashlib.sha256(stripped.encode("utf-8", "replace")).hexdigest()[:12] if stripped else "",
         # openclaw's empty-response guard (hooks.ts): a turn that ended with only
         # tool calls is not a missed capture, it is a turn with nothing to say.
         "tool_only": not stripped,
@@ -138,9 +148,16 @@ def main() -> int:
         # Subagent turns fire SubagentStop, which we deliberately do not observe.
         event = str(payload.get("hook_event_name") or "")
         if event == "Stop":
-            _on_stop(payload, session_id)
+            # Spawn FIRST: it is the load-bearing side effect (no worker -> no
+            # recall cache -> nothing to inject next turn). Bookkeeping gets its
+            # own handler so a ledger failure can never cancel it -- these used to
+            # share one try/except, so one bad byte cost both.
             if not payload.get("stop_hook_active"):
                 _spawn_prefetch(payload, session_id)
+            try:
+                _on_stop(payload, session_id)
+            except BaseException:  # noqa: BLE001
+                pass
         elif event == "PostToolUse":
             _on_tool(payload, session_id)
     except BaseException:  # noqa: BLE001 - observation must never fail a session

@@ -26,13 +26,20 @@ KOREAN_MEM = "지난주에 nano_banana_2 가격 정책을 이미지 크기별로
 
 
 def _run(payload: dict, home: Path, args=(), env_extra: dict | None = None):
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8",
-           "KUMIHO_CLAUDE_HOME": str(home), **(env_extra or {})}
-    return subprocess.run(
+    # No PYTHONIOENCODING, raw UTF-8 bytes -- production conditions. See the
+    # note in test_reflex_observe._run_hook.
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+    env["KUMIHO_CLAUDE_HOME"] = str(home)
+    env.update(env_extra or {})
+    r = subprocess.run(
         [sys.executable, str(SCRIPTS / "memory-reflex.py"), *args],
-        input=json.dumps(payload, ensure_ascii=True),
-        capture_output=True, text=True, encoding="utf-8", env=env, timeout=30,
+        input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        capture_output=True, env=env, timeout=30,
     )
+    r.stdout = r.stdout.decode("utf-8", "replace")
+    r.stderr = r.stderr.decode("utf-8", "replace")
+    return r
 
 
 def _seed_cache(home: Path, sid: str, block: str, sha: str = "deadbeef1234",
