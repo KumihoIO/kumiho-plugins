@@ -70,9 +70,6 @@ def main() -> int:
 
     if not session_id:
         return 0
-    if not _automine_enabled():
-        # Off by default — the loop is opt-in (set KUMIHO_MEMORY_CODE_AUTOMINE=1).
-        return 0
     if not transcript or not Path(transcript).exists():
         log(f"skip: no transcript for session {session_id}")
         return 0
@@ -97,6 +94,13 @@ def main() -> int:
     try:
         launcher._sanitize_placeholder_env_vars()
         launcher._hydrate_env_from_local_config()
+        # Gate AFTER hydration, not before. Evaluated earlier, the flag could only
+        # ever be read from a real process env var, so declaring
+        # KUMIHO_MEMORY_CODE_AUTOMINE in .mcp.json was inert and this worker was
+        # unreachable in practice. Default is still OFF (double opt-in).
+        if not _automine_enabled():
+            log("skip: AUTOMINE off (set KUMIHO_MEMORY_CODE_AUTOMINE=1 to enable)")
+            return 0
         if not launcher._ce_mode_enabled():
             launcher._validate_auth_token()
         try:

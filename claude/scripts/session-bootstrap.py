@@ -9,12 +9,26 @@ memory bootstrap cannot run.
 
 The context also reminds Claude about the recall-before-respond rule
 so it persists across the full session.
+
+It ALSO persists the host-provided session facts to
+``<state>/reflex/<session_id>.session.json``.  Claude Code hands every hook
+``session_id``, ``source``, ``cwd`` and ``transcript_path`` on stdin; this hook
+used to discard all four, which is why nothing downstream could name the session
+it was in -- the model was left to guess a session_id it has no channel to learn.
+Sibling hooks (``save-session-artifact.py``, ``code-capture-hook.py``) already
+read the same payload.
+
+Run: fed a JSON hook payload on stdin by Claude Code; prints one
+``hookSpecificOutput`` envelope on stdout.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
+from pathlib import Path
 
 CONTEXT = (
     "SESSION-START INSTRUCTION (kumiho-memory plugin)\n"
@@ -22,7 +36,8 @@ CONTEXT = (
     "=== EVERY TURN AFTER THE FIRST ===\n"
     "The bootstrap is DONE.  On turn 2 and beyond, follow ONLY these "
     "rules:\n"
-    "  - Do NOT invoke the kumiho-memory skill.\n"
+    "  - You MAY consult the kumiho-memory skill if the protocol is "
+    "unclear.  Do not re-run bootstrap.\n"
     "  - Do NOT call kumiho_get_revision_by_tag.  Identity is already "
     "loaded.\n"
     "  - Do NOT greet the user unless they greeted you first.  If their "
@@ -89,14 +104,87 @@ CONTEXT = (
     "in your working context for the rest of the session."
 )
 
-print(
-    json.dumps(
-        {
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": CONTEXT,
-            }
-        }
+def _state_dir() -> Path:
+    """Mirror ``run_kumiho_mcp._state_dir`` -- duplicated, like
+    ``code_capture_pending._state_dir``, so this hook stays import-free and fast
+    on the session-start critical path."""
+    override = (os.getenv("KUMIHO_CLAUDE_HOME", "") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt":
+        base = os.getenv("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
+        return Path(base) / "kumiho-claude"
+    xdg = (os.getenv("XDG_CACHE_HOME", "") or "").strip()
+    return (Path(xdg) if xdg else Path.home() / ".cache") / "kumiho-claude"
+
+
+def _read_hook_input() -> dict:
+    """Most-defensive stdin read (the idiom from save-session-artifact.py):
+    blank or unparseable input degrades to {}, never raises."""
+    try:
+        raw = sys.stdin.read()
+    except (OSError, ValueError):
+        return {}
+    if not (raw or "").strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _persist_session(payload: dict) -> None:
+    """Record the host-provided session facts for downstream reflex components.
+
+    Best-effort by construction: SessionStart must never fail a session, so every
+    error is swallowed. Writing nothing simply leaves downstream code to fall back
+    to its own resolution."""
+    session_id = str(payload.get("session_id") or "").strip()
+    if not session_id:
+        return
+    # keep the filename a plain uuid-ish token; never trust it as a path component
+    if any(c in session_id for c in '\\/:*?"<>|'):
+        return
+    try:
+        d = _state_dir() / "reflex"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / ("%s.session.json" % session_id)).write_text(
+            json.dumps(
+                {
+                    "session_id": session_id,
+                    "source": str(payload.get("source") or ""),
+                    "cwd": str(payload.get("cwd") or ""),
+                    "transcript_path": str(payload.get("transcript_path") or ""),
+                    "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                },
+                ensure_ascii=True,
+            ),
+            encoding="utf-8",
+        )
+    except (OSError, ValueError):
+        pass
+
+
+def main() -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, OSError):
+        pass  # piped children report cp949 on Windows; best-effort
+    _persist_session(_read_hook_input())
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": CONTEXT,
+                }
+            },
+            ensure_ascii=True,
+        )
     )
-)
-sys.exit(0)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,5 +1,5 @@
 {
-  "description": "Kumiho memory plugin hooks — session bootstrap, auto-approval, artifact generation, and Decision Memory auto-capture",
+  "description": "Kumiho memory plugin hooks \u2014 session bootstrap, auto-approval, artifact generation, and Decision Memory auto-capture",
   "hooks": {
     "SessionStart": [
       {
@@ -20,7 +20,20 @@
           {
             "type": "command",
             "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/code-capture-hook.py\"",
-            "timeout": 5
+            "timeout": 5,
+            "statusMessage": "kumiho"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*kumiho-memory.*__kumiho_memory_(engage|reflect)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/reflex-observe.py\"",
+            "timeout": 10,
+            "async": true,
+            "statusMessage": "kumiho"
           }
         ]
       }
@@ -50,7 +63,45 @@
           {
             "type": "command",
             "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/auto-approve-memory.py\"",
-            "timeout": 5
+            "timeout": 5,
+            "statusMessage": "kumiho"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/reflex-observe.py\"",
+            "timeout": 10,
+            "async": true,
+            "statusMessage": "kumiho"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/memory-reflex.py\"",
+            "timeout": 5,
+            "statusMessage": "kumiho"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/memory-reflex.py\" --subagent",
+            "timeout": 5,
+            "statusMessage": "kumiho"
           }
         ]
       }
