@@ -932,6 +932,20 @@ def _sanitize_placeholder_env_vars() -> None:
         "KUMIHO_CLAUDE_SERVER_ENDPOINT",
         "KUMIHO_LLM_BASE_URL",
         "KUMIHO_MEMORY_CODE",
+        "KUMIHO_MEMORY_CODE_AUTOMINE",
+        # Memory-reflex knobs. Declaring a name in .mcp.json is only half the
+        # wiring: on Desktop the ${VAR:-default} arrives literally, so a name
+        # missing from this tuple reaches the worker as a raw template string and
+        # the declared default silently never applies.
+        "KUMIHO_REFLEX",
+        "KUMIHO_REFLEX_PREFETCH",
+        "KUMIHO_REFLEX_LIMIT",
+        "KUMIHO_REFLEX_MIN_INTERVAL_S",
+        "KUMIHO_REFLEX_MAX_CHARS",
+        "KUMIHO_REFLEX_TTL_S",
+        "KUMIHO_REFLEX_FLOOR",
+        "KUMIHO_REFLEX_SESSION_BUDGET_CHARS",
+        "KUMIHO_ARTIFACT_MAX_BYTES",
     ):
         raw = (os.getenv(key, "") or "").strip()
         if not raw or not _looks_like_placeholder(raw):
