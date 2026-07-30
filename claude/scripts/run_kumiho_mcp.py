@@ -294,6 +294,15 @@ def _normalize_host_session_id() -> None:
     gap. Hosts that expose no session identity (Claude Desktop's
     config-spawned servers) get nothing, and the package then asks callers
     for an explicit id rather than guessing — the intended behaviour.
+
+    CODEX_SESSION_ID is listed forward-compatibly, NOT because it works:
+    codex-cli 0.145.0 does not define it (a string scan of the shipped
+    codex.exe finds 60+ CODEX_* variables and no session id — the closest
+    are CODEX_ROLLOUT_TRACE_ROOT, a directory, and the CODEX_TUI_RECORD_*
+    capture flags). Codex therefore has NO host identity to normalize, and
+    its skill text carries the rule instead: derive one stable id per
+    session and pass it on every memory call. Do not read this tuple as
+    "Codex is covered".
     """
     if (os.getenv("KUMIHO_SESSION_ID", "") or "").strip():
         return

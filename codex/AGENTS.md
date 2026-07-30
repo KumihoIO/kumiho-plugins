@@ -17,6 +17,19 @@ the returned `source_krefs` for reflect.
 capture titles ("on Jul 11", never "today"). Skip captures for trivial
 exchanges; pass `source_krefs` from engage for provenance.
 
+## Session id — you must supply it (Codex)
+
+Codex publishes no session identity to MCP servers, so `kumiho-memory`
+>=1.2.0 cannot resolve an omitted `session_id` and **refuses the call**
+rather than guessing. Derive ONE stable id at the start of the session —
+`{repo}-{YYYY-MM-DD}` is a good shape — and pass that same value on every
+memory call that accepts it (`kumiho_memory_engage`,
+`kumiho_memory_reflect`, `kumiho_memory_consolidate`, `kumiho_chat_*`).
+
+A fresh id per call scatters one conversation across as many
+working-memory buckets as you invent. If a result reports
+`created_bucket=true` on a turn that is not the first, you changed the id.
+
 ## Decision Memory (code work)
 
 **Before modifying unfamiliar code, ask `kumiho_code_why` for the file
@@ -39,4 +52,5 @@ skip captured commits at zero LLM cost).
 - Compare each memory's `created_at` to today's date; prefer recent
   memories when they conflict with stale ones.
 - After 20+ exchanges or at session end, call
-  `kumiho_memory_consolidate(session_id=...)`.
+  `kumiho_memory_consolidate` with the session id you have been using all
+  along (see "Session id" above).
