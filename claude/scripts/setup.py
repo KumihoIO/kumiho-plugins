@@ -229,7 +229,7 @@ def setup_venv(base_python: str) -> Path:
     log("Installing kumiho packages...")
     r = subprocess.run(
         [str(VENV_PYTHON), "-m", "pip", "install", "--upgrade", "--quiet",
-         "kumiho[mcp]>=0.9.16", "kumiho-memory[all]>=0.3.16"],
+         "kumiho[mcp]>=0.10.8", "kumiho-memory[all]>=1.2.0"],
         capture_output=True, text=True, timeout=120,
     )
     if r.returncode != 0:
