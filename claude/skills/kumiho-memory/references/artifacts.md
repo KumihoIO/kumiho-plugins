@@ -24,13 +24,13 @@ Store: builds, deploys, tests, migrations, complex tool chains. Skip: trivial co
 
 After `/compact` or auto-compression, immediately capture via reflect:
 ```
-kumiho_memory_reflect(session_id=<id>, response=<compact summary>, captures=[{type:"summary", title:"Session compact: <topic>", content:<compact summary>, tags:["compact","session-context"]}])
+kumiho_memory_reflect(response=<compact summary>, captures=[{type:"summary", title:"Session compact: <topic>", content:<compact summary>, tags:["compact","session-context"]}])
 ```
 
 ## Conversation artifacts
 
 For sessions with 2+ meaningful exchanges, at task boundaries or session end:
 
-1. Write markdown to `{artifact_dir}/{YYYY-MM-DD}/{session_id}.md` with YAML frontmatter (session_id, user_id, agent_name, date, topics, summary) + exchanges
-2. `kumiho_memory_consolidate(session_id=<id>)`
+1. Write markdown to `{artifact_dir}/{YYYY-MM-DD}/{session_id}.md` with YAML frontmatter (session_id, user_id, agent_name, date, topics, summary) + exchanges — use the `session_id` a memory tool reported in its result, never one you invent
+2. `kumiho_memory_consolidate()`
 3. Close with continuity — reference what's open for next session

@@ -18,7 +18,7 @@ import venv
 from pathlib import Path
 
 
-DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.10.8 kumiho-memory[all]>=0.17.3"
+DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.10.8 kumiho-memory[all]>=1.2.0"
 MARKER_FILE = ".installed-packages.txt"
 DEFAULT_DISCOVERY_USER_AGENT = "kumiho-claude/0.16.0"
 
@@ -272,6 +272,36 @@ def _set_env_if_absent(key: str, value: str, source: str) -> bool:
     os.environ[key] = candidate
     print(f"[kumiho-claude] Loaded {key} from {source}.", file=sys.stderr)
     return True
+
+
+def _normalize_host_session_id() -> None:
+    """Publish the host's session identity as KUMIHO_SESSION_ID.
+
+    kumiho-memory >=1.2.0 resolves an omitted session_id from this ONE
+    variable and deliberately ignores CLAUDE_CODE_SESSION_ID: that var
+    reaches the server by env inheritance rather than by contract, and
+    Claude Code rotates its session on /clear WITHOUT respawning the
+    server, so trusting it silently merged the post-/clear conversation
+    into the previous one's working-memory bucket.
+
+    Setting it HERE is the point: identity provisioning belongs to the
+    host-integration layer, which knows which host it is talking to and —
+    unlike the package — has a live channel for rotation (the SessionStart
+    hook receives the new id on /clear; kumiho-plugins#45 item 4). Per-host
+    knowledge accumulates in this function instead of in the package.
+
+    An explicitly set KUMIHO_SESSION_ID always wins; this only fills the
+    gap. Hosts that expose no session identity (Claude Desktop's
+    config-spawned servers) get nothing, and the package then asks callers
+    for an explicit id rather than guessing — the intended behaviour.
+    """
+    if (os.getenv("KUMIHO_SESSION_ID", "") or "").strip():
+        return
+    for var in ("CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID"):
+        value = (os.getenv(var, "") or "").strip()
+        if value and not _looks_like_placeholder(value):
+            os.environ["KUMIHO_SESSION_ID"] = value
+            return
 
 
 def _plugin_root() -> Path:
@@ -980,6 +1010,7 @@ def main() -> int:
 
     _sanitize_placeholder_env_vars()
     _hydrate_env_from_local_config()
+    _normalize_host_session_id()
     # The Desktop server-entry self-heal is auth-independent (its token embed is
     # already guarded), so it runs in both modes — otherwise a CE user's stale
     # entry would never be repaired after a plugin upgrade.  Claude hosts only:

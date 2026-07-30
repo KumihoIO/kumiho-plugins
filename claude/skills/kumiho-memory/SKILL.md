@@ -60,7 +60,6 @@ After a substantive response, **reflect** on what matters:
 
 ```
 kumiho_memory_reflect(
-  session_id: "<session_id>",
   response: "<your response text>",
   captures: [
     { type: "decision", title: "Chose gRPC on Mar 27", content: "..." },
@@ -86,7 +85,7 @@ This does three things in one call:
 
 - After **20+ exchanges** or when the user signals session end (goodbye, exit, done), trigger consolidation:
   ```
-  kumiho_memory_consolidate(session_id=<id>)
+  kumiho_memory_consolidate()
   ```
 - Close with continuity — reference what's open for next session
 
@@ -159,7 +158,6 @@ Skill discovery consumes your one engage-per-turn. Mitigations:
 If no skill matches and you improvised a procedure, capture it via reflect:
 ```
 kumiho_memory_reflect(
-  session_id: "<session_id>",
   response: "<your response>",
   captures: [{
     type: "skill",
@@ -186,8 +184,8 @@ DreamState will review and refine it.
 
 ## Session End
 
-1. Generate conversation artifact at `{artifact_dir}/{YYYY-MM-DD}/{session_id}.md` (see [Artifacts](references/artifacts.md))
-2. `kumiho_memory_consolidate(session_id=<id>)`
+1. Generate conversation artifact at `{artifact_dir}/{YYYY-MM-DD}/{session_id}.md` — take `{session_id}` from the `session_id` a memory tool reported, never invented (see [Artifacts](references/artifacts.md))
+2. `kumiho_memory_consolidate()`
 3. Close with continuity — reference what's open for next session
 
 ---

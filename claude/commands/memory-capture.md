@@ -13,8 +13,8 @@ in later sessions.
 1. If no argument was provided, ask the user for the memory text to store.
 2. Call `kumiho_memory_engage` with the memory text as query to find
    related existing memories. Hold the returned `source_krefs`.
-3. Call `kumiho_memory_reflect` with:
-   - `session_id`: current session ID
+3. Call `kumiho_memory_reflect` with (omit `session_id` — the server
+   resolves it and reports the value it used):
    - `response`: `"Manual memory capture via /memory-capture"`
    - `captures`: one capture with:
      - `type`: infer from content — `"fact"` for facts, `"decision"`
