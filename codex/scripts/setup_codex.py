@@ -25,6 +25,17 @@ import os
 import sys
 from pathlib import Path
 
+# This script's own messages contain em-dashes, which a legacy Windows code page
+# (cp949) cannot encode. A real console gets a UTF-8 wrapper for free, but a
+# redirected or captured stdout does not -- and the branch that trips it is the
+# idempotent "already registered" one, so a correct install reported failure.
+# Module scope, matching claude/scripts/setup.py and backfill_inventory.py.
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 SECTION = "mcp_servers.kumiho-memory"
 
 

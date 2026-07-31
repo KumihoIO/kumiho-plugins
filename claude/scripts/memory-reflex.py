@@ -123,8 +123,10 @@ def _subagent_card(session_id: str) -> str:
         # the MCP server's env, which goes stale after /clear (Claude Code rotates
         # the session id without respawning the server), so captures would land in
         # the PREVIOUS conversation's bucket. This card holds the live id.
-        "- Pass session_id=%s explicitly on every memory call. Do not omit it "
-        "here and do not invent one.\n"
+        "- Pass session_id=%s explicitly wherever a memory tool accepts one "
+        "(reflect, consolidate, chat/ingest). Do not omit it here, do not "
+        "invent one, and do not add it to tools that take no session_id "
+        "(engage among them) — that is an input error.\n"
         "- Do not narrate memory operations." % session_id
     )
 

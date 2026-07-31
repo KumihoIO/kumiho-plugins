@@ -28,6 +28,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+import bounded_proc
+
+#: Bounds for the provisioning subprocesses. Onboarding is interactive: a hang
+#: here is a user sitting in front of a dead prompt, so every wait is finite
+#: (kumiho-plugins#36).
+VENV_TIMEOUT_S = 120
+PIP_TIMEOUT_S = 120
+
 # Ensure stdout can handle Unicode (em dashes, box drawing, etc.)
 # even on Windows consoles with legacy codepages like cp949/cp1252.
 if hasattr(sys.stdout, "reconfigure"):
@@ -194,10 +202,7 @@ def find_python() -> str | None:
 
     for cmd in ["python3", "python"]:
         try:
-            r = subprocess.run(
-                [cmd, "--version"],
-                capture_output=True, text=True, timeout=10,
-            )
+            r = bounded_proc.run([cmd, "--version"], timeout=10)
             if r.returncode != 0:
                 continue
             ver = (r.stdout or r.stderr).strip()
@@ -216,32 +221,44 @@ def setup_venv(base_python: str) -> Path:
     else:
         log("Creating venv...")
         KUMIHO_DIR.mkdir(parents=True, exist_ok=True)
-        r = subprocess.run(
-            [base_python, "-m", "venv", str(VENV_DIR)],
-            capture_output=True, text=True,
-        )
+        try:
+            r = bounded_proc.run(
+                [base_python, "-m", "venv", str(VENV_DIR)], timeout=VENV_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            fail(f"venv creation timed out after {VENV_TIMEOUT_S}s")
+            sys.exit(1)
         if r.returncode != 0:
             fail(f"venv creation failed: {r.stderr}")
             sys.exit(1)
         ok(f"Created venv: {VENV_DIR}")
 
-    # Install/upgrade packages
+    # Install/upgrade packages. pip's build-backend children inherit the pipe
+    # handles, which is exactly the pipe-holder that used to turn "pip timed
+    # out" into an indefinite hang of interactive onboarding (#36).
     log("Installing kumiho packages...")
-    r = subprocess.run(
-        [str(VENV_PYTHON), "-m", "pip", "install", "--upgrade", "--quiet",
-         "kumiho[mcp]>=0.10.8", "kumiho-memory[all]>=1.2.0"],
-        capture_output=True, text=True, timeout=120,
-    )
+    try:
+        r = bounded_proc.run(
+            [str(VENV_PYTHON), "-m", "pip", "install", "--upgrade", "--quiet",
+             "kumiho[mcp]>=0.10.8", "kumiho-memory[all]>=1.2.1"],
+            timeout=PIP_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        fail(f"pip install timed out after {PIP_TIMEOUT_S}s")
+        sys.exit(1)
     if r.returncode != 0:
         fail(f"pip install failed: {r.stderr}")
         sys.exit(1)
     ok("kumiho[mcp] and kumiho-memory[all] installed")
 
     # Verify MCP server is importable
-    r = subprocess.run(
-        [str(VENV_PYTHON), "-c", "import kumiho.mcp_server"],
-        capture_output=True, text=True, timeout=10,
-    )
+    try:
+        r = bounded_proc.run(
+            [str(VENV_PYTHON), "-c", "import kumiho.mcp_server"], timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        fail("kumiho.mcp_server import check timed out")
+        sys.exit(1)
     if r.returncode != 0:
         fail("kumiho.mcp_server not importable — check installation")
         sys.exit(1)
@@ -958,11 +975,14 @@ def verify_connection(venv_python: Path, token: str | None) -> None:
 
     # Write a temp env file for the test
     temp_env = PLUGIN_DIR / ".env.local"
-    r = subprocess.run(
-        [str(venv_python), str(test_script), "--env-file", str(temp_env)],
-        capture_output=True, text=True, timeout=15,
-        env=env,
-    )
+    try:
+        r = bounded_proc.run(
+            [str(venv_python), str(test_script), "--env-file", str(temp_env)],
+            timeout=15, env=env,
+        )
+    except subprocess.TimeoutExpired:
+        warn("Connection test timed out — the MCP server may still work")
+        return
     if r.returncode == 0:
         ok("Connection to Kumiho Cloud verified")
     else:

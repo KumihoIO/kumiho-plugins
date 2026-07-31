@@ -24,6 +24,12 @@ import sys
 import time
 from pathlib import Path
 
+import bounded_proc
+
+#: git here only reads refs and one commit subject; anything slower is a stuck
+#: repo, not a slow one.
+_GIT_TIMEOUT_S = 30
+
 # Bound the backlog so a long keyless stretch can't grow forever. Raised from 50
 # after the queue was measured pinned AT the old cap, silently dropping the
 # oldest commit on every enqueue: at the observed ~6 commits/day, 200 is ~33 days
@@ -109,17 +115,28 @@ def _append_overflow(spilled: list) -> None:
 
 
 def _git(repo: str, *args: str) -> str:
-    """Read git output as UTF-8.
+    """Read git output as UTF-8, under a real time bound.
 
-    Without an explicit encoding, ``text=True`` decodes with the ambient
-    codepage; on cp949 a non-ASCII commit subject raises inside subprocess's
-    reader thread, so ``stdout`` comes back None and ``.strip()`` raises
-    AttributeError -- which is neither OSError nor SubprocessError, so it escapes
-    enqueue() entirely and the commit is dropped. The live log shows 64 such
-    drops, and the queue holds zero non-ASCII subjects: every one was lost.
+    Decoding is explicit: with ``text=True`` and no encoding the ambient
+    codepage decodes it; on cp949 a non-ASCII commit subject raises inside
+    subprocess's reader thread, so ``stdout`` comes back None and ``.strip()``
+    raises AttributeError -- which is neither OSError nor SubprocessError, so it
+    escapes enqueue() entirely and the commit is dropped. The live log shows 64
+    such drops, and the queue holds zero non-ASCII subjects: every one was lost.
+
+    The wait is bounded via ``bounded_proc`` because this is the enqueue path a
+    git hook drives with no agent in the loop: a stuck ``git`` here used to hang
+    the worker forever (kumiho-plugins#36 -- and ``subprocess.run(timeout=...)``
+    would not have been a bound either).
     """
-    r = subprocess.run(["git", "-C", repo, *args], capture_output=True,
-                       text=True, encoding="utf-8", errors="replace")
+    try:
+        r = bounded_proc.run(["git", "-C", repo, *args], timeout=_GIT_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        _log("git timed out after %ss: %s" % (_GIT_TIMEOUT_S, " ".join(args)))
+        return ""
+    except OSError as exc:
+        _log("git failed to start (%s): %s" % (exc, " ".join(args)))
+        return ""
     return (r.stdout or "").strip() if r.returncode == 0 else ""
 
 

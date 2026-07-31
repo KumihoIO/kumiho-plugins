@@ -3,7 +3,7 @@
 Persistent graph-native memory plugin for Claude. Runs a local Kumiho MCP
 server with `kumiho-memory` so Claude **remembers you across sessions**.
 
-Version: **0.17.2** | Requires: `kumiho>=0.10.8`, `kumiho-memory>=0.17.3`
+Version: **0.18.1** | Requires: `kumiho>=0.10.8`, `kumiho-memory>=1.2.1`
 (installed automatically into an isolated venv — nothing to `pip install`)
 
 Also consumable by **OpenAI Codex** — Codex reads this repo's marketplace
@@ -218,7 +218,7 @@ gRPC endpoint via control-plane discovery, and launches the MCP server.
 Default package spec:
 
 ```text
-kumiho[mcp]>=0.10.8 kumiho-memory[all]>=1.2.0
+kumiho[mcp]>=0.10.8 kumiho-memory[all]>=1.2.1
 ```
 
 ## Self-hosted (Community Edition)
@@ -506,10 +506,21 @@ python ./kumiho-claude/scripts/test_ce_mode.py
 │           └── privacy-and-trust.md      # Privacy guarantees and data handling
 ├── scripts/
 │   ├── run_kumiho_mcp.py         # Bootstrap launcher (venv, install, discovery, MCP)
+│   ├── bounded_proc.py           # Subprocess helper whose timeout is a real bound
 │   ├── session-bootstrap.py      # SessionStart hook
+│   ├── memory-reflex.py          # UserPromptSubmit + SubagentStart hook
+│   ├── reflex-observe.py         # Stop + PostToolUse observation hook
+│   ├── code-capture-hook.py      # PostToolUse (Bash) + SessionEnd commit capture
 │   ├── save-session-artifact.py  # SessionEnd hook
 │   ├── auto-approve-memory.py    # PermissionRequest hook
-│   ├── test_discovery_env.py     # Discovery smoke test
+│   ├── code_capture_pending.py   # Keyless pending-commit queue (agent drains it)
+│   ├── code_ingest_worker.py     # Detached commit-ingest worker
+│   ├── session_mine_worker.py    # Detached session-mining worker
+│   ├── reflex_prefetch_worker.py # Detached recall prefetch for the reflex
+│   ├── reflex_state.py           # Shared reflex state/config helpers
+│   ├── backfill_inventory.py     # History Backfill stage-1 tooling (no LLM)
+│   ├── backfill_ingest.py        # History Backfill ingest driver
+│   ├── test_discovery_env.py     # Discovery smoke test (needs .env.local)
 │   ├── test_ce_mode.py           # Self-hosted CE mode offline checks
 │   ├── setup.py                  # Interactive setup wizard
 │   └── ingest-skills.py          # Skill ingestion into CognitiveMemory/Skills graph

@@ -27,8 +27,15 @@ import sys
 import time
 from pathlib import Path
 
+import bounded_proc
+
 MAX_COMMITS = 20
 LOCK_STALE_S = 600
+#: A repo-or-not probe reads one ref; slower than this is a stuck repo.
+GIT_PROBE_TIMEOUT_S = 30
+#: Mining 20 commits through a model. Unchanged in value from the old
+#: ``timeout=600`` -- what changed is that it is now enforced.
+INGEST_TIMEOUT_S = 600
 
 
 def _load_launcher():
@@ -60,10 +67,17 @@ def main() -> int:
             fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
 
     # Not a git repo -> nothing to capture (SessionEnd fires everywhere).
-    probe = subprocess.run(
-        ["git", "-C", repo_dir, "rev-parse", "--is-inside-work-tree"],
-        capture_output=True, text=True,
-    )
+    # A stuck probe means "cannot establish it is a repo", which is the same
+    # answer as "is not one" -- and unlike the old unbounded call, it is an
+    # answer we reach (kumiho-plugins#36).
+    try:
+        probe = bounded_proc.run(
+            ["git", "-C", repo_dir, "rev-parse", "--is-inside-work-tree"],
+            timeout=GIT_PROBE_TIMEOUT_S,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        log(f"skip: git probe unusable ({exc})")
+        return 0
     if probe.returncode != 0 or probe.stdout.strip() != "true":
         return 0
 
@@ -106,11 +120,10 @@ def main() -> int:
         env = dict(os.environ)
         env["KUMIHO_MEMORY_CODE"] = "1"
         log(f"ingest start: repo={repo_dir} (newest {MAX_COMMITS}, incremental)")
-        proc = subprocess.run(
+        proc = bounded_proc.run(
             [str(python_path), "-m", "kumiho_memory", "code-ingest", repo_dir,
              "--max-commits", str(MAX_COMMITS)],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            env=env, timeout=600,
+            env=env, timeout=INGEST_TIMEOUT_S,
         )
         tail = (proc.stdout or "").strip().splitlines()[-12:]
         log(f"ingest done rc={proc.returncode}: " + " | ".join(tail))

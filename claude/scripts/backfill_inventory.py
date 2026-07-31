@@ -43,6 +43,29 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+
+def _force_utf8_streams() -> None:
+    """Make stdout/stderr able to carry this module's own output.
+
+    The consent summary, packets and stage confirmations contain em-dashes and
+    Korean titles, which a legacy Windows code page (cp949) cannot encode --
+    ``print`` then raises UnicodeEncodeError and takes the command down.
+
+    At MODULE scope, not inside ``main()``, because the crash was reachable
+    exactly where the guard was not: ``cmd_stage`` prints an em-dash, and any
+    caller that imports this module and invokes a ``cmd_*`` function directly
+    never runs ``main()``. ``test_backfill_inventory.py`` does precisely that
+    and died on it. ``setup.py`` already guards at module scope; this matches.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:  # noqa: BLE001 -- detached//replaced streams: best-effort
+            pass
+
+
+_force_utf8_streams()
+
 STAGING_SCHEMA = 1
 DEFAULT_TOP_K = 25
 SCORE_HALF_LIFE_DAYS = 90.0
@@ -919,13 +942,8 @@ def cmd_stage(args) -> int:
 
 
 def main() -> int:
-    # Force UTF-8 stdout/stderr: the consent + packet output contains non-ASCII
-    # (em-dashes, Korean titles) that crashes on a legacy Windows code page (cp949).
-    for _stream in (sys.stdout, sys.stderr):
-        try:
-            _stream.reconfigure(encoding="utf-8")
-        except Exception:
-            pass
+    # Stream encoding is forced at import (see _force_utf8_streams), which covers
+    # this entrypoint and every direct cmd_* caller alike.
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
 
