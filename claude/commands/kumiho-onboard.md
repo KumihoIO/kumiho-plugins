@@ -9,6 +9,31 @@ Run the onboarding wizard that configures the kumiho-memory plugin end-to-end:
 Python venv, backend selection, MCP server config, and skill ingestion into
 the graph.
 
+## Before any step: resolve the interpreter
+
+No single interpreter name exists on every platform. macOS 12.3+ and
+Debian/Ubuntu have only `python3`; Windows has only `python`, and there
+`python3` is worse than missing — the WindowsApps alias resolves and then exits
+127 without running anything, so `command -v python3` lies. Never test for it by
+existence; test by RUNNING it.
+
+This is also why onboarding matters: the wizard writes `KUMIHO_PYTHON` into
+`~/.claude/settings.json`, which is what lets the MCP server start on
+macOS/Linux afterwards. Until that runs, resolve it here, in this shell:
+
+```bash
+KUMIHO_PY=""
+for c in python3 python; do
+  if "$c" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
+    KUMIHO_PY="$c"; break
+  fi
+done
+[ -n "$KUMIHO_PY" ] && echo "using $KUMIHO_PY" || echo "no Python 3.10+ found — install one and retry"
+```
+
+Use `"$KUMIHO_PY"` in every command below. If it came back empty, stop and tell
+the user to install Python 3.10+ rather than running the wizard.
+
 ## Steps
 
 1. **Pick the backend.** The plugin can use either Kumiho Cloud (managed,
@@ -32,13 +57,13 @@ the graph.
      API Keys)."* and wait.
 
    ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/scripts/setup.py" --token "<TOKEN>" --yes
+   "$KUMIHO_PY" "${CLAUDE_PLUGIN_ROOT}/scripts/setup.py" --token "<TOKEN>" --yes
    ```
 
 3. **CE path** — no token is needed. Run:
 
    ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/scripts/setup.py" --ce --yes
+   "$KUMIHO_PY" "${CLAUDE_PLUGIN_ROOT}/scripts/setup.py" --ce --yes
    ```
 
    If the user runs CE on a non-default endpoint, pass it through:

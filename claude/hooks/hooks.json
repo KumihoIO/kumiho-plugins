@@ -1,14 +1,17 @@
 {
-  "description": "Kumiho memory plugin hooks \u2014 session bootstrap, auto-approval, artifact generation, and Decision Memory auto-capture",
+  "description": "Kumiho memory plugin hooks — session bootstrap, auto-approval, artifact generation, and Decision Memory auto-capture",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/session-bootstrap.py\"",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
             "timeout": 5,
-            "statusMessage": "Bootstrapping Kumiho memory..."
+            "statusMessage": "Bootstrapping Kumiho memory...",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/session-bootstrap.py"
+            ]
           }
         ]
       }
@@ -19,9 +22,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/code-capture-hook.py\"",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
             "timeout": 5,
-            "statusMessage": "kumiho"
+            "statusMessage": "kumiho",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/code-capture-hook.py"
+            ]
           }
         ]
       },
@@ -30,10 +36,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/reflex-observe.py\"",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
             "timeout": 10,
             "async": true,
-            "statusMessage": "kumiho"
+            "statusMessage": "kumiho",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/reflex-observe.py"
+            ]
           }
         ]
       }
@@ -43,15 +52,21 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/save-session-artifact.py\"",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
             "timeout": 10,
-            "statusMessage": "Saving session artifact..."
+            "statusMessage": "Saving session artifact...",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/save-session-artifact.py"
+            ]
           },
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/code-capture-hook.py\"",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
             "timeout": 5,
-            "statusMessage": "Capturing code decisions..."
+            "statusMessage": "Capturing code decisions...",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/code-capture-hook.py"
+            ]
           }
         ]
       }
@@ -62,9 +77,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/auto-approve-memory.py\"",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
             "timeout": 5,
-            "statusMessage": "kumiho"
+            "statusMessage": "kumiho",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/auto-approve-memory.py"
+            ]
           }
         ]
       }
@@ -74,10 +92,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/reflex-observe.py\"",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
             "timeout": 10,
             "async": true,
-            "statusMessage": "kumiho"
+            "statusMessage": "kumiho",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/reflex-observe.py"
+            ]
           }
         ]
       }
@@ -87,9 +108,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/memory-reflex.py\"",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
             "timeout": 5,
-            "statusMessage": "kumiho"
+            "statusMessage": "kumiho",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/memory-reflex.py"
+            ]
           }
         ]
       }
@@ -99,9 +123,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/scripts/memory-reflex.py\" --subagent",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
             "timeout": 5,
-            "statusMessage": "kumiho"
+            "statusMessage": "kumiho",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/memory-reflex.py",
+              "--subagent"
+            ]
           }
         ]
       }

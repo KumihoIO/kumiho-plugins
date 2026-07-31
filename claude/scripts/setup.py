@@ -26,6 +26,7 @@ import platform
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import bounded_proc
@@ -34,7 +35,16 @@ import bounded_proc
 #: here is a user sitting in front of a dead prompt, so every wait is finite
 #: (kumiho-plugins#36).
 VENV_TIMEOUT_S = 120
-PIP_TIMEOUT_S = 120
+
+#: A cold install of kumiho[mcp] + kumiho-memory[all] is 51 wheels / ~150 MB
+#: unpacked. Measured on a fresh machine: 203-245 s, and 211 s even with a fully
+#: warm pip HTTP cache and zero downloads -- the cost is unpacking grpcio and
+#: protobuf, so neither a fast link nor a warm cache brings it under two minutes.
+#: The 120 s this started at was calibrated against `git log`, not against pip,
+#: and it aborted onboarding at step 1 of 5 on every fresh machine while
+#: discarding the token the user had just pasted. This bound exists only to stop
+#: an indefinite hang, so it is set far above the real work.
+PIP_TIMEOUT_S = 900
 
 # Ensure stdout can handle Unicode (em dashes, box drawing, etc.)
 # even on Windows consoles with legacy codepages like cp949/cp1252.
@@ -52,7 +62,60 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PLUGIN_DIR = SCRIPT_DIR.parent  # kumiho-plugins/claude/
 IS_WIN = platform.system() == "Windows"
 KUMIHO_DIR = Path.home() / ".kumiho"
-VENV_DIR = KUMIHO_DIR / "venv"
+
+
+def _launcher_state_dir() -> Path:
+    """Mirror ``run_kumiho_mcp._state_dir`` (kept in sync deliberately, like
+    ``code_capture_pending._state_dir`` -- this wizard must run pre-install and
+    cannot import the launcher)."""
+    override = (os.getenv("KUMIHO_CLAUDE_HOME", "") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt":
+        base = os.getenv("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
+        return Path(base) / "kumiho-claude"
+    xdg = (os.getenv("XDG_CACHE_HOME", "") or "").strip()
+    return (Path(xdg) if xdg else Path.home() / ".cache") / "kumiho-claude"
+
+
+def _plugin_data_dir():
+    """Mirror ``run_kumiho_mcp._plugin_data_dir`` (kept in sync deliberately).
+
+    The wizard runs from the model's shell, not from the host, so it is never
+    handed CLAUDE_PLUGIN_DATA -- it derives the same path from its own location
+    inside the plugin cache instead. Without this the wizard would provision a
+    DIFFERENT venv from the one the server and hooks use, which is exactly the
+    two-venv bug that made onboarding's 151 MB useless.
+    """
+    env = (os.getenv("CLAUDE_PLUGIN_DATA", "") or "").strip()
+    if env and "${" not in env:
+        return Path(env)
+    parts = Path(__file__).resolve().parts
+    if "cache" in parts:
+        i = len(parts) - 1 - parts[::-1].index("cache")
+        # Do not require the parent to be literally named "plugins": Cowork
+        # lays the cache out under a differently-named root, and demanding the
+        # name there silently fell back to the state dir -- the two-venv split
+        # again, for exactly the users least able to notice it.
+        if len(parts) >= i + 4:
+            marketplace, plugin = parts[i + 1], parts[i + 2]
+            return Path(*parts[:i]) / "data" / ("%s-%s" % (plugin, marketplace))
+    return None
+
+
+#: THE SAME venv the MCP server and the hooks use -- not a second one.
+#:
+#: The wizard used to provision ~/.kumiho/venv while run_kumiho_mcp provisioned
+#: <state-dir>/venv, so onboarding built and verified 151 MB that the server
+#: never opened, and the server's own first start then paid the full cold
+#: install again (205-320 s against a 30 s host budget, so the first session
+#: could never connect).
+#:
+#: It now lives under the plugin data dir, because that is the only writable
+#: location an exec-form HOOK can name: hook commands substitute
+#: ${CLAUDE_PLUGIN_DATA} and nothing else writable, and exec form is the only
+#: hook form that bypasses all three shells the host may use.
+VENV_DIR = (_plugin_data_dir() or _launcher_state_dir()) / "venv"
 BIN = "Scripts" if IS_WIN else "bin"
 EXT = ".exe" if IS_WIN else ""
 VENV_PYTHON = VENV_DIR / BIN / f"python{EXT}"
@@ -196,6 +259,75 @@ def clean_token(raw: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+#: The knob claude/.mcp.json reads as ``${KUMIHO_PYTHON:-python}``. Measured
+#: against the shipped host: ``${VAR:-default}`` is expanded in an MCP
+#: ``command`` field, and the lookup reads ~/.claude/settings.json ``env`` as
+#: well as the OS environment -- which is what makes this work for a
+#: GUI-launched Claude Desktop, where exported shell variables are invisible.
+PYTHON_ENV_KNOB = "KUMIHO_PYTHON"
+#: Resolve the settings file the way the host does. Hardcoding ~/.claude means
+#: that anyone running with CLAUDE_CONFIG_DIR set gets the override written to a
+#: file the host never reads -- silently, since the write itself succeeds.
+CLAUDE_SETTINGS = (
+    Path((os.getenv("CLAUDE_CONFIG_DIR", "") or "").strip() or (Path.home() / ".claude"))
+    .expanduser() / "settings.json"
+)
+
+
+def write_python_knob(base_python: str) -> None:
+    """Record the interpreter that actually works on THIS machine.
+
+    ``.mcp.json`` cannot name one literal that exists everywhere: macOS 12.3+
+    and Debian/Ubuntu have only ``python3``, Windows only ``python`` -- and on
+    Windows ``python3`` is worse than absent, because the WindowsApps alias
+    resolves and then exits 127 without running anything. So the manifest ships
+    the Windows-correct default and this writes the override where the other
+    platforms need it.
+
+    Merges into the user's settings file; never rewrites keys it does not own.
+    """
+    try:
+        resolved = bounded_proc.run(
+            [base_python, "-c", "import sys; print(sys.executable)"], timeout=30,
+        )
+        interpreter = (resolved.stdout or "").strip()
+    except (subprocess.TimeoutExpired, OSError):
+        interpreter = ""
+    if not interpreter or not Path(interpreter).exists():
+        warn(f"Could not resolve an absolute path for {base_python}; "
+             f"skipping the {PYTHON_ENV_KNOB} override")
+        return
+
+    settings: dict = {}
+    if CLAUDE_SETTINGS.exists():
+        try:
+            loaded = json.loads(CLAUDE_SETTINGS.read_text(encoding="utf-8"))
+            settings = loaded if isinstance(loaded, dict) else {}
+        except (json.JSONDecodeError, OSError) as exc:
+            warn(f"{CLAUDE_SETTINGS} is not readable JSON ({exc}); "
+                 f"set {PYTHON_ENV_KNOB} there by hand")
+            return
+
+    env = settings.get("env")
+    if not isinstance(env, dict):
+        env = {}
+    if env.get(PYTHON_ENV_KNOB) == interpreter:
+        ok(f"{PYTHON_ENV_KNOB} already set to {interpreter}")
+        return
+    env[PYTHON_ENV_KNOB] = interpreter
+    settings["env"] = env
+
+    try:
+        CLAUDE_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+        CLAUDE_SETTINGS.write_text(
+            json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    except OSError as exc:
+        warn(f"Could not write {CLAUDE_SETTINGS} ({exc}); "
+             f"set {PYTHON_ENV_KNOB}={interpreter} there by hand")
+        return
+    ok(f"{PYTHON_ENV_KNOB} -> {interpreter}  (in {CLAUDE_SETTINGS})")
+
+
 def find_python() -> str | None:
     """Find a Python 3.10+ on PATH."""
     import re
@@ -214,13 +346,85 @@ def find_python() -> str | None:
     return None
 
 
+def link_windows_bin(venv_dir: Path) -> None:
+    """Mirror ``run_kumiho_mcp._link_windows_bin``: give a Windows venv a
+    POSIX-shaped ``bin/python`` so one literal hook command works everywhere.
+    The junction must live inside the venv it serves -- pointing it at an
+    external venv's Scripts makes sys.prefix wrong and site-packages empty."""
+    if not IS_WIN:
+        return
+    bin_dir, scripts = venv_dir / "bin", venv_dir / "Scripts"
+    if bin_dir.exists() or not scripts.is_dir():
+        return
+    try:
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(bin_dir), str(scripts)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        warn("Could not create the venv bin junction; hooks may not fire")
+
+
+#: Mirrors run_kumiho_mcp.PROVISION_LOCK_STALE_S.
+PROVISION_LOCK_STALE_S = 1800
+
+
+def _provision_lock_path() -> Path:
+    return VENV_DIR.parent / "provision.lock"
+
+
+def _wait_for_provisioning(timeout_s: int = 900) -> None:
+    """Do not run a second pip against a venv another process is building.
+
+    The launcher hands a cold first run to a detached provisioner and tells the
+    user about it -- so the user reaching for /kumiho-onboard while that is
+    still running is the EXPECTED sequence, not an edge case. Two pip runs
+    against one venv interleave their writes.
+    """
+    lock = _provision_lock_path()
+    waited = 0
+    while True:
+        try:
+            if not lock.exists():
+                return
+            if (time.time() - lock.stat().st_mtime) > PROVISION_LOCK_STALE_S:
+                return  # holder is gone; the launcher breaks it the same way
+        except OSError:
+            return
+        if waited == 0:
+            log("Another process is already building the environment; waiting...")
+        if waited >= timeout_s:
+            warn(f"Still locked after {timeout_s}s. Continuing anyway — if this "
+                 f"fails, delete {lock} and retry.")
+            return
+        time.sleep(5)
+        waited += 5
+
+
 def setup_venv(base_python: str) -> Path:
-    """Create or reuse ~/.kumiho/venv and install packages."""
+    """Create or reuse the shared venv and install packages."""
+    _wait_for_provisioning()
+    lock = _provision_lock_path()
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        lock = None          # advisory only; never block onboarding on it
+    try:
+        return _setup_venv_locked(base_python)
+    finally:
+        if lock is not None:
+            try:
+                lock.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _setup_venv_locked(base_python: str) -> Path:
     if VENV_PYTHON.exists():
         ok(f"Venv exists: {VENV_DIR}")
     else:
         log("Creating venv...")
-        KUMIHO_DIR.mkdir(parents=True, exist_ok=True)
+        VENV_DIR.parent.mkdir(parents=True, exist_ok=True)
         try:
             r = bounded_proc.run(
                 [base_python, "-m", "venv", str(VENV_DIR)], timeout=VENV_TIMEOUT_S,
@@ -232,11 +436,19 @@ def setup_venv(base_python: str) -> Path:
             fail(f"venv creation failed: {r.stderr}")
             sys.exit(1)
         ok(f"Created venv: {VENV_DIR}")
+    # Unconditionally: a venv from an older version has no junction and nothing
+    # else would ever add one, which leaves every hook unstartable.
+    link_windows_bin(VENV_DIR)
 
     # Install/upgrade packages. pip's build-backend children inherit the pipe
     # handles, which is exactly the pipe-holder that used to turn "pip timed
     # out" into an indefinite hang of interactive onboarding (#36).
-    log("Installing kumiho packages...")
+    #
+    # Say how long BEFORE the wait, not after: output is captured and pip runs
+    # --quiet, so this is several silent minutes on a fresh machine and an
+    # unannounced silence is indistinguishable from a hang.
+    log("Installing kumiho packages (first run downloads ~150 MB; "
+        "several minutes is normal)...")
     try:
         r = bounded_proc.run(
             [str(VENV_PYTHON), "-m", "pip", "install", "--upgrade", "--quiet",
@@ -1044,6 +1256,17 @@ def main(argv: list[str] | None = None) -> int:
     hr()
     print()
 
+    # Bank a token supplied on the command line BEFORE provisioning, which is
+    # the long, failure-prone step. `/kumiho-onboard <TOKEN>` used to exit at
+    # step 1 of 5 and silently discard the token the user had just pasted, so a
+    # retry meant finding it again. cache_token only touches the filesystem, so
+    # it is safe this early.
+    if args.token:
+        cleaned = clean_token(args.token)
+        if cleaned and cache_token(cleaned):
+            ok("Token cached (kept even if the steps below fail)")
+        print()
+
     # Step 1: Python & venv
     log("Step 1/5: Python environment")
     base_python = find_python()
@@ -1052,6 +1275,9 @@ def main(argv: list[str] | None = None) -> int:
         fail("Install Python 3.10+ and try again")
         return 1
     ok(f"Found: {base_python}")
+    # Before the long provisioning step: this is what lets the MCP server and
+    # the hooks find an interpreter at all on macOS/Linux.
+    write_python_knob(base_python)
     venv_python = setup_venv(base_python)
     print()
 

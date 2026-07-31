@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -53,10 +54,86 @@ def _state_dir() -> Path:
     return Path.home() / ".cache" / "kumiho-claude"
 
 
+def _plugin_data_dir() -> "Path | None":
+    """The host's per-plugin writable directory, or None if not discoverable.
+
+    Measured: it is ``<config>/plugins/data/<plugin>-<marketplace>``, carries NO
+    version component, and survives plugin updates -- this machine's
+    ``kumiho-memory-kumiho-plugins`` was created 2026-07-12 and is still the same
+    directory at 0.18.1, and a sibling from 2026-03-23 outlived four months of
+    releases. That stability is what makes it the only place a hook can name an
+    interpreter: hook exec-form commands substitute ``${CLAUDE_PLUGIN_DATA}`` but
+    nothing else writable.
+    """
+    env = (os.getenv("CLAUDE_PLUGIN_DATA", "") or "").strip()
+    if env and "${" not in env:            # unexpanded placeholder -> not a path
+        return Path(env)
+    # Not every caller is host-spawned (the wizard, --provision, a self-test), so
+    # derive it from our own location in the plugin cache:
+    #   <config>/plugins/cache/<marketplace>/<plugin>/<version>/scripts/<this>
+    parts = Path(__file__).resolve().parts
+    if "cache" in parts:
+        i = len(parts) - 1 - parts[::-1].index("cache")
+        # Do not require the parent to be literally named "plugins": Cowork
+        # lays the cache out under a differently-named root, and demanding the
+        # name there silently fell back to the state dir -- the two-venv split
+        # again, for exactly the users least able to notice it.
+        if len(parts) >= i + 4:
+            marketplace, plugin = parts[i + 1], parts[i + 2]
+            return Path(*parts[:i]) / "data" / ("%s-%s" % (plugin, marketplace))
+    return None
+
+
+def _venv_dir() -> Path:
+    """Where the ONE venv lives.
+
+    Under the plugin data dir when we can find it, so that hooks can spawn its
+    interpreter directly; otherwise the state dir, which is what a dev checkout
+    or a Desktop config-spawned launcher gets.
+    """
+    data = _plugin_data_dir()
+    return (data / "venv") if data else (_state_dir() / "venv")
+
+
 def _venv_python(venv_dir: Path) -> Path:
     if os.name == "nt":
         return venv_dir / "Scripts" / "python.exe"
     return venv_dir / "bin" / "python"
+
+
+def _link_windows_bin(venv_dir: Path) -> None:
+    """Give a Windows venv a POSIX-shaped ``bin/python`` via a directory junction.
+
+    This is what lets ONE literal string -- ``${CLAUDE_PLUGIN_DATA}/venv/bin/python``
+    -- name the interpreter in an exec-form hook on every platform. Exec-form
+    hooks are raw ``child_process.spawn`` with no shell and no PATHEXT, so a
+    shipped ``.cmd`` or an extensionless dispatcher does not resolve; the
+    junction does.
+
+    Measured constraint: the junction must live INSIDE the venv it serves. One
+    pointing at an external venv's Scripts makes sys.prefix resolve to the
+    junction's parent and site-packages come back empty. Junctions need no
+    admin rights.
+    """
+    if os.name != "nt":
+        return
+    bin_dir, scripts = venv_dir / "bin", venv_dir / "Scripts"
+    if bin_dir.exists() or not scripts.is_dir():
+        return
+    try:
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(bin_dir), str(scripts)],
+                           capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        r = None
+        print("[kumiho-claude] Could not link %s (%s)" % (bin_dir, exc), file=sys.stderr)
+    # Report rather than fail silently: without this junction every hook is
+    # unstartable, and a hook that never fires looks like a plugin that does
+    # nothing rather than one that is broken.
+    if not _venv_python(venv_dir).exists() or (r is not None and r.returncode != 0):
+        print("[kumiho-claude] Hook interpreter %s is missing; hooks will not "
+              "fire until this is repaired (mklink said: %s)"
+              % (bin_dir / "python", ((r.stderr or r.stdout).strip()[:120] if r else "n/a")),
+              file=sys.stderr)
 
 
 def _run(cmd: list[str], *, check: bool = True) -> int:
@@ -267,23 +344,200 @@ def _install_dependencies(python_path: Path, package_spec: str) -> None:
     _run([str(python_path), "-m", "pip", "install", "--upgrade", *packages])
 
 
+#: Set by the detached provisioner and by the wizard/self-test, which are not on
+#: a startup clock and must actually do the work rather than delegate it again.
+_SYNC_PROVISION_ENV = "KUMIHO_CLAUDE_PROVISION_SYNC"
+
+#: A cold provision was measured at 205-320 s and is slower on a poor link, so
+#: the staleness window is well above that. Past it we assume the holder died
+#: and break the lock rather than wedging the install forever.
+PROVISION_LOCK_STALE_S = 1800
+
+
+def _provision_log_path() -> Path:
+    return _state_dir() / "provision.log"
+
+
+def _provision_lock_path() -> Path:
+    # Beside the venv it guards, not beside the state dir. Two launchers can
+    # resolve different state dirs (KUMIHO_CLAUDE_HOME) while sharing one venv
+    # under the plugin data dir -- a lock in the state dir would not have been
+    # mutual at all.
+    return _venv_dir().parent / "provision.lock"
+
+
+def _provision_in_progress() -> bool:
+    """Is another process already building this venv?
+
+    Provisioning is the one operation here that MUST NOT run twice at once:
+    two ``pip install`` runs against a single venv interleave their writes.
+    Observed while testing the detached first-run provisioner -- a concurrent
+    ``--self-test`` started a second pip against the same tree. Same lock idiom
+    as ``code_ingest_worker``, staleness included, because a provisioner that is
+    killed mid-install must not lock the venv out permanently.
+    """
+    lock = _provision_lock_path()
+    try:
+        if not lock.exists():
+            return False
+        if (time.time() - lock.stat().st_mtime) > PROVISION_LOCK_STALE_S:
+            lock.unlink(missing_ok=True)   # holder is gone; take it over
+            return False
+        return True
+    except OSError:
+        return False  # cannot tell -> do not block provisioning
+
+
+def _provisioning_is_synchronous() -> bool:
+    return bool((os.getenv(_SYNC_PROVISION_ENV, "") or "").strip())
+
+
+def _spawn_detached_provisioning() -> None:
+    """Build the venv in a process that outlives this one.
+
+    A cold provision was measured at 205-320 s; the host's MCP startup budget is
+    30 s (``MCP_TIMEOUT``, default 30000 in the shipped binary). Doing it inline
+    is not slow-but-working, it is guaranteed failure: the host gives up, closes
+    the transport and kills this process, taking pip with it mid-install, and the
+    next session starts over. Detaching is what lets the work finish at all.
+
+    Best-effort by construction -- if the spawn fails the caller still exits with
+    a message, which is strictly better than blocking until killed.
+    """
+    # Not DEVNULL: this child is the only thing standing between a new user and
+    # a working install, and if it dies there is otherwise NOTHING to look at --
+    # the parent has already exited and the host reports only that the server
+    # went away. The log path is named in the message the caller prints.
+    try:
+        log_path = _provision_log_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        sink = open(log_path, "w", encoding="utf-8", errors="replace")
+    except OSError:
+        sink = subprocess.DEVNULL
+    kwargs = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": sink,
+        "stderr": subprocess.STDOUT if sink is not subprocess.DEVNULL else subprocess.DEVNULL,
+        "env": {**os.environ, _SYNC_PROVISION_ENV: "1"},
+    }
+    if os.name == "nt":
+        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP -- survives our exit.
+        kwargs["creationflags"] = 0x00000008 | 0x00000200
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), "--provision"], **kwargs
+        )
+    except OSError as exc:
+        print("[kumiho-claude] Could not start background provisioning: %s" % exc,
+              file=sys.stderr)
+
+
 def _ensure_runtime() -> Path:
     raw_spec = os.getenv("KUMIHO_CLAUDE_PACKAGE_SPEC", "").strip()
     package_spec = DEFAULT_PACKAGE_SPEC if (not raw_spec or _looks_like_placeholder(raw_spec)) else raw_spec
     state_dir = _state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
 
-    venv_dir = state_dir / "venv"
+    venv_dir = _venv_dir()
     marker_path = state_dir / MARKER_FILE
     python_path = _venv_python(venv_dir)
 
+    if not python_path.exists() and not _provisioning_is_synchronous():
+        if _provision_in_progress():
+            raise SystemExit(
+                "[kumiho-claude] First-run provisioning is already running in "
+                "another process. Reconnect the server, or start a new session, "
+                "once it finishes."
+            )
+        _spawn_detached_provisioning()
+        raise SystemExit(
+            "[kumiho-claude] First run: the Python environment is not built yet.\n"
+            "[kumiho-claude] Provisioning started in the background (~150 MB, a few "
+            "minutes). This server is exiting now ON PURPOSE -- building it here "
+            "would take far longer than the host's MCP startup timeout, so the host "
+            "would kill it half-installed and nothing would ever finish.\n"
+            "[kumiho-claude] Reconnect the server, or start a new session, once it "
+            "completes. Progress and any error are logged to %s.\n"
+            "[kumiho-claude] Run /kumiho-onboard AFTER it finishes to set "
+            "credentials -- starting it now would run a second pip against the "
+            "same environment." % _provision_log_path()
+        )
+
+    if python_path.exists() and not _needs_install(python_path, marker_path, package_spec):
+        return python_path  # nothing to do; never touch the lock on the warm path
+
+    # From here on we WILL write to the venv, so take the lock first.
+    if _provision_in_progress():
+        raise SystemExit(
+            "[kumiho-claude] Another process is provisioning this environment. "
+            "Retry once it finishes (or delete %s if it is stale)."
+            % _provision_lock_path()
+        )
+    lock = _provision_lock_path()
+    try:
+        lock.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        pass  # advisory only -- never block provisioning on the lock file itself
+
+    try:
+        return _provision(venv_dir, python_path, marker_path, package_spec)
+    finally:
+        try:
+            lock.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _provision(venv_dir: Path, python_path: Path, marker_path: Path,
+               package_spec: str) -> Path:
+    """Build the venv and install the spec. Caller holds the provisioning lock."""
     if not python_path.exists():
         print(f"[kumiho-claude] Creating virtualenv: {venv_dir}", file=sys.stderr)
-        venv.create(venv_dir, with_pip=True)
+        try:
+            venv.create(venv_dir, with_pip=True)
+        except BaseException as exc:
+            # Debian/Ubuntu ship python3 without the venv module's bundled pip
+            # (it lives in the separate python3-venv package). Unguarded, this
+            # left a HALF-BUILT venv on disk: python_path then existed, so every
+            # later launch skipped creation, found no pip, and failed forever.
+            # Remove the partial tree so the next launch is a clean retry, and
+            # name the package instead of dying with a bare traceback.
+            shutil.rmtree(venv_dir, ignore_errors=True)
+            print(
+                "[kumiho-claude] Could not create the virtualenv at %s: %s\n"
+                "[kumiho-claude] On Debian/Ubuntu install the venv module first:"
+                "  sudo apt install python3-venv\n"
+                "[kumiho-claude] The partial environment was removed; retry after fixing this."
+                % (venv_dir, exc),
+                file=sys.stderr,
+            )
+            raise
+
+    # Unconditionally, not only on the creation branch: a venv provisioned by an
+    # older version has no junction, and nothing else would ever add one.
+    _link_windows_bin(venv_dir)
 
     if _needs_install(python_path, marker_path, package_spec):
-        print("[kumiho-claude] Installing dependencies...", file=sys.stderr)
-        _install_dependencies(python_path, package_spec)
+        print("[kumiho-claude] Installing dependencies (first run downloads "
+              "~150 MB and takes several minutes)...", file=sys.stderr)
+        try:
+            _install_dependencies(python_path, package_spec)
+        except subprocess.CalledProcessError as exc:
+            # The single most likely install failure -- no network, a floor not
+            # yet on PyPI, a proxy -- used to surface as a raw traceback, which
+            # the host shows only as "server failed to start".
+            print(
+                "[kumiho-claude] Installing '%s' failed (pip exit %s).\n"
+                "[kumiho-claude] Common causes: no network or a proxy blocking "
+                "PyPI, or a package version that is not published yet.\n"
+                "[kumiho-claude] Retry, or pin a different set with "
+                "KUMIHO_CLAUDE_PACKAGE_SPEC."
+                % (package_spec, exc.returncode),
+                file=sys.stderr,
+            )
+            raise
         marker_path.write_text(package_spec, encoding="utf-8")
 
     return python_path
@@ -770,7 +1024,10 @@ def _bootstrap_desktop_server_entries() -> None:
     if not script_path.exists():
         return  # Not in a standard plugin layout; skip.
 
-    venv_py = _venv_python(_state_dir() / "venv")
+    # _venv_dir(), never _state_dir()/"venv": this writes an ABSOLUTE interpreter
+    # path into the user's Desktop config, and _has_valid_entry below only
+    # validates args[0], so a wrong `command` here is never repaired again.
+    venv_py = _venv_python(_venv_dir())
     command = str(venv_py) if venv_py.exists() else sys.executable
 
     server_entry: dict = {
@@ -1252,7 +1509,27 @@ def main() -> int:
         action="store_true",
         help="Provision runtime and verify required modules, then exit.",
     )
+    parser.add_argument(
+        "--provision",
+        action="store_true",
+        help="Build the runtime and exit. Used by the detached first-run "
+             "provisioner, which is not on the host's MCP startup clock.",
+    )
     args, passthrough = parser.parse_known_args()
+
+    # Both flags mean "do the work here"; neither is on a startup clock, so
+    # neither may hand provisioning off to yet another detached child.
+    if args.provision or args.self_test:
+        os.environ[_SYNC_PROVISION_ENV] = "1"
+
+    if args.provision:
+        # Nothing else: no discovery, no Desktop config, no auth. Provisioning
+        # must succeed for a user who has not authenticated yet.
+        _sanitize_placeholder_env_vars()
+        _hydrate_env_from_local_config()
+        _ensure_runtime()
+        print("[kumiho-claude] Provisioning complete.", file=sys.stderr)
+        return 0
 
     _sanitize_placeholder_env_vars()
     _hydrate_env_from_local_config()
