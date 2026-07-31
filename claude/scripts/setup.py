@@ -34,7 +34,16 @@ import bounded_proc
 #: here is a user sitting in front of a dead prompt, so every wait is finite
 #: (kumiho-plugins#36).
 VENV_TIMEOUT_S = 120
-PIP_TIMEOUT_S = 120
+
+#: A cold install of kumiho[mcp] + kumiho-memory[all] is 51 wheels / ~150 MB
+#: unpacked. Measured on a fresh machine: 203-245 s, and 211 s even with a fully
+#: warm pip HTTP cache and zero downloads -- the cost is unpacking grpcio and
+#: protobuf, so neither a fast link nor a warm cache brings it under two minutes.
+#: The 120 s this started at was calibrated against `git log`, not against pip,
+#: and it aborted onboarding at step 1 of 5 on every fresh machine while
+#: discarding the token the user had just pasted. This bound exists only to stop
+#: an indefinite hang, so it is set far above the real work.
+PIP_TIMEOUT_S = 900
 
 # Ensure stdout can handle Unicode (em dashes, box drawing, etc.)
 # even on Windows consoles with legacy codepages like cp949/cp1252.
@@ -52,7 +61,33 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PLUGIN_DIR = SCRIPT_DIR.parent  # kumiho-plugins/claude/
 IS_WIN = platform.system() == "Windows"
 KUMIHO_DIR = Path.home() / ".kumiho"
-VENV_DIR = KUMIHO_DIR / "venv"
+
+
+def _launcher_state_dir() -> Path:
+    """Mirror ``run_kumiho_mcp._state_dir`` (kept in sync deliberately, like
+    ``code_capture_pending._state_dir`` -- this wizard must run pre-install and
+    cannot import the launcher)."""
+    override = (os.getenv("KUMIHO_CLAUDE_HOME", "") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt":
+        base = os.getenv("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
+        return Path(base) / "kumiho-claude"
+    xdg = (os.getenv("XDG_CACHE_HOME", "") or "").strip()
+    return (Path(xdg) if xdg else Path.home() / ".cache") / "kumiho-claude"
+
+
+#: THE SAME venv the MCP server runs from -- not a second one.
+#:
+#: The wizard used to provision ~/.kumiho/venv while run_kumiho_mcp provisioned
+#: <state-dir>/venv, so onboarding built and verified 151 MB that the server
+#: never opened, and the server's own first start then paid the full cold
+#: install again. That install was measured at 205-320 s against a host MCP
+#: startup budget of 30 s, so the first session could never connect. Pointing
+#: the wizard at the launcher's venv is what makes that first start warm
+#: (measured: 6 s) -- the fix for the wasted disk and the failed first
+#: connection is the same fix.
+VENV_DIR = _launcher_state_dir() / "venv"
 BIN = "Scripts" if IS_WIN else "bin"
 EXT = ".exe" if IS_WIN else ""
 VENV_PYTHON = VENV_DIR / BIN / f"python{EXT}"
@@ -220,7 +255,7 @@ def setup_venv(base_python: str) -> Path:
         ok(f"Venv exists: {VENV_DIR}")
     else:
         log("Creating venv...")
-        KUMIHO_DIR.mkdir(parents=True, exist_ok=True)
+        VENV_DIR.parent.mkdir(parents=True, exist_ok=True)
         try:
             r = bounded_proc.run(
                 [base_python, "-m", "venv", str(VENV_DIR)], timeout=VENV_TIMEOUT_S,
@@ -236,7 +271,12 @@ def setup_venv(base_python: str) -> Path:
     # Install/upgrade packages. pip's build-backend children inherit the pipe
     # handles, which is exactly the pipe-holder that used to turn "pip timed
     # out" into an indefinite hang of interactive onboarding (#36).
-    log("Installing kumiho packages...")
+    #
+    # Say how long BEFORE the wait, not after: output is captured and pip runs
+    # --quiet, so this is several silent minutes on a fresh machine and an
+    # unannounced silence is indistinguishable from a hang.
+    log("Installing kumiho packages (first run downloads ~150 MB; "
+        "several minutes is normal)...")
     try:
         r = bounded_proc.run(
             [str(VENV_PYTHON), "-m", "pip", "install", "--upgrade", "--quiet",
@@ -1043,6 +1083,17 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  {DIM}Persistent graph-native cognitive memory{RESET}")
     hr()
     print()
+
+    # Bank a token supplied on the command line BEFORE provisioning, which is
+    # the long, failure-prone step. `/kumiho-onboard <TOKEN>` used to exit at
+    # step 1 of 5 and silently discard the token the user had just pasted, so a
+    # retry meant finding it again. cache_token only touches the filesystem, so
+    # it is safe this early.
+    if args.token:
+        cleaned = clean_token(args.token)
+        if cleaned and cache_token(cleaned):
+            ok("Token cached (kept even if the steps below fail)")
+        print()
 
     # Step 1: Python & venv
     log("Step 1/5: Python environment")
