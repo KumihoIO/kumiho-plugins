@@ -46,7 +46,45 @@ L = _launcher()
 def state(tmp_path, monkeypatch):
     monkeypatch.setenv("KUMIHO_CLAUDE_HOME", str(tmp_path))
     monkeypatch.delenv(L._SYNC_PROVISION_ENV, raising=False)
+    monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
     return tmp_path
+
+
+def test_the_venv_lives_under_the_plugin_data_dir_when_the_host_names_one(monkeypatch, tmp_path):
+    """The venv has to sit somewhere an exec-form HOOK can name, and
+    ${CLAUDE_PLUGIN_DATA} is the only writable path the host substitutes there."""
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "pdata"))
+    assert L._venv_dir() == tmp_path / "pdata" / "venv"
+
+
+def test_an_unexpanded_placeholder_is_not_treated_as_a_path(monkeypatch, tmp_path):
+    """A host that does not substitute would otherwise have us build a venv in a
+    directory literally named '${CLAUDE_PLUGIN_DATA}'."""
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", "${CLAUDE_PLUGIN_DATA}")
+    monkeypatch.setenv("KUMIHO_CLAUDE_HOME", str(tmp_path))
+    assert L._venv_dir() == tmp_path / "venv"
+
+
+def test_the_data_dir_is_derived_when_the_host_does_not_supply_it(monkeypatch, tmp_path):
+    """--provision, --self-test and the wizard are not host-spawned, so they get
+    no CLAUDE_PLUGIN_DATA and must derive the same path the host would use:
+    <config>/plugins/data/<plugin>-<marketplace>, which carries no version and
+    survives updates."""
+    monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
+    fake = tmp_path / "plugins" / "cache" / "kumiho-plugins" / "kumiho-memory" / "0.18.2" / "scripts" / "run_kumiho_mcp.py"
+    fake.parent.mkdir(parents=True)
+    fake.write_text("", encoding="utf-8")
+    monkeypatch.setattr(L, "__file__", str(fake))
+    assert L._plugin_data_dir() == tmp_path / "plugins" / "data" / "kumiho-memory-kumiho-plugins"
+
+
+def test_a_dev_checkout_falls_back_to_the_state_dir(monkeypatch, tmp_path):
+    """Not every layout is a plugin cache; a checkout must not invent a path."""
+    monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
+    monkeypatch.setenv("KUMIHO_CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setattr(L, "__file__", str(tmp_path / "repo" / "claude" / "scripts" / "run_kumiho_mcp.py"))
+    assert L._plugin_data_dir() is None
+    assert L._venv_dir() == tmp_path / "venv"
 
 
 def test_cold_start_hands_off_and_exits_instead_of_blocking(state, monkeypatch):

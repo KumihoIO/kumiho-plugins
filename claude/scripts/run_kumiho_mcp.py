@@ -54,10 +54,74 @@ def _state_dir() -> Path:
     return Path.home() / ".cache" / "kumiho-claude"
 
 
+def _plugin_data_dir() -> "Path | None":
+    """The host's per-plugin writable directory, or None if not discoverable.
+
+    Measured: it is ``<config>/plugins/data/<plugin>-<marketplace>``, carries NO
+    version component, and survives plugin updates -- this machine's
+    ``kumiho-memory-kumiho-plugins`` was created 2026-07-12 and is still the same
+    directory at 0.18.1, and a sibling from 2026-03-23 outlived four months of
+    releases. That stability is what makes it the only place a hook can name an
+    interpreter: hook exec-form commands substitute ``${CLAUDE_PLUGIN_DATA}`` but
+    nothing else writable.
+    """
+    env = (os.getenv("CLAUDE_PLUGIN_DATA", "") or "").strip()
+    if env and "${" not in env:            # unexpanded placeholder -> not a path
+        return Path(env)
+    # Not every caller is host-spawned (the wizard, --provision, a self-test), so
+    # derive it from our own location in the plugin cache:
+    #   <config>/plugins/cache/<marketplace>/<plugin>/<version>/scripts/<this>
+    parts = Path(__file__).resolve().parts
+    if "cache" in parts:
+        i = len(parts) - 1 - parts[::-1].index("cache")
+        if len(parts) >= i + 4 and parts[i - 1] == "plugins":
+            marketplace, plugin = parts[i + 1], parts[i + 2]
+            return Path(*parts[:i]) / "data" / ("%s-%s" % (plugin, marketplace))
+    return None
+
+
+def _venv_dir() -> Path:
+    """Where the ONE venv lives.
+
+    Under the plugin data dir when we can find it, so that hooks can spawn its
+    interpreter directly; otherwise the state dir, which is what a dev checkout
+    or a Desktop config-spawned launcher gets.
+    """
+    data = _plugin_data_dir()
+    return (data / "venv") if data else (_state_dir() / "venv")
+
+
 def _venv_python(venv_dir: Path) -> Path:
     if os.name == "nt":
         return venv_dir / "Scripts" / "python.exe"
     return venv_dir / "bin" / "python"
+
+
+def _link_windows_bin(venv_dir: Path) -> None:
+    """Give a Windows venv a POSIX-shaped ``bin/python`` via a directory junction.
+
+    This is what lets ONE literal string -- ``${CLAUDE_PLUGIN_DATA}/venv/bin/python``
+    -- name the interpreter in an exec-form hook on every platform. Exec-form
+    hooks are raw ``child_process.spawn`` with no shell and no PATHEXT, so a
+    shipped ``.cmd`` or an extensionless dispatcher does not resolve; the
+    junction does.
+
+    Measured constraint: the junction must live INSIDE the venv it serves. One
+    pointing at an external venv's Scripts makes sys.prefix resolve to the
+    junction's parent and site-packages come back empty. Junctions need no
+    admin rights.
+    """
+    if os.name != "nt":
+        return
+    bin_dir, scripts = venv_dir / "bin", venv_dir / "Scripts"
+    if bin_dir.exists() or not scripts.is_dir():
+        return
+    try:
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(bin_dir), str(scripts)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        pass  # hooks degrade to not firing; the MCP server is unaffected
 
 
 def _run(cmd: list[str], *, check: bool = True) -> int:
@@ -346,7 +410,7 @@ def _ensure_runtime() -> Path:
     state_dir = _state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
 
-    venv_dir = state_dir / "venv"
+    venv_dir = _venv_dir()
     marker_path = state_dir / MARKER_FILE
     python_path = _venv_python(venv_dir)
 
@@ -417,6 +481,7 @@ def _provision(venv_dir: Path, python_path: Path, marker_path: Path,
                 file=sys.stderr,
             )
             raise
+        _link_windows_bin(venv_dir)
 
     if _needs_install(python_path, marker_path, package_spec):
         print("[kumiho-claude] Installing dependencies (first run downloads "

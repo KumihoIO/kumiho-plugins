@@ -77,17 +77,40 @@ def _launcher_state_dir() -> Path:
     return (Path(xdg) if xdg else Path.home() / ".cache") / "kumiho-claude"
 
 
-#: THE SAME venv the MCP server runs from -- not a second one.
+def _plugin_data_dir():
+    """Mirror ``run_kumiho_mcp._plugin_data_dir`` (kept in sync deliberately).
+
+    The wizard runs from the model's shell, not from the host, so it is never
+    handed CLAUDE_PLUGIN_DATA -- it derives the same path from its own location
+    inside the plugin cache instead. Without this the wizard would provision a
+    DIFFERENT venv from the one the server and hooks use, which is exactly the
+    two-venv bug that made onboarding's 151 MB useless.
+    """
+    env = (os.getenv("CLAUDE_PLUGIN_DATA", "") or "").strip()
+    if env and "${" not in env:
+        return Path(env)
+    parts = Path(__file__).resolve().parts
+    if "cache" in parts:
+        i = len(parts) - 1 - parts[::-1].index("cache")
+        if len(parts) >= i + 4 and parts[i - 1] == "plugins":
+            marketplace, plugin = parts[i + 1], parts[i + 2]
+            return Path(*parts[:i]) / "data" / ("%s-%s" % (plugin, marketplace))
+    return None
+
+
+#: THE SAME venv the MCP server and the hooks use -- not a second one.
 #:
 #: The wizard used to provision ~/.kumiho/venv while run_kumiho_mcp provisioned
 #: <state-dir>/venv, so onboarding built and verified 151 MB that the server
 #: never opened, and the server's own first start then paid the full cold
-#: install again. That install was measured at 205-320 s against a host MCP
-#: startup budget of 30 s, so the first session could never connect. Pointing
-#: the wizard at the launcher's venv is what makes that first start warm
-#: (measured: 6 s) -- the fix for the wasted disk and the failed first
-#: connection is the same fix.
-VENV_DIR = _launcher_state_dir() / "venv"
+#: install again (205-320 s against a 30 s host budget, so the first session
+#: could never connect).
+#:
+#: It now lives under the plugin data dir, because that is the only writable
+#: location an exec-form HOOK can name: hook commands substitute
+#: ${CLAUDE_PLUGIN_DATA} and nothing else writable, and exec form is the only
+#: hook form that bypasses all three shells the host may use.
+VENV_DIR = (_plugin_data_dir() or _launcher_state_dir()) / "venv"
 BIN = "Scripts" if IS_WIN else "bin"
 EXT = ".exe" if IS_WIN else ""
 VENV_PYTHON = VENV_DIR / BIN / f"python{EXT}"
@@ -312,6 +335,24 @@ def find_python() -> str | None:
     return None
 
 
+def link_windows_bin(venv_dir: Path) -> None:
+    """Mirror ``run_kumiho_mcp._link_windows_bin``: give a Windows venv a
+    POSIX-shaped ``bin/python`` so one literal hook command works everywhere.
+    The junction must live inside the venv it serves -- pointing it at an
+    external venv's Scripts makes sys.prefix wrong and site-packages empty."""
+    if not IS_WIN:
+        return
+    bin_dir, scripts = venv_dir / "bin", venv_dir / "Scripts"
+    if bin_dir.exists() or not scripts.is_dir():
+        return
+    try:
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(bin_dir), str(scripts)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        warn("Could not create the venv bin junction; hooks may not fire")
+
+
 def setup_venv(base_python: str) -> Path:
     """Create or reuse ~/.kumiho/venv and install packages."""
     if VENV_PYTHON.exists():
@@ -329,6 +370,7 @@ def setup_venv(base_python: str) -> Path:
         if r.returncode != 0:
             fail(f"venv creation failed: {r.stderr}")
             sys.exit(1)
+        link_windows_bin(VENV_DIR)
         ok(f"Created venv: {VENV_DIR}")
 
     # Install/upgrade packages. pip's build-backend children inherit the pipe
