@@ -45,11 +45,14 @@ L = _launcher()
 
 @pytest.mark.parametrize("spec,expected", [
     ("kumiho[mcp]>=0.10.8 kumiho-memory[all]>=1.2.1",
-     [("kumiho", frozenset({"mcp"}), "0.10.8"),
-      ("kumiho-memory", frozenset({"all"}), "1.2.1")]),
+     [("kumiho", frozenset({"mcp"}), "0.10.8", ""),
+      ("kumiho-memory", frozenset({"all"}), "1.2.1", "")]),
     ("kumiho kumiho-memory>=1.2.0",
-     [("kumiho", frozenset(), ""), ("kumiho-memory", frozenset(), "1.2.0")]),
-    ("kumiho-memory[all]", [("kumiho-memory", frozenset({"all"}), "")]),
+     [("kumiho", frozenset(), "", ""), ("kumiho-memory", frozenset(), "1.2.0", "")]),
+    ("kumiho-memory[all]", [("kumiho-memory", frozenset({"all"}), "", "")]),
+    # The pin that mattered: mcp 2.0.0 removed Server.list_tools(), which
+    # kumiho calls at server construction.
+    ("mcp<2", [("mcp", frozenset(), "", "2")]),
 ])
 def test_spec_floors_parses_extras_and_operators(spec, expected):
     reqs, understood = L._spec_floors(spec)
@@ -68,11 +71,10 @@ def test_every_minimum_implying_operator_becomes_a_floor(spec, floor):
     and a venv at any version reported as satisfying it."""
     reqs, understood = L._spec_floors(spec)
     assert understood
-    assert reqs == [("kumiho", frozenset(), floor)]
+    assert reqs == [("kumiho", frozenset(), floor, "")]
 
 
 @pytest.mark.parametrize("spec", [
-    "kumiho<2.0",
     "kumiho!=1.0",
     "--pre",
     "./wheels/kumiho-1.0-py3-none-any.whl",
@@ -145,7 +147,11 @@ def _venv_at_current_floors(modules_ok=True):
     the 1.2.1 bump fail a test whose subject is thrash, not versions.
     """
     reqs, _ = L._spec_floors(L.DEFAULT_PACKAGE_SPEC)
-    installed = {name: floor or "0" for name, _extras, floor in reqs}
+    # A ceiling'd requirement must land BELOW its ceiling, not at it.
+    installed = {}
+    for name, _extras, floor, ceiling in reqs:
+        installed[name] = floor or ("1" if not ceiling else str(int(
+            L._version_key(ceiling)[0][0]) - 1))
     installed["__modules__"] = modules_ok
     return lambda *_, **__: installed
 
@@ -153,7 +159,10 @@ def _venv_at_current_floors(modules_ok=True):
 def _bumped(spec):
     """The same spec with every floor's minor raised -- an unreleased future."""
     out = []
-    for name, extras, floor in L._spec_floors(spec)[0]:
+    for name, extras, floor, ceiling in L._spec_floors(spec)[0]:
+        if ceiling and not floor:
+            out.append("%s<%s" % (name, ceiling))   # a ceiling cannot be "bumped"
+            continue
         parts = [n for n, _rank in L._version_key(floor or "0")]
         parts[1 if len(parts) > 1 else 0] += 1
         suffix = "[%s]" % ",".join(sorted(extras)) if extras else ""
@@ -193,12 +202,19 @@ def test_an_extras_change_reinstalls_even_though_versions_still_satisfy(monkeypa
     marker.write_text(L.DEFAULT_PACKAGE_SPEC, encoding="utf-8")
     assert not L._needs_install(py, marker, L.DEFAULT_PACKAGE_SPEC)
 
-    # same extras, different floors -- the thrash pair, still a no-op
-    marker.write_text("kumiho[mcp]>=0.10.7 kumiho-memory[all]>=0.17.1", encoding="utf-8")
+    # same names and extras, different floors -- the thrash pair, still a no-op
+    marker.write_text("kumiho[mcp]>=0.10.7 kumiho-memory[all]>=0.17.1 mcp<2",
+                      encoding="utf-8")
     assert not L._needs_install(py, marker, L.DEFAULT_PACKAGE_SPEC)
 
     # extras genuinely changed -- that IS a new install
-    marker.write_text("kumiho[mcp,cli]>=0.10.8 kumiho-memory[all]>=1.2.1", encoding="utf-8")
+    marker.write_text("kumiho[mcp,cli]>=0.10.8 kumiho-memory[all]>=1.2.1 mcp<2",
+                      encoding="utf-8")
+    assert L._needs_install(py, marker, L.DEFAULT_PACKAGE_SPEC)
+
+    # a requirement APPEARING is also a new install -- this is how the mcp<2 pin
+    # itself reaches an existing venv that predates it.
+    marker.write_text("kumiho[mcp]>=0.10.8 kumiho-memory[all]>=1.2.1", encoding="utf-8")
     assert L._needs_install(py, marker, L.DEFAULT_PACKAGE_SPEC)
 
 
