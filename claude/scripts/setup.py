@@ -231,6 +231,69 @@ def clean_token(raw: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+#: The knob claude/.mcp.json reads as ``${KUMIHO_PYTHON:-python}``. Measured
+#: against the shipped host: ``${VAR:-default}`` is expanded in an MCP
+#: ``command`` field, and the lookup reads ~/.claude/settings.json ``env`` as
+#: well as the OS environment -- which is what makes this work for a
+#: GUI-launched Claude Desktop, where exported shell variables are invisible.
+PYTHON_ENV_KNOB = "KUMIHO_PYTHON"
+CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
+
+
+def write_python_knob(base_python: str) -> None:
+    """Record the interpreter that actually works on THIS machine.
+
+    ``.mcp.json`` cannot name one literal that exists everywhere: macOS 12.3+
+    and Debian/Ubuntu have only ``python3``, Windows only ``python`` -- and on
+    Windows ``python3`` is worse than absent, because the WindowsApps alias
+    resolves and then exits 127 without running anything. So the manifest ships
+    the Windows-correct default and this writes the override where the other
+    platforms need it.
+
+    Merges into the user's settings file; never rewrites keys it does not own.
+    """
+    try:
+        resolved = bounded_proc.run(
+            [base_python, "-c", "import sys; print(sys.executable)"], timeout=30,
+        )
+        interpreter = (resolved.stdout or "").strip()
+    except (subprocess.TimeoutExpired, OSError):
+        interpreter = ""
+    if not interpreter or not Path(interpreter).exists():
+        warn(f"Could not resolve an absolute path for {base_python}; "
+             f"skipping the {PYTHON_ENV_KNOB} override")
+        return
+
+    settings: dict = {}
+    if CLAUDE_SETTINGS.exists():
+        try:
+            loaded = json.loads(CLAUDE_SETTINGS.read_text(encoding="utf-8"))
+            settings = loaded if isinstance(loaded, dict) else {}
+        except (json.JSONDecodeError, OSError) as exc:
+            warn(f"{CLAUDE_SETTINGS} is not readable JSON ({exc}); "
+                 f"set {PYTHON_ENV_KNOB} there by hand")
+            return
+
+    env = settings.get("env")
+    if not isinstance(env, dict):
+        env = {}
+    if env.get(PYTHON_ENV_KNOB) == interpreter:
+        ok(f"{PYTHON_ENV_KNOB} already set to {interpreter}")
+        return
+    env[PYTHON_ENV_KNOB] = interpreter
+    settings["env"] = env
+
+    try:
+        CLAUDE_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+        CLAUDE_SETTINGS.write_text(
+            json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    except OSError as exc:
+        warn(f"Could not write {CLAUDE_SETTINGS} ({exc}); "
+             f"set {PYTHON_ENV_KNOB}={interpreter} there by hand")
+        return
+    ok(f"{PYTHON_ENV_KNOB} -> {interpreter}  (in {CLAUDE_SETTINGS})")
+
+
 def find_python() -> str | None:
     """Find a Python 3.10+ on PATH."""
     import re
@@ -1103,6 +1166,9 @@ def main(argv: list[str] | None = None) -> int:
         fail("Install Python 3.10+ and try again")
         return 1
     ok(f"Found: {base_python}")
+    # Before the long provisioning step: this is what lets the MCP server and
+    # the hooks find an interpreter at all on macOS/Linux.
+    write_python_knob(base_python)
     venv_python = setup_venv(base_python)
     print()
 
