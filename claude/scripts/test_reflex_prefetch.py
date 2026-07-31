@@ -78,9 +78,14 @@ def _prepare(tmp_path, monkeypatch, *, sid="s1", prompt="why did we pick postgre
     reflex = tmp_path / "reflex"
     reflex.mkdir(parents=True, exist_ok=True)
     if venv:
+        # Build the fake venv where the worker ACTUALLY looks. This fixture used
+        # to hardcode <state>/venv; when the real venv moved under the plugin
+        # data dir the worker went dead in production while these tests stayed
+        # green, because the fixture and the bug agreed with each other.
+        monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "pdata"))
         (tmp_path / ".installed-packages.txt").write_text("kumiho", encoding="utf-8")
         for sub in ("Scripts", "bin"):
-            d = tmp_path / "venv" / sub
+            d = tmp_path / "pdata" / "venv" / sub
             d.mkdir(parents=True, exist_ok=True)
             (d / "python.exe").write_text("", encoding="utf-8")
             (d / "python").write_text("", encoding="utf-8")

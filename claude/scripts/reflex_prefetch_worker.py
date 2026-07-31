@@ -165,9 +165,11 @@ def _venv_ready(launcher) -> Path | None:
     mid-session, which is minutes of CPU for a prefetch nobody is waiting on.
     A missing runtime is a skip: onboarding provisions it, not this worker.
     """
-    state = rs.state_dir()
-    python_path = launcher._venv_python(state / "venv")
-    if not python_path.exists() or not (state / MARKER_FILE).exists():
+    # Ask the launcher where the venv is rather than rebuilding the path here:
+    # it moved under the plugin data dir so exec-form hooks could name it, and
+    # a stale copy of that expression silently disabled this worker entirely.
+    python_path = launcher._venv_python(launcher._venv_dir())
+    if not python_path.exists() or not (rs.state_dir() / MARKER_FILE).exists():
         return None
     return python_path
 

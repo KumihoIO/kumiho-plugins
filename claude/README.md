@@ -212,7 +212,7 @@ gRPC endpoint via control-plane discovery, and launches the MCP server.
 - **Runtime home:**
   - Windows: `%LOCALAPPDATA%\kumiho-claude`
   - macOS/Linux: `$XDG_CACHE_HOME/kumiho-claude` or `~/.cache/kumiho-claude`
-- **Override runtime home:** `KUMIHO_CLAUDE_HOME`
+- **Override runtime state home:** `KUMIHO_CLAUDE_HOME` (state only; the venv follows the plugin data directory)
 - **Override package spec:** `KUMIHO_CLAUDE_PACKAGE_SPEC`
 
 Default package spec:
@@ -390,7 +390,7 @@ YAML frontmatter (session_id, date, topics, summary) and structured
 | `KUMIHO_CONTROL_PLANE_URL` | `https://control.kumiho.cloud` | Control plane URL |
 | `KUMIHO_TENANT_HINT` | *(auto)* | Tenant slug or UUID for multi-tenant setups |
 | `KUMIHO_MCP_LOG_LEVEL` | `INFO` | MCP server log level |
-| `KUMIHO_CLAUDE_HOME` | *(platform default)* | Override runtime/venv directory |
+| `KUMIHO_CLAUDE_HOME` | *(platform default)* | Override the runtime state directory (logs, markers, reflex state). Since 0.18.2 the **venv** lives under the plugin data directory instead, so hooks can name its interpreter — this variable no longer moves it. |
 | `KUMIHO_CLAUDE_PACKAGE_SPEC` | *(see above)* | Override pip install spec |
 | `KUMIHO_CLAUDE_DISABLE_LLM_FALLBACK` | *(unset)* | Set to `1` to disable local no-key LLM fallback |
 | `KUMIHO_CLAUDE_DISCOVERY_USER_AGENT` | `kumiho-claude/0.16.0` | Override discovery HTTP User-Agent |

@@ -160,6 +160,35 @@ def test_the_lock_is_released_even_when_provisioning_raises(state, monkeypatch):
     assert not L._provision_lock_path().exists()
 
 
+def test_the_desktop_entry_names_the_venv_that_is_actually_provisioned(state, monkeypatch):
+    """Review found _bootstrap_desktop_server_entries still hardcoding
+    <state>/venv after the venv moved. That writes an ABSOLUTE interpreter path
+    into the user's Desktop config, and _has_valid_entry only validates args[0],
+    so a wrong `command` is never repaired again."""
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(state / "pdata"))
+    src = (SCRIPTS / "run_kumiho_mcp.py").read_text(encoding="utf-8")
+    assert '_venv_python(_state_dir() / "venv")' not in src, \
+        "the Desktop self-heal must use _venv_dir(), not the old state-dir venv"
+    assert L._venv_python(L._venv_dir()) == L._venv_python(state / "pdata" / "venv")
+
+
+def test_the_lock_sits_beside_the_venv_it_guards(state, monkeypatch):
+    """A lock in the state dir is not mutual: two launchers can resolve
+    different state dirs (KUMIHO_CLAUDE_HOME) while sharing one venv."""
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(state / "pdata"))
+    assert L._provision_lock_path().parent == L._venv_dir().parent
+
+
+def test_the_detached_provisioner_leaves_something_to_read(state):
+    """DEVNULL made a failed first run permanently invisible: the parent has
+    already exited and the host reports only that the server went away."""
+    assert L._provision_log_path().name.endswith(".log")
+    src = (SCRIPTS / "run_kumiho_mcp.py").read_text(encoding="utf-8")
+    spawn = src[src.index("def _spawn_detached_provisioning"):]
+    spawn = spawn[:spawn.index("\ndef ")]
+    assert "_provision_log_path()" in spawn, "the child must write somewhere readable"
+
+
 def test_provision_flag_is_accepted_by_the_cli():
     """The detached child re-invokes this file with --provision; if argparse
     rejected it the background build would die instantly and silently."""

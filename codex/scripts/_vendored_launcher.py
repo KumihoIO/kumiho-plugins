@@ -74,7 +74,11 @@ def _plugin_data_dir() -> "Path | None":
     parts = Path(__file__).resolve().parts
     if "cache" in parts:
         i = len(parts) - 1 - parts[::-1].index("cache")
-        if len(parts) >= i + 4 and parts[i - 1] == "plugins":
+        # Do not require the parent to be literally named "plugins": Cowork
+        # lays the cache out under a differently-named root, and demanding the
+        # name there silently fell back to the state dir -- the two-venv split
+        # again, for exactly the users least able to notice it.
+        if len(parts) >= i + 4:
             marketplace, plugin = parts[i + 1], parts[i + 2]
             return Path(*parts[:i]) / "data" / ("%s-%s" % (plugin, marketplace))
     return None
@@ -117,11 +121,19 @@ def _link_windows_bin(venv_dir: Path) -> None:
     if bin_dir.exists() or not scripts.is_dir():
         return
     try:
-        subprocess.run(["cmd", "/c", "mklink", "/J", str(bin_dir), str(scripts)],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       timeout=30, check=False)
-    except (OSError, subprocess.SubprocessError):
-        pass  # hooks degrade to not firing; the MCP server is unaffected
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(bin_dir), str(scripts)],
+                           capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        r = None
+        print("[kumiho-claude] Could not link %s (%s)" % (bin_dir, exc), file=sys.stderr)
+    # Report rather than fail silently: without this junction every hook is
+    # unstartable, and a hook that never fires looks like a plugin that does
+    # nothing rather than one that is broken.
+    if not _venv_python(venv_dir).exists() or (r is not None and r.returncode != 0):
+        print("[kumiho-claude] Hook interpreter %s is missing; hooks will not "
+              "fire until this is repaired (mklink said: %s)"
+              % (bin_dir / "python", ((r.stderr or r.stdout).strip()[:120] if r else "n/a")),
+              file=sys.stderr)
 
 
 def _run(cmd: list[str], *, check: bool = True) -> int:
@@ -342,8 +354,16 @@ _SYNC_PROVISION_ENV = "KUMIHO_CLAUDE_PROVISION_SYNC"
 PROVISION_LOCK_STALE_S = 1800
 
 
+def _provision_log_path() -> Path:
+    return _state_dir() / "provision.log"
+
+
 def _provision_lock_path() -> Path:
-    return _state_dir() / "provision.lock"
+    # Beside the venv it guards, not beside the state dir. Two launchers can
+    # resolve different state dirs (KUMIHO_CLAUDE_HOME) while sharing one venv
+    # under the plugin data dir -- a lock in the state dir would not have been
+    # mutual at all.
+    return _venv_dir().parent / "provision.lock"
 
 
 def _provision_in_progress() -> bool:
@@ -384,10 +404,20 @@ def _spawn_detached_provisioning() -> None:
     Best-effort by construction -- if the spawn fails the caller still exits with
     a message, which is strictly better than blocking until killed.
     """
+    # Not DEVNULL: this child is the only thing standing between a new user and
+    # a working install, and if it dies there is otherwise NOTHING to look at --
+    # the parent has already exited and the host reports only that the server
+    # went away. The log path is named in the message the caller prints.
+    try:
+        log_path = _provision_log_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        sink = open(log_path, "w", encoding="utf-8", errors="replace")
+    except OSError:
+        sink = subprocess.DEVNULL
     kwargs = {
         "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
+        "stdout": sink,
+        "stderr": subprocess.STDOUT if sink is not subprocess.DEVNULL else subprocess.DEVNULL,
         "env": {**os.environ, _SYNC_PROVISION_ENV: "1"},
     }
     if os.name == "nt":
@@ -429,7 +459,10 @@ def _ensure_runtime() -> Path:
             "would take far longer than the host's MCP startup timeout, so the host "
             "would kill it half-installed and nothing would ever finish.\n"
             "[kumiho-claude] Reconnect the server, or start a new session, once it "
-            "completes. Run /kumiho-onboard to watch it and set credentials."
+            "completes. Progress and any error are logged to %s.\n"
+            "[kumiho-claude] Run /kumiho-onboard AFTER it finishes to set "
+            "credentials -- starting it now would run a second pip against the "
+            "same environment." % _provision_log_path()
         )
 
     if python_path.exists() and not _needs_install(python_path, marker_path, package_spec):
@@ -481,7 +514,10 @@ def _provision(venv_dir: Path, python_path: Path, marker_path: Path,
                 file=sys.stderr,
             )
             raise
-        _link_windows_bin(venv_dir)
+
+    # Unconditionally, not only on the creation branch: a venv provisioned by an
+    # older version has no junction, and nothing else would ever add one.
+    _link_windows_bin(venv_dir)
 
     if _needs_install(python_path, marker_path, package_spec):
         print("[kumiho-claude] Installing dependencies (first run downloads "
@@ -988,7 +1024,10 @@ def _bootstrap_desktop_server_entries() -> None:
     if not script_path.exists():
         return  # Not in a standard plugin layout; skip.
 
-    venv_py = _venv_python(_state_dir() / "venv")
+    # _venv_dir(), never _state_dir()/"venv": this writes an ABSOLUTE interpreter
+    # path into the user's Desktop config, and _has_valid_entry below only
+    # validates args[0], so a wrong `command` here is never repaired again.
+    venv_py = _venv_python(_venv_dir())
     command = str(venv_py) if venv_py.exists() else sys.executable
 
     server_entry: dict = {

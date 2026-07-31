@@ -26,6 +26,7 @@ import platform
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import bounded_proc
@@ -92,7 +93,11 @@ def _plugin_data_dir():
     parts = Path(__file__).resolve().parts
     if "cache" in parts:
         i = len(parts) - 1 - parts[::-1].index("cache")
-        if len(parts) >= i + 4 and parts[i - 1] == "plugins":
+        # Do not require the parent to be literally named "plugins": Cowork
+        # lays the cache out under a differently-named root, and demanding the
+        # name there silently fell back to the state dir -- the two-venv split
+        # again, for exactly the users least able to notice it.
+        if len(parts) >= i + 4:
             marketplace, plugin = parts[i + 1], parts[i + 2]
             return Path(*parts[:i]) / "data" / ("%s-%s" % (plugin, marketplace))
     return None
@@ -260,7 +265,13 @@ def clean_token(raw: str) -> str:
 #: well as the OS environment -- which is what makes this work for a
 #: GUI-launched Claude Desktop, where exported shell variables are invisible.
 PYTHON_ENV_KNOB = "KUMIHO_PYTHON"
-CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
+#: Resolve the settings file the way the host does. Hardcoding ~/.claude means
+#: that anyone running with CLAUDE_CONFIG_DIR set gets the override written to a
+#: file the host never reads -- silently, since the write itself succeeds.
+CLAUDE_SETTINGS = (
+    Path((os.getenv("CLAUDE_CONFIG_DIR", "") or "").strip() or (Path.home() / ".claude"))
+    .expanduser() / "settings.json"
+)
 
 
 def write_python_knob(base_python: str) -> None:
@@ -353,8 +364,62 @@ def link_windows_bin(venv_dir: Path) -> None:
         warn("Could not create the venv bin junction; hooks may not fire")
 
 
+#: Mirrors run_kumiho_mcp.PROVISION_LOCK_STALE_S.
+PROVISION_LOCK_STALE_S = 1800
+
+
+def _provision_lock_path() -> Path:
+    return VENV_DIR.parent / "provision.lock"
+
+
+def _wait_for_provisioning(timeout_s: int = 900) -> None:
+    """Do not run a second pip against a venv another process is building.
+
+    The launcher hands a cold first run to a detached provisioner and tells the
+    user about it -- so the user reaching for /kumiho-onboard while that is
+    still running is the EXPECTED sequence, not an edge case. Two pip runs
+    against one venv interleave their writes.
+    """
+    lock = _provision_lock_path()
+    waited = 0
+    while True:
+        try:
+            if not lock.exists():
+                return
+            if (time.time() - lock.stat().st_mtime) > PROVISION_LOCK_STALE_S:
+                return  # holder is gone; the launcher breaks it the same way
+        except OSError:
+            return
+        if waited == 0:
+            log("Another process is already building the environment; waiting...")
+        if waited >= timeout_s:
+            warn(f"Still locked after {timeout_s}s. Continuing anyway — if this "
+                 f"fails, delete {lock} and retry.")
+            return
+        time.sleep(5)
+        waited += 5
+
+
 def setup_venv(base_python: str) -> Path:
-    """Create or reuse ~/.kumiho/venv and install packages."""
+    """Create or reuse the shared venv and install packages."""
+    _wait_for_provisioning()
+    lock = _provision_lock_path()
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        lock = None          # advisory only; never block onboarding on it
+    try:
+        return _setup_venv_locked(base_python)
+    finally:
+        if lock is not None:
+            try:
+                lock.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _setup_venv_locked(base_python: str) -> Path:
     if VENV_PYTHON.exists():
         ok(f"Venv exists: {VENV_DIR}")
     else:
@@ -370,8 +435,10 @@ def setup_venv(base_python: str) -> Path:
         if r.returncode != 0:
             fail(f"venv creation failed: {r.stderr}")
             sys.exit(1)
-        link_windows_bin(VENV_DIR)
         ok(f"Created venv: {VENV_DIR}")
+    # Unconditionally: a venv from an older version has no junction and nothing
+    # else would ever add one, which leaves every hook unstartable.
+    link_windows_bin(VENV_DIR)
 
     # Install/upgrade packages. pip's build-backend children inherit the pipe
     # handles, which is exactly the pipe-holder that used to turn "pip timed
