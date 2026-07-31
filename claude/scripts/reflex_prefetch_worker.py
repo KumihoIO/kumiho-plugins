@@ -75,10 +75,27 @@ _ENGAGE_SNIPPET = (
 
 # openclaw's isUnknownToolError (client.ts:135-144), minus the HTTP 404 arm:
 # this transport is a subprocess, so there is no status code to inspect.
+# Phrases that mean the BACKEND genuinely lacks the tool -- a permanent capability
+# gap worth latching. Local import failures are deliberately NOT here: a
+# ModuleNotFoundError is transient, and its most likely cause is the plugin
+# upgrade itself. `pip install --upgrade` removes the old kumiho-memory
+# distribution before writing the new one, and _venv_ready cannot see that window
+# (interpreter and marker both still exist), so a Stop-spawned prefetch landing
+# mid-reinstall would latch the reflex dark for the rest of the session.
 _UNKNOWN_TOOL_PHRASES = (
     "unknown tool", "tool not found", "method not found", "unsupported tool",
+)
+
+# Transient: skip this round, never latch.
+_TRANSIENT_PHRASES = (
     "no module named 'kumiho_memory'", "cannot import name 'tool_memory_engage'",
 )
+
+# Windows: a DETACHED_PROCESS parent has no console, so launching a
+# console-subsystem child makes the OS allocate a NEW VISIBLE one. capture_output
+# does not suppress it. Without this flag the user gets a black window on every
+# turn, for as long as a cold interpreter start + gRPC round trip takes.
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 _OPEN_TAG = "<kumiho_memory>"
 _CLOSE_TAG = "</kumiho_memory>"
@@ -322,7 +339,7 @@ def _git_branch(cwd: str) -> str:
         proc = subprocess.run(
             ["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=10,
+            timeout=10, creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -460,7 +477,7 @@ def _call_engage(python_path, args: dict) -> tuple:
             [str(python_path), "-c", _ENGAGE_SNIPPET],
             input=json.dumps(args, ensure_ascii=True),
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            env=env, timeout=ENGAGE_TIMEOUT_S,
+            env=env, timeout=ENGAGE_TIMEOUT_S, creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return None, "engage subprocess failed: %s" % exc
@@ -475,8 +492,16 @@ def _call_engage(python_path, args: dict) -> tuple:
     return data, ""
 
 
+def _is_transient_error(message: str) -> bool:
+    """A local failure that will resolve on its own -- skip, never latch."""
+    low = (message or "").lower()
+    return any(phrase in low for phrase in _TRANSIENT_PHRASES)
+
+
 def _is_unknown_tool_error(message: str) -> bool:
     low = (message or "").lower()
+    if _is_transient_error(low):
+        return False
     return any(phrase in low for phrase in _UNKNOWN_TOOL_PHRASES)
 
 

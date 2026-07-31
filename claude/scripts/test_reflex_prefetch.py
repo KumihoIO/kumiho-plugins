@@ -458,5 +458,31 @@ def test_latin_stopwords_are_still_dropped():
         assert not w._is_significant(tok), tok
 
 
+def test_module_not_found_is_transient_and_never_latches():
+    """C2 regression. `pip install --upgrade` removes the old kumiho-memory
+    distribution before writing the new one, and _venv_ready cannot see that
+    window. A prefetch landing mid-reinstall must not latch the reflex dark for
+    the rest of the session -- and the upgrade path is how this ships."""
+    w = _load()
+    assert w._is_transient_error("ModuleNotFoundError: No module named 'kumiho_memory'")
+    assert not w._is_unknown_tool_error("No module named 'kumiho_memory'")
+    assert not w._is_unknown_tool_error("cannot import name 'tool_memory_engage'")
+    # a genuine backend capability gap still latches
+    assert w._is_unknown_tool_error("Unknown tool: kumiho_memory_engage")
+
+
+def test_child_processes_are_spawned_without_a_console_window():
+    """C1 regression. The worker runs DETACHED_PROCESS (no console), so a
+    console-subsystem child makes Windows allocate a NEW VISIBLE one -- a black
+    window on every turn. capture_output does not suppress it."""
+    import os as _os
+    w = _load()
+    expected = 0x08000000 if _os.name == "nt" else 0
+    assert w._NO_WINDOW == expected
+    src = (SCRIPTS / "reflex_prefetch_worker.py").read_text(encoding="utf-8")
+    # every subprocess.run in this worker must carry the flag
+    assert src.count("subprocess.run(") == src.count("creationflags=_NO_WINDOW")
+
+
 if __name__ == "__main__":
     sys.exit(subprocess.call([sys.executable, "-m", "pytest", __file__, "-q"]))

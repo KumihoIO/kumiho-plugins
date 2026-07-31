@@ -137,7 +137,11 @@ def _on_tool(payload: dict, session_id: str) -> None:
 
 def main() -> int:
     try:
-        if rs.off() or not rs.gate("KUMIHO_MEMORY_REFLEX"):
+        # Same name memory-reflex.py gates on, and the one declared in .mcp.json.
+        # These used to differ (KUMIHO_MEMORY_REFLEX here, declared nowhere), so
+        # KUMIHO_REFLEX=0 stopped injection while the observer and the detached
+        # worker kept running.
+        if rs.off() or not rs.gate("KUMIHO_REFLEX"):
             return 0
         payload = _read_stdin()
         session_id = rs.safe_id(payload.get("session_id"))

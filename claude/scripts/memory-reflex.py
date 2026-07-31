@@ -117,9 +117,13 @@ def _subagent_card(session_id: str) -> str:
         "call kumiho_memory_engage speculatively.\n"
         "- If your work settles a decision, preference, fact or correction, call "
         "kumiho_memory_reflect with typed captures before you finish.\n"
-        "- Omit session_id; the server resolves it and reports what it used.\n"
-        "- Do not narrate memory operations.\n"
-        "- Parent session_id=%s" % session_id
+        # Pass it, do not omit it. Omitting resolves through KUMIHO_SESSION_ID in
+        # the MCP server's env, which goes stale after /clear (Claude Code rotates
+        # the session id without respawning the server), so captures would land in
+        # the PREVIOUS conversation's bucket. This card holds the live id.
+        "- Pass session_id=%s explicitly on every memory call. Do not omit it "
+        "here and do not invent one.\n"
+        "- Do not narrate memory operations." % session_id
     )
 
 

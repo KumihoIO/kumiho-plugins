@@ -117,11 +117,22 @@ def test_kill_switch_file_disables_everything(tmp_path):
 
 
 def test_env_gate_disables_everything(tmp_path):
+    """C3 regression: this hook must gate on the SAME name as memory-reflex.py
+    and .mcp.json. It used to read KUMIHO_MEMORY_REFLEX, declared nowhere, so
+    KUMIHO_REFLEX=0 stopped injection while the observer and the detached
+    prefetch worker both kept running."""
     r = _run_hook({"hook_event_name": "Stop", "session_id": "s6",
                    "last_assistant_message": "hello"}, tmp_path,
-                  {"KUMIHO_MEMORY_REFLEX": "0"})
+                  {"KUMIHO_REFLEX": "0"})
     assert r.returncode == 0
     assert _ledger(tmp_path, "s6") == []
+
+    # the old, undeclared name must no longer be a live gate
+    r2 = _run_hook({"hook_event_name": "Stop", "session_id": "s7",
+                    "last_assistant_message": "hello"}, tmp_path,
+                   {"KUMIHO_MEMORY_REFLEX": "0"})
+    assert r2.returncode == 0
+    assert len(_ledger(tmp_path, "s7")) == 1
 
 
 def test_survives_garbage_and_empty_stdin(tmp_path):
