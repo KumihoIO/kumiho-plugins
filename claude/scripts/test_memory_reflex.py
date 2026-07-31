@@ -216,5 +216,25 @@ def test_pending_queue_line_silent_below_threshold(tmp_path):
     assert "queued for keyless" not in r.stdout
 
 
+def test_stored_prompt_is_capped(tmp_path):
+    r = _run(_ups("pcap", prompt="x" * 9000), tmp_path)
+    assert r.returncode == 0
+    stored = json.loads((tmp_path / "reflex" / "pcap.turn.json")
+                        .read_text(encoding="utf-8"))["prompt"]
+    assert len(stored) == 2000
+
+
+def test_prompt_storage_can_be_turned_off(tmp_path):
+    """Everywhere else this design stores a hash and a length, not text; the
+    prompt is the one exception and it must be refusable."""
+    secret = "my api key is sk-abcdefghijklmnop"
+    r = _run(_ups("poff", prompt=secret), tmp_path,
+             env_extra={"KUMIHO_REFLEX_STORE_PROMPT": "0"})
+    assert r.returncode == 0
+    raw = (tmp_path / "reflex" / "poff.turn.json").read_text(encoding="utf-8")
+    assert secret not in raw
+    assert json.loads(raw)["prompt"] == ""
+
+
 if __name__ == "__main__":
     sys.exit(subprocess.call([sys.executable, "-m", "pytest", __file__, "-q"]))

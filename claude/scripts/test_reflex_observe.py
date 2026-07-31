@@ -233,5 +233,35 @@ def test_ledger_failure_cannot_cancel_the_prefetch_spawn(tmp_path, monkeypatch):
     assert calls == ["s1"], "prefetch spawn was cancelled by a ledger failure"
 
 
+def test_conf_reads_the_launcher_snapshot_and_env_wins(tmp_path, monkeypatch):
+    """The .mcp.json env block never reaches a hook process, so every knob
+    declared there used to be a control that silently did nothing. The launcher
+    snapshots resolved values where hooks can read them; a real process env var
+    still wins so ~/.claude/settings.json takes effect without a server restart."""
+    monkeypatch.setenv("KUMIHO_CLAUDE_HOME", str(tmp_path))
+    monkeypatch.delenv("KUMIHO_REFLEX_TTL_S", raising=False)
+    rs = _load("reflex_state.py")
+    (tmp_path / "reflex.config.json").write_text(
+        json.dumps({"KUMIHO_REFLEX_TTL_S": "120", "KUMIHO_REFLEX": "0"}),
+        encoding="utf-8")
+    assert rs.conf_int("KUMIHO_REFLEX_TTL_S", 900) == 120
+    assert rs.gate("KUMIHO_REFLEX") is False          # snapshot disables
+    assert rs.conf_int("KUMIHO_REFLEX_MISSING", 7) == 7  # falls back to default
+
+    rs._CONF_CACHE.clear()
+    monkeypatch.setenv("KUMIHO_REFLEX_TTL_S", "45")
+    assert rs.conf_int("KUMIHO_REFLEX_TTL_S", 900) == 45  # env beats snapshot
+
+
+def test_conf_survives_a_missing_or_corrupt_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setenv("KUMIHO_CLAUDE_HOME", str(tmp_path))
+    monkeypatch.delenv("KUMIHO_REFLEX_TTL_S", raising=False)
+    rs = _load("reflex_state.py")
+    assert rs.conf_int("KUMIHO_REFLEX_TTL_S", 900) == 900   # no file at all
+    rs._CONF_CACHE.clear()
+    (tmp_path / "reflex.config.json").write_text("{not json", encoding="utf-8")
+    assert rs.conf_int("KUMIHO_REFLEX_TTL_S", 900) == 900   # corrupt -> default
+
+
 if __name__ == "__main__":
     sys.exit(subprocess.call([sys.executable, "-m", "pytest", __file__, "-q"]))

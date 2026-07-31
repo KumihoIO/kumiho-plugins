@@ -37,13 +37,15 @@ _DEFAULT_BUDGET_CHARS = 6000
 _FLOOR_COOLDOWN_TURNS = 5
 _QUEUE_COOLDOWN_TURNS = 20
 _QUEUE_MIN_PENDING = 10
+# The recall query is capped at 200 chars anyway, so storing more prompt than
+# this buys nothing and only lengthens what sits on disk.
+_PROMPT_MAX_CHARS = 2000
 
 
 def _int_env(name: str, default: int) -> int:
-    try:
-        return int((os.getenv(name, "") or "").strip() or default)
-    except (ValueError, TypeError):
-        return default
+    """Via reflex_state.conf so .mcp.json-declared values actually reach this
+    hook; a real process env var still wins."""
+    return rs.conf_int(name, default)
 
 
 def _read_stdin() -> dict:
@@ -204,10 +206,19 @@ def main(argv: list) -> int:
         if parts:
             _emit("UserPromptSubmit", "\n\n".join(parts))
 
+        # The prompt is stored ONLY because the prefetch worker builds the recall
+        # query from it on the next Stop -- minutes later at most. Everywhere else
+        # this design records a hash and a length rather than text (see the
+        # observation ledger), so a verbatim prompt sitting on disk until prune()
+        # is an inconsistency, not a feature. It is therefore capped, and can be
+        # turned off entirely: with KUMIHO_REFLEX_STORE_PROMPT=0 the worker falls
+        # back to the transcript tail it already reads for prior-turn context, so
+        # recall degrades in quality rather than breaking.
         turn.update({
             "n": n_turn,
             "injected_chars": spent,
-            "prompt": str(payload.get("prompt") or ""),
+            "prompt": (str(payload.get("prompt") or "")[:_PROMPT_MAX_CHARS]
+                       if rs.gate("KUMIHO_REFLEX_STORE_PROMPT") else ""),
             "prompt_id": str(payload.get("prompt_id") or ""),
             "cwd": str(payload.get("cwd") or ""),
             "ts": now,

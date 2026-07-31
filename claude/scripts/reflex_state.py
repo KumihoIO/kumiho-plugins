@@ -57,9 +57,42 @@ def off() -> bool:
         return False
 
 
+_CONF_CACHE = {}
+
+
+def conf(name: str, default: str = "") -> str:
+    """Resolve a knob for a HOOK process.
+
+    Hooks inherit the CLI's environment, not the MCP server's, so a name declared
+    only in ``.mcp.json`` is invisible to them -- which made every value declared
+    there a control that silently did nothing. The launcher, which DOES see that
+    block (and resolves ``${VAR:-default}`` on Desktop, where it arrives
+    literally), snapshots the resolved values to ``<state>/reflex.config.json``;
+    this reads that snapshot.
+
+    Precedence: real process env > launcher snapshot > caller default. The env
+    wins so ``~/.claude/settings.json`` and an ad-hoc shell override still take
+    effect immediately, without waiting for a server restart to refresh the file.
+    """
+    raw = (os.getenv(name, "") or "").strip()
+    if raw:
+        return raw
+    if not _CONF_CACHE:
+        _CONF_CACHE.update(read_json(state_dir() / "reflex.config.json", {}) or {"_": ""})
+    val = _CONF_CACHE.get(name)
+    return str(val).strip() if val not in (None, "") else default
+
+
+def conf_int(name: str, default: int) -> int:
+    try:
+        return int(conf(name, "") or default)
+    except (ValueError, TypeError):
+        return default
+
+
 def gate(name: str, default_true: bool = True) -> bool:
-    """The falsy-tuple idiom from ``code-capture-hook.py``."""
-    raw = (os.getenv(name, "") or "").strip().lower()
+    """The falsy-tuple idiom from ``code-capture-hook.py``, over ``conf``."""
+    raw = conf(name, "").lower()
     if not raw:
         return default_true
     return raw not in ("0", "false", "no", "off")
