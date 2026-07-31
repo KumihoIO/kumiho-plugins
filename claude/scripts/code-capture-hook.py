@@ -68,9 +68,22 @@ def _spawn(worker_name: str, args: list) -> None:
 def main() -> None:
     if not _gate_enabled():
         return
+    # Decode the wire format explicitly. The hook payload is UTF-8, but on a
+    # Windows pipe sys.stdin decodes with the ambient code page (cp949) and
+    # surrogateescape, so a repo under a non-ASCII path came back as mojibake --
+    # and this hook forwards `cwd` straight into the workers' argv. Measured:
+    # the mojibake path made Popen(cwd=...) raise NotADirectoryError into the
+    # `except Exception: pass` in _spawn, so every commit capture under such a
+    # path was dropped with nothing logged anywhere. Same idiom as
+    # session-bootstrap._read_hook_input.
     try:
-        data = json.loads(sys.stdin.read() or "{}")
-    except (json.JSONDecodeError, OSError):
+        buf = getattr(sys.stdin, "buffer", None)
+        raw = buf.read().decode("utf-8", "replace") if buf else sys.stdin.read()
+    except (OSError, ValueError):
+        return
+    try:
+        data = json.loads(raw or "{}")
+    except (json.JSONDecodeError, ValueError):
         return
 
     event = data.get("hook_event_name", "")

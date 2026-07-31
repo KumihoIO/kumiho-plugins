@@ -28,6 +28,11 @@ _REPO = _HERE.parent.parent
 CANONICAL = _REPO / "claude" / "scripts" / "run_kumiho_mcp.py"
 VENDORED = _HERE / "_vendored_launcher.py"
 
+#: Modules the launcher imports by plain name, which therefore resolve out of
+#: whichever scripts/ directory it was started from. A snapshot that ships the
+#: launcher without these does not start at all.
+VENDORED_DEPS = ("bounded_proc.py",)
+
 #: Every manifest whose version string must move in lockstep.
 MANIFESTS = (
     _REPO / ".claude-plugin" / "marketplace.json",
@@ -64,6 +69,24 @@ def test_vendored_launcher_matches_canonical():
     )
 
 
+def test_vendored_launcher_dependencies_match_canonical():
+    """The launcher's own imports must be vendored beside it, not just the
+    launcher. A missing sibling is an ImportError at MCP server startup, which
+    the host reports only as "server failed to start"."""
+    if not CANONICAL.exists():
+        return  # plugin snapshot checkout
+    for name in VENDORED_DEPS:
+        canonical, vendored = CANONICAL.parent / name, _HERE / name
+        assert vendored.exists(), (
+            f"vendored dependency missing: {vendored} — fix: "
+            f"cp claude/scripts/{name} codex/scripts/{name}"
+        )
+        assert _normalized(canonical) == _normalized(vendored), (
+            f"vendored {name} drifted from canonical — fix: "
+            f"cp claude/scripts/{name} codex/scripts/{name}"
+        )
+
+
 def test_manifest_versions_locked():
     missing = [str(p.relative_to(_REPO)) for p in MANIFESTS if not p.exists()]
     if missing and not CANONICAL.exists():
@@ -77,7 +100,9 @@ def test_manifest_versions_locked():
 
 def main() -> int:
     failures = 0
-    for test in (test_vendored_launcher_matches_canonical, test_manifest_versions_locked):
+    for test in (test_vendored_launcher_matches_canonical,
+                 test_vendored_launcher_dependencies_match_canonical,
+                 test_manifest_versions_locked):
         try:
             test()
             print(f"PASS: {test.__name__}")

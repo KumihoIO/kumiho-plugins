@@ -21,6 +21,16 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+# Skill titles and the summary line carry non-ASCII (em-dashes, Korean), which a
+# legacy Windows code page cannot encode once stdout is redirected or captured.
+# Module scope, matching claude/scripts/setup.py and backfill_inventory.py --
+# setup.py runs this script as a subprocess, i.e. always with a pipe.
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 PLUGIN_DIR = SCRIPT_DIR.parent  # kumiho-plugins/claude/
 SKILL_MD = PLUGIN_DIR / "skills" / "kumiho-memory" / "SKILL.md"

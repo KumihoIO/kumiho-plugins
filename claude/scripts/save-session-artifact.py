@@ -32,9 +32,18 @@ from pathlib import Path
 
 
 def _read_hook_input() -> dict:
-    """Read the JSON payload from stdin."""
+    """Read the JSON payload from stdin.
+
+    Explicit UTF-8: the hook wire format is UTF-8, but sys.stdin on a Windows
+    pipe decodes with the ambient code page (cp949) and surrogateescape. A
+    session whose cwd or transcript_path contains non-ASCII then came back
+    mojibaked, the transcript path did not exist, and the artifact was silently
+    never written. session-bootstrap._read_hook_input was copied from this
+    function and then fixed; this is the two converging again.
+    """
     try:
-        raw = sys.stdin.read()
+        buf = getattr(sys.stdin, "buffer", None)
+        raw = buf.read().decode("utf-8", "replace") if buf else sys.stdin.read()
         if not raw.strip():
             return {}
         return json.loads(raw)

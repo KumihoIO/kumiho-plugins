@@ -7,6 +7,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -17,9 +18,15 @@ import urllib.request
 import venv
 from pathlib import Path
 
+import bounded_proc
 
-DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.10.8 kumiho-memory[all]>=1.2.0"
+
+DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.10.8 kumiho-memory[all]>=1.2.1"
 MARKER_FILE = ".installed-packages.txt"
+#: Asking an existing venv what it has installed. This is on the server-start
+#: critical path, so it is short -- a venv that cannot answer in this long is
+#: broken, and the caller reinstalls.
+PROBE_TIMEOUT_S = 60
 DEFAULT_DISCOVERY_USER_AGENT = "kumiho-claude/0.16.0"
 
 # Self-hosted Community Edition (CE) defaults.  Mirrors the kumiho-gpt-connect
@@ -60,24 +67,197 @@ def _run(cmd: list[str], *, check: bool = True) -> int:
     return proc.returncode
 
 
+#: Pre-release stages and their sort position relative to the bare release (0).
+#: PEP 440's order is dev < alpha < beta < rc < release < post. Longest-prefix
+#: first, so "alpha" is not eaten by "a".
+_PRE_RELEASE_RANKS = (
+    ("dev", -4),
+    ("alpha", -3), ("a", -3),
+    ("beta", -2), ("b", -2),
+    ("rc", -1), ("pre", -1), ("c", -1),
+)
+
+
+def _suffix_rank(suffix: str) -> int:
+    for marker, rank in _PRE_RELEASE_RANKS:
+        if suffix.startswith(marker):
+            return rank
+    return 1  # post-releases and local versions sort ABOVE the bare release
+
+
+def _version_key(value: str) -> list:
+    """``[(number, rank)]`` per dot-chunk; rank -1 pre-release, +1 post.
+
+    Deliberately not PEP 440 -- importing ``packaging`` would make the launcher
+    depend on the very venv it exists to provision. But the rank is not
+    optional: a plain leading-digit compare made ``1.2.0rc1`` EQUAL to
+    ``1.2.0``, so a release candidate satisfied a floor that wanted the release.
+    """
+    key = []
+    for chunk in str(value).split("."):
+        cut = 0
+        while cut < len(chunk) and chunk[cut].isdigit():
+            cut += 1
+        digits, suffix = chunk[:cut], chunk[cut:].lstrip("-_").lower()
+        rank = _suffix_rank(suffix) if suffix else 0
+        key.append((int(digits) if digits else 0, rank))
+    return key
+
+
+def _below_floor(have: str, floor: str) -> bool:
+    """Is ``have`` strictly below ``floor``? Padded so length never decides.
+
+    Without padding ``1.2.0.dev1`` compares ABOVE ``1.2.0`` purely by being
+    longer -- the exact inversion the rank exists to prevent.
+    """
+    a, b = _version_key(have), _version_key(floor)
+    pad = (0, 0)
+    width = max(len(a), len(b))
+    a += [pad] * (width - len(a))
+    b += [pad] * (width - len(b))
+    return a < b
+
+
+#: A PEP 508 distribution name, then optional extras, then whatever follows.
+#: The name shape is strict on purpose: the old ``[A-Za-z0-9._-]+`` happily
+#: matched ``--pre`` and ``./wheels/x.whl``, turning pip flags and paths into
+#: "distributions" that are never installed -- so every launch reinstalled.
+_REQUIREMENT_RE = re.compile(
+    r"^(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)"
+    r"(?:\[(?P<extras>[^\]]*)\])?"
+    r"\s*(?P<rest>.*)$"
+)
+
+#: Operators that put a LOWER bound on the installed version. ``~=`` and ``==``
+#: do too (a prefix match still cannot go below its own floor). Order matters:
+#: the two-character forms must be tried before ``>``.
+_FLOOR_RE = re.compile(r"^(?:===|==|~=|>=|>)\s*([^,;\s]+)")
+
+#: Anything that is not a plain requirement: pip flags, URLs, local paths.
+_NOT_A_REQUIREMENT = ("-", ".", "/", "\\")
+
+
+def _spec_floors(package_spec: str):
+    """``([(name, extras, floor)], understood)`` for the tokens in the spec.
+
+    ``kumiho[mcp]>=0.10.8`` -> ``("kumiho", frozenset({"mcp"}), "0.10.8")``.
+
+    ``understood`` is False when a token carries a constraint this parser cannot
+    evaluate as a floor (``<``, ``!=``, a VCS URL, a bare wheel path). The
+    caller must then reinstall rather than assume satisfaction: silently
+    dropping an operator is how ``==0.9`` came back as "no floor" and reported
+    a venv at 2.0 as satisfying it.
+    """
+    reqs, understood = [], True
+    for token in shlex.split(package_spec):
+        if token.startswith(_NOT_A_REQUIREMENT) or "://" in token:
+            understood = False
+            continue
+        m = _REQUIREMENT_RE.match(token)
+        if not m:
+            understood = False
+            continue
+        extras = frozenset(
+            e.strip() for e in (m.group("extras") or "").split(",") if e.strip()
+        )
+        rest = (m.group("rest") or "").strip()
+        floor_match = _FLOOR_RE.match(rest)
+        if floor_match:
+            reqs.append((m.group("name"), extras, floor_match.group(1)))
+        elif rest:
+            understood = False  # a constraint, but not one we can evaluate
+        else:
+            reqs.append((m.group("name"), extras, ""))
+    return reqs, understood
+
+
+def _installed_versions(python_path: Path, names: list) -> dict:
+    """What the venv actually has, ``None`` for absent. ``{}`` if unknowable."""
+    # find_spec on a DOTTED name imports the parent package, so a plain
+    # find_spec('kumiho.mcp_server') raises ModuleNotFoundError on exactly the
+    # empty venv this is meant to report on -- which killed the whole probe
+    # rather than answering "not installed".
+    probe = (
+        "import json,sys,importlib.util\n"
+        "from importlib.metadata import version, PackageNotFoundError\n"
+        "def have(m):\n"
+        "    try: return importlib.util.find_spec(m) is not None\n"
+        "    except (ImportError, ValueError): return False\n"
+        "out={}\n"
+        "for n in json.loads(sys.argv[1]):\n"
+        "    try: out[n]=version(n)\n"
+        "    except PackageNotFoundError: out[n]=None\n"
+        "out['__modules__']=all(have(m)\n"
+        "                       for m in ('kumiho.mcp_server','kumiho_memory'))\n"
+        "print(json.dumps(out))\n"
+    )
+    try:
+        r = bounded_proc.run(
+            [str(python_path), "-c", probe, json.dumps(names)],
+            timeout=PROBE_TIMEOUT_S,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return {}
+    if r.returncode != 0:
+        return {}
+    try:
+        return json.loads(r.stdout or "{}")
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
+
 def _needs_install(python_path: Path, marker_path: Path, package_spec: str) -> bool:
+    """Is the venv below what ``package_spec`` requires?
+
+    Compares INSTALLED VERSIONS, not marker text. The old ``marker !=
+    package_spec`` string equality had two failure modes, both measured on
+    2026-07-31 (kumiho-plugins#45 items 2 and 6):
+
+    * A newer floor never reached an install whose marker text already matched
+      -- releases could ship forever without arriving.
+    * Two plugin copies with different floors (a cached 0.18.0 declaring
+      ``>=1.2.0`` and a stale Claude Desktop rpm snapshot still declaring
+      ``>=0.17.1``) share ONE state dir, so each launch rewrote the other's
+      marker and triggered a full reinstall -- on a venv that already satisfied
+      both.
+
+    ``marker_path`` is consulted for ONE thing the installed versions cannot
+    answer: which EXTRAS were installed. ``importlib.metadata`` does not record
+    them, so ``kumiho[mcp]`` -> ``kumiho[mcp,cli]`` is invisible to a version
+    compare. Comparing only the name+extras identity -- never the versions --
+    detects that without bringing the text-equality thrash back, because the two
+    plugin copies that thrashed declared identical extras and differed only in
+    their floors.
+    """
     if not python_path.exists():
         return True
 
-    marker = marker_path.read_text(encoding="utf-8").strip() if marker_path.exists() else ""
-    if marker != package_spec:
+    reqs, understood = _spec_floors(package_spec)
+    if not understood or not reqs:
+        return True  # a constraint we cannot evaluate -> reinstall, never assume
+
+    if marker_path.exists():
+        try:
+            previous, prev_ok = _spec_floors(
+                marker_path.read_text(encoding="utf-8").strip())
+        except OSError:
+            previous, prev_ok = [], False
+        identity = {(n, e) for n, e, _ in reqs}
+        if not prev_ok or {(n, e) for n, e, _ in previous} != identity:
+            return True
+
+    installed = _installed_versions(python_path, [name for name, _, _ in reqs])
+    if not installed:
+        return True  # cannot establish satisfaction -> reinstall, as before
+    if not installed.get("__modules__"):
         return True
 
-    check_code = (
-        "import importlib.util,sys;"
-        "mods=('kumiho.mcp_server','kumiho_memory');"
-        "missing=[m for m in mods if importlib.util.find_spec(m) is None];"
-        "sys.exit(1 if missing else 0)"
-    )
-    try:
-        _run([str(python_path), "-c", check_code], check=True)
-    except subprocess.CalledProcessError:
-        return True
+    for name, _extras, floor in reqs:
+        have = installed.get(name)
+        if not have:
+            return True
+        if floor and _below_floor(have, floor):
+            return True
     return False
 
 

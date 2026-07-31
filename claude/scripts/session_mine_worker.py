@@ -33,7 +33,14 @@ import sys
 import time
 from pathlib import Path
 
+import bounded_proc
+
 LOCK_STALE_S = 900
+#: A repo-or-not probe reads one ref; slower than this is a stuck repo.
+GIT_PROBE_TIMEOUT_S = 30
+#: Mining one transcript through a model. Unchanged in value from the old
+#: ``timeout=600`` -- what changed is that it is now enforced.
+MINE_TIMEOUT_S = 600
 
 
 def _load_launcher():
@@ -74,11 +81,17 @@ def main() -> int:
         log(f"skip: no transcript for session {session_id}")
         return 0
 
-    # Not a git repo -> no anchors to correlate against.
-    probe = subprocess.run(
-        ["git", "-C", repo_dir, "rev-parse", "--is-inside-work-tree"],
-        capture_output=True, text=True,
-    )
+    # Not a git repo -> no anchors to correlate against. A stuck probe cannot
+    # establish that it is one, which lands on the same skip -- and now it
+    # actually lands (kumiho-plugins#36).
+    try:
+        probe = bounded_proc.run(
+            ["git", "-C", repo_dir, "rev-parse", "--is-inside-work-tree"],
+            timeout=GIT_PROBE_TIMEOUT_S,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        log(f"skip: git probe unusable ({exc})")
+        return 0
     if probe.returncode != 0 or probe.stdout.strip() != "true":
         return 0
 
@@ -117,11 +130,10 @@ def main() -> int:
         env = dict(os.environ)
         env["KUMIHO_MEMORY_CODE"] = "1"
         log(f"session mine start: session={session_id} repo={repo_dir}")
-        proc = subprocess.run(
+        proc = bounded_proc.run(
             [str(python_path), "-m", "kumiho_memory", "code-mine-session",
              session_id, "--transcript", transcript, "--repo", repo_dir],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            env=env, timeout=600,
+            env=env, timeout=MINE_TIMEOUT_S,
         )
         tail = (proc.stdout or "").strip().splitlines()[-14:]
         log(f"session mine done rc={proc.returncode}: " + " | ".join(tail))

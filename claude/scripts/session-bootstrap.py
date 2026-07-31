@@ -53,13 +53,7 @@ CONTEXT = (
     "captures (decisions, preferences, facts, corrections).  This "
     "buffers your response AND stores captures with provenance links.  "
     "Skip captures for trivial exchanges.\n"
-    "  - SESSION ID — OMIT it on every memory tool call.  The server "
-    "resolves the session and reports the session_id it used plus a "
-    "session_id_source; a value you invent fragments the conversation "
-    "buffer.  If a result reports created_bucket=true on a turn that is "
-    "not the first, say so — the call addressed a session that did not "
-    "exist.  If a call reports that no session identity is available, "
-    "tell the user instead of inventing one.\n"
+    "__SESSION_ID_RULE__"
     "  - EXPLICIT REMEMBER REQUESTS — When the user says 'remember "
     "this', 'keep this in mind', 'note that', or similar, you MUST "
     "capture it via kumiho_memory_reflect.  Do NOT rely on Claude's "
@@ -104,6 +98,54 @@ CONTEXT = (
     "in your working context for the rest of the session."
 )
 
+#: Used when the host handed us the real session_id on stdin -- which is every
+#: Claude Code session, per the hook contract.
+#:
+#: Why hand the model the id at all, when the package's whole point is that
+#: ``session_id`` is optional? Because the env tier it would otherwise resolve
+#: through does not exist for a large part of the install base. Claude Desktop
+#: spawns ONE MCP server from ``claude_desktop_config.json`` at app start; it
+#: has no CLAUDE_CODE_SESSION_ID to inherit, so ``_normalize_host_session_id``
+#: has nothing to publish, and that single long-lived process is shared by every
+#: conversation afterwards -- no env var can name a per-conversation session. On
+#: 2026-07-31 a reflect on that path failed outright with "no session identity
+#: available". The SessionStart hook is the only per-session channel there is,
+#: and ``memory-reflex._subagent_card`` already uses it for exactly this reason.
+#:
+#: This is not the fabrication the omit-convention was written against: the id
+#: below came from the host on stdin, is the top resolution tier (explicit arg),
+#: and is echoed back as session_id_source="argument" for verification.
+_SESSION_ID_RULE_KNOWN = (
+    "  - SESSION ID — whenever a memory tool accepts a session_id (reflect, "
+    "consolidate, and the chat/ingest tools), pass session_id=%s.  Tools "
+    "without that parameter — engage among them — take no session_id at "
+    "all; adding one is an input error.  This is the real id, handed to "
+    "the plugin by the host; do NOT invent one and do NOT substitute a "
+    "different value.  Results echo back the "
+    "session_id used plus a session_id_source (expect \"argument\"); if a "
+    "result reports created_bucket=true on a turn that is not the first, "
+    "say so — the call addressed a session that did not exist.\n"
+)
+
+#: Fallback for hosts that hand the hook no session_id. Then the model genuinely
+#: has no channel to learn one, and inventing a value fragments the buffer --
+#: so it must let the server resolve and report instead.
+_SESSION_ID_RULE_UNKNOWN = (
+    "  - SESSION ID — OMIT it on every memory tool call.  The server "
+    "resolves the session and reports the session_id it used plus a "
+    "session_id_source; a value you invent fragments the conversation "
+    "buffer.  If a result reports created_bucket=true on a turn that is "
+    "not the first, say so — the call addressed a session that did not "
+    "exist.  If a call reports that no session identity is available, "
+    "tell the user instead of inventing one.\n"
+)
+
+
+def _context(session_id: str) -> str:
+    """The session card, with the session-id rule the host's payload supports."""
+    rule = (_SESSION_ID_RULE_KNOWN % session_id) if session_id else _SESSION_ID_RULE_UNKNOWN
+    return CONTEXT.replace("__SESSION_ID_RULE__", rule)
+
 def _state_dir() -> Path:
     """Mirror ``run_kumiho_mcp._state_dir`` -- duplicated, like
     ``code_capture_pending._state_dir``, so this hook stays import-free and fast
@@ -137,17 +179,33 @@ def _read_hook_input() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _session_id(payload: dict) -> str:
+    """The host's session id, or "" if it is absent or unusable.
+
+    It becomes a filename AND is interpolated into the instruction card, so it
+    is rejected on both counts: path separators (never trust it as a path
+    component) and control characters. A newline would let the value close the
+    SESSION ID bullet and open forged ones -- Claude Code sends a uuid and never
+    that, so this is a guard on the channel rather than a fix for a live bug.
+    """
+    session_id = str(payload.get("session_id") or "").strip()
+    if not session_id:
+        return ""
+    if any(c in session_id for c in '\\/:*?"<>|'):
+        return ""
+    if any(c < " " or c == "\x7f" for c in session_id):
+        return ""
+    return session_id
+
+
 def _persist_session(payload: dict) -> None:
     """Record the host-provided session facts for downstream reflex components.
 
     Best-effort by construction: SessionStart must never fail a session, so every
     error is swallowed. Writing nothing simply leaves downstream code to fall back
     to its own resolution."""
-    session_id = str(payload.get("session_id") or "").strip()
+    session_id = _session_id(payload)
     if not session_id:
-        return
-    # keep the filename a plain uuid-ish token; never trust it as a path component
-    if any(c in session_id for c in '\\/:*?"<>|'):
         return
     try:
         d = _state_dir() / "reflex"
@@ -174,13 +232,14 @@ def main() -> int:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, OSError):
         pass  # piped children report cp949 on Windows; best-effort
-    _persist_session(_read_hook_input())
+    payload = _read_hook_input()
+    _persist_session(payload)
     print(
         json.dumps(
             {
                 "hookSpecificOutput": {
                     "hookEventName": "SessionStart",
-                    "additionalContext": CONTEXT,
+                    "additionalContext": _context(_session_id(payload)),
                 }
             },
             ensure_ascii=True,
