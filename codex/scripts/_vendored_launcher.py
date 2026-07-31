@@ -932,6 +932,21 @@ def _sanitize_placeholder_env_vars() -> None:
         "KUMIHO_CLAUDE_SERVER_ENDPOINT",
         "KUMIHO_LLM_BASE_URL",
         "KUMIHO_MEMORY_CODE",
+        "KUMIHO_MEMORY_CODE_AUTOMINE",
+        # Memory-reflex knobs. Declaring a name in .mcp.json is only half the
+        # wiring: on Desktop the ${VAR:-default} arrives literally, so a name
+        # missing from this tuple reaches the worker as a raw template string and
+        # the declared default silently never applies.
+        "KUMIHO_REFLEX",
+        "KUMIHO_REFLEX_PREFETCH",
+        "KUMIHO_REFLEX_LIMIT",
+        "KUMIHO_REFLEX_MIN_INTERVAL_S",
+        "KUMIHO_REFLEX_MAX_CHARS",
+        "KUMIHO_REFLEX_TTL_S",
+        "KUMIHO_REFLEX_FLOOR",
+        "KUMIHO_REFLEX_SESSION_BUDGET_CHARS",
+        "KUMIHO_REFLEX_STORE_PROMPT",
+        "KUMIHO_ARTIFACT_MAX_BYTES",
     ):
         raw = (os.getenv(key, "") or "").strip()
         if not raw or not _looks_like_placeholder(raw):
@@ -949,6 +964,48 @@ def _sanitize_placeholder_env_vars() -> None:
                 f"[kumiho-claude] Cleared unresolved placeholder for {key}.",
                 file=sys.stderr,
             )
+    _publish_reflex_config()
+
+
+_REFLEX_CONFIG_KEYS = (
+    "KUMIHO_REFLEX",
+    "KUMIHO_REFLEX_PREFETCH",
+    "KUMIHO_REFLEX_LIMIT",
+    "KUMIHO_REFLEX_MIN_INTERVAL_S",
+    "KUMIHO_REFLEX_MAX_CHARS",
+    "KUMIHO_REFLEX_TTL_S",
+    "KUMIHO_REFLEX_FLOOR",
+    "KUMIHO_REFLEX_SESSION_BUDGET_CHARS",
+    "KUMIHO_REFLEX_STORE_PROMPT",
+    "KUMIHO_ARTIFACT_MAX_BYTES",
+)
+
+
+def _publish_reflex_config() -> None:
+    """Snapshot the resolved reflex knobs where the HOOKS can read them.
+
+    Hooks inherit the CLI's environment, not this server's, so anything declared
+    only in ``.mcp.json`` was invisible to them -- the declarations implied
+    controls that silently did nothing. This runs right after placeholder
+    sanitization, so the values written are the ones the author actually
+    declared, including on Desktop where ``${VAR:-default}`` arrives literally.
+
+    Best-effort: a failure here costs a knob, never a session.
+    """
+    try:
+        values = {}
+        for key in _REFLEX_CONFIG_KEYS:
+            raw = (os.getenv(key, "") or "").strip()
+            if raw and not _looks_like_placeholder(raw):
+                values[key] = raw
+        target = _state_dir() / "reflex.config.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = str(target) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(values, fh, ensure_ascii=True)
+        os.replace(tmp, target)
+    except Exception:  # noqa: BLE001 - never fail startup over a config snapshot
+        pass
 
 
 def _configure_llm_fallback() -> None:
