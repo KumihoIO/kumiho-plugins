@@ -3,7 +3,7 @@
   "kind": "memory",
   "pythonDependencies": {
     "kumiho[mcp]": ">=0.11.0",
-    "kumiho-memory[all]": ">=0.17.3"
+    "kumiho-memory[all]": ">=1.2.1"
   },
   "uiHints": {
     "mode": {

@@ -1,0 +1,177 @@
+# Plugins CI
+#
+# This repo shipped for a long time with no CI at all: its ~143 Python tests
+# and ~193 openclaw tests only ran when someone remembered to. A plugin release
+# is what reaches users' machines and provisions their venvs, so a regression
+# here is not caught by anything downstream.
+#
+# Deliberately NOT covered, so the gaps are stated rather than implied:
+#   * comfyui/tests — imports torch via kumiho_nodes, i.e. the whole ComfyUI
+#     runtime. Running it needs a ComfyUI install, not a pip line.
+#   * openclaw `npm run lint` — eslint 9 requires a flat eslint.config.js and
+#     this package has none, so the script exits 2 on a config error before it
+#     lints anything. Add the config and this becomes a job.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    # The launcher runs on whatever interpreter the user's machine provides,
+    # so both ends of the supported range are exercised rather than just the
+    # runner default.
+    name: Python ${{ matrix.python }} (launcher + provisioning)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install test deps
+        # The suites under test are pure stdlib plus pytest by design — they
+        # stub the venv and the network rather than provisioning either.
+        run: python -m pip install --upgrade pip pytest
+      - name: Test
+        run: python -m pytest claude/scripts codex/scripts -q
+
+  openclaw:
+    name: openclaw (vitest / typecheck / build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: openclaw
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'          # package.json engines: node >=20
+          cache: npm
+          cache-dependency-path: openclaw/package-lock.json
+      - name: Install
+        # --legacy-peer-deps on purpose: `openclaw` is a PEER dependency, the
+        # host application this plugin loads into. npm 7+ would install it, but
+        # the lockfile has no resolved entry for it, so a plain `npm ci` fails
+        # with EUSAGE. A plugin should not vendor its host to run unit tests,
+        # and typecheck passes without it.
+        run: npm ci --legacy-peer-deps --no-audit --no-fund
+      - name: Test
+        run: npx vitest run
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Build
+        # dist/ is what actually ships to npm, so a broken build is a broken
+        # release even when every test passes.
+        run: npx tsup src/index.ts src/host-auth.ts src/setup-support.ts --format esm --dts --out-dir dist
+
+  manifests:
+    name: Manifests (JSON valid / versions agree)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Validate
+        # The plugin version is written in four separate files and the release
+        # spec in five. Nothing but care kept them in step, and care is exactly
+        # what fails during a hurried release.
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+
+          failures = []
+
+          def load(path):
+              try:
+                  return json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+              except Exception as exc:
+                  failures.append(f"{path}: {exc}")
+                  return None
+
+          # Every manifest must parse.
+          manifests = sorted(
+              set(str(p) for p in pathlib.Path(".").glob("**/*.plugin.json"))
+              | set(str(p) for p in pathlib.Path(".").glob("**/marketplace.json"))
+              | set(str(p) for p in pathlib.Path(".").glob("**/.mcp.json"))
+          )
+          manifests = [m for m in manifests if "node_modules" not in m]
+          for m in manifests:
+              load(m)
+          print(f"parsed {len(manifests)} manifest(s)")
+
+          # The kumiho-memory plugin version, in all four places it is written.
+          versions = {}
+          claude_plugin = load("claude/.claude-plugin/plugin.json")
+          if claude_plugin:
+              versions["claude/.claude-plugin/plugin.json"] = claude_plugin.get("version")
+          codex_plugin = load("codex/.codex-plugin/plugin.json")
+          if codex_plugin:
+              versions["codex/.codex-plugin/plugin.json"] = codex_plugin.get("version")
+          for market in (".claude-plugin/marketplace.json", ".codex-plugin/marketplace.json"):
+              data = load(market)
+              if data:
+                  for entry in data.get("plugins", []):
+                      if entry.get("name") == "kumiho-memory":
+                          versions[market] = entry.get("version")
+
+          distinct = set(versions.values())
+          if len(distinct) > 1:
+              failures.append(f"plugin version disagrees across files: {versions}")
+          else:
+              print(f"plugin version {distinct.pop() if distinct else '?'} consistent across {len(versions)} file(s)")
+
+          # The provisioning spec, which decides what lands in a user's venv.
+          spec_sites = {
+              "claude/.mcp.json": lambda d: d["mcpServers"]["kumiho-memory"]["env"]["KUMIHO_CLAUDE_PACKAGE_SPEC"],
+              "codex/.mcp.json": lambda d: d["mcpServers"]["kumiho-memory"]["env"]["KUMIHO_CLAUDE_PACKAGE_SPEC"],
+          }
+          specs = {}
+          for path, pick in spec_sites.items():
+              data = load(path)
+              if data:
+                  try:
+                      specs[path] = pick(data)
+                  except (KeyError, TypeError) as exc:
+                      failures.append(f"{path}: cannot read package spec ({exc})")
+          if len(set(specs.values())) > 1:
+              failures.append(f"package spec disagrees between plugins: {specs}")
+          elif specs:
+              print(f"package spec consistent: {next(iter(specs.values()))}")
+
+          # The launcher default must match what the manifests declare, or a
+          # host that ignores .mcp.json provisions something else entirely.
+          launcher = pathlib.Path("claude/scripts/run_kumiho_mcp.py").read_text(encoding="utf-8")
+          import re
+          m = re.search(r'DEFAULT_PACKAGE_SPEC = "([^"]+)"', launcher)
+          if not m:
+              failures.append("could not find DEFAULT_PACKAGE_SPEC in the launcher")
+          elif specs:
+              declared = next(iter(specs.values()))
+              if m.group(1) not in declared:
+                  failures.append(
+                      f"launcher DEFAULT_PACKAGE_SPEC {m.group(1)!r} is not the manifest spec {declared!r}")
+              else:
+                  print("launcher default matches the manifest spec")
+
+          if failures:
+              print("\nFAILURES:", file=sys.stderr)
+              for f in failures:
+                  print(f"  - {f}", file=sys.stderr)
+              sys.exit(1)
+          print("\nall manifest checks passed")
+          PY
