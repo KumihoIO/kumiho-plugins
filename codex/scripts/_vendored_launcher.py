@@ -22,7 +22,7 @@ from pathlib import Path
 import bounded_proc
 
 
-DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.10.8 kumiho-memory[all]>=1.2.1"
+DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.10.8 kumiho-memory[all]>=1.2.1 mcp<2"
 MARKER_FILE = ".installed-packages.txt"
 #: Asking an existing venv what it has installed. This is on the server-start
 #: critical path, so it is short -- a venv that cannot answer in this long is
@@ -210,14 +210,22 @@ _REQUIREMENT_RE = re.compile(
 #: the two-character forms must be tried before ``>``.
 _FLOOR_RE = re.compile(r"^(?:===|==|~=|>=|>)\s*([^,;\s]+)")
 
+#: And the UPPER bound. Needed because a real pin arrived: ``mcp`` 2.0.0 removed
+#: ``Server.list_tools()``, which kumiho's MCP server calls at construction, so
+#: a fresh install silently produced a server that could not start. Without
+#: understanding ``<`` the spec would be "unevaluable" and every single launch
+#: would reinstall.
+_CEILING_RE = re.compile(r"^(?:<=|<)\s*([^,;\s]+)")
+
 #: Anything that is not a plain requirement: pip flags, URLs, local paths.
 _NOT_A_REQUIREMENT = ("-", ".", "/", "\\")
 
 
 def _spec_floors(package_spec: str):
-    """``([(name, extras, floor)], understood)`` for the tokens in the spec.
+    """``([(name, extras, floor, ceiling)], understood)`` for the spec's tokens.
 
-    ``kumiho[mcp]>=0.10.8`` -> ``("kumiho", frozenset({"mcp"}), "0.10.8")``.
+    ``kumiho[mcp]>=0.10.8`` -> ``("kumiho", frozenset({"mcp"}), "0.10.8", "")``
+    ``mcp<2``               -> ``("mcp", frozenset(), "", "2")``
 
     ``understood`` is False when a token carries a constraint this parser cannot
     evaluate as a floor (``<``, ``!=``, a VCS URL, a bare wheel path). The
@@ -238,13 +246,15 @@ def _spec_floors(package_spec: str):
             e.strip() for e in (m.group("extras") or "").split(",") if e.strip()
         )
         rest = (m.group("rest") or "").strip()
-        floor_match = _FLOOR_RE.match(rest)
+        floor_match, ceiling_match = _FLOOR_RE.match(rest), _CEILING_RE.match(rest)
         if floor_match:
-            reqs.append((m.group("name"), extras, floor_match.group(1)))
+            reqs.append((m.group("name"), extras, floor_match.group(1), ""))
+        elif ceiling_match:
+            reqs.append((m.group("name"), extras, "", ceiling_match.group(1)))
         elif rest:
             understood = False  # a constraint, but not one we can evaluate
         else:
-            reqs.append((m.group("name"), extras, ""))
+            reqs.append((m.group("name"), extras, "", ""))
     return reqs, understood
 
 
@@ -319,21 +329,26 @@ def _needs_install(python_path: Path, marker_path: Path, package_spec: str) -> b
                 marker_path.read_text(encoding="utf-8").strip())
         except OSError:
             previous, prev_ok = [], False
-        identity = {(n, e) for n, e, _ in reqs}
-        if not prev_ok or {(n, e) for n, e, _ in previous} != identity:
+        identity = {(n, e) for n, e, _f, _c in reqs}
+        if not prev_ok or {(n, e) for n, e, _f, _c in previous} != identity:
             return True
 
-    installed = _installed_versions(python_path, [name for name, _, _ in reqs])
+    installed = _installed_versions(python_path, [r[0] for r in reqs])
     if not installed:
         return True  # cannot establish satisfaction -> reinstall, as before
     if not installed.get("__modules__"):
         return True
 
-    for name, _extras, floor in reqs:
+    for name, _extras, floor, ceiling in reqs:
         have = installed.get(name)
         if not have:
             return True
         if floor and _below_floor(have, floor):
+            return True
+        # A ceiling is not cosmetic here: mcp 2.0.0 removed an API kumiho calls
+        # at server construction, so an install ABOVE the ceiling starts and
+        # then fails. Reinstall pins it back down.
+        if ceiling and not _below_floor(have, ceiling):
             return True
     return False
 
