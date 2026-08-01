@@ -22,7 +22,7 @@ from pathlib import Path
 import bounded_proc
 
 
-DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.10.8 kumiho-memory[all]>=1.2.1 mcp<2"
+DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.11.0 kumiho-memory[all]>=1.2.1"
 MARKER_FILE = ".installed-packages.txt"
 #: Asking an existing venv what it has installed. This is on the server-start
 #: critical path, so it is short -- a venv that cannot answer in this long is
