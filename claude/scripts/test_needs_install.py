@@ -50,8 +50,10 @@ L = _launcher()
     ("kumiho kumiho-memory>=1.2.0",
      [("kumiho", frozenset(), "", ""), ("kumiho-memory", frozenset(), "1.2.0", "")]),
     ("kumiho-memory[all]", [("kumiho-memory", frozenset({"all"}), "", "")]),
-    # The pin that mattered: mcp 2.0.0 removed Server.list_tools(), which
-    # kumiho calls at server construction.
+    # Ceiling parsing, added for the mcp<2 stopgap. The pin is gone as of
+    # 0.19.0 (kumiho >=0.11.0 bounds mcp itself), but the parser must keep
+    # understanding ceilings: a spec it cannot evaluate reinstalls on every
+    # single launch, and old markers still carry this token.
     ("mcp<2", [("mcp", frozenset(), "", "2")]),
 ])
 def test_spec_floors_parses_extras_and_operators(spec, expected):
@@ -203,18 +205,26 @@ def test_an_extras_change_reinstalls_even_though_versions_still_satisfy(monkeypa
     assert not L._needs_install(py, marker, L.DEFAULT_PACKAGE_SPEC)
 
     # same names and extras, different floors -- the thrash pair, still a no-op
-    marker.write_text("kumiho[mcp]>=0.10.7 kumiho-memory[all]>=0.17.1 mcp<2",
+    marker.write_text("kumiho[mcp]>=0.10.7 kumiho-memory[all]>=0.17.1",
                       encoding="utf-8")
     assert not L._needs_install(py, marker, L.DEFAULT_PACKAGE_SPEC)
 
     # extras genuinely changed -- that IS a new install
-    marker.write_text("kumiho[mcp,cli]>=0.10.8 kumiho-memory[all]>=1.2.1 mcp<2",
+    marker.write_text("kumiho[mcp,cli]>=0.10.8 kumiho-memory[all]>=1.2.1",
                       encoding="utf-8")
     assert L._needs_install(py, marker, L.DEFAULT_PACKAGE_SPEC)
 
     # a requirement APPEARING is also a new install -- this is how the mcp<2 pin
-    # itself reaches an existing venv that predates it.
-    marker.write_text("kumiho[mcp]>=0.10.8 kumiho-memory[all]>=1.2.1", encoding="utf-8")
+    # itself reached an existing venv that predated it.
+    marker.write_text("kumiho[mcp]>=0.10.8", encoding="utf-8")
+    assert L._needs_install(py, marker, L.DEFAULT_PACKAGE_SPEC)
+
+    # ...and a requirement DISAPPEARING must be too. This is the 0.18.3 -> 0.19.0
+    # migration: those venvs carry a marker naming mcp<2 and an mcp held below
+    # 2.0. Lifting the pin has to reach them, or they sit on mcp 1.x forever
+    # while the spec no longer says anything about mcp at all.
+    marker.write_text("kumiho[mcp]>=0.10.8 kumiho-memory[all]>=1.2.1 mcp<2",
+                      encoding="utf-8")
     assert L._needs_install(py, marker, L.DEFAULT_PACKAGE_SPEC)
 
 
