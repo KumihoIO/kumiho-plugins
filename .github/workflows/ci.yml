@@ -168,6 +168,41 @@ jobs:
               else:
                   print("launcher default matches the manifest spec")
 
+          # The kumiho / kumiho-memory floors, across every distribution
+          # channel. gpt/ sat six minor versions behind the other three for
+          # exactly as long as nothing compared them: 0.19.0 raised claude/,
+          # codex/ and openclaw/ to 0.11.0 + 1.2.1 and left gpt/ on
+          # 0.10.4 + 0.6.2. A channel nobody checks is a channel that drifts.
+          floors = {}
+
+          for path in ("claude/.mcp.json", "codex/.mcp.json"):
+              data = load(path)
+              if data:
+                  try:
+                      spec = data["mcpServers"]["kumiho-memory"]["env"]["KUMIHO_CLAUDE_PACKAGE_SPEC"]
+                      floors[path] = dict(re.findall(r'(kumiho(?:-memory)?\[[a-z,]+\])>=([0-9][0-9a-zA-Z.]*)', spec))
+                  except (KeyError, TypeError):
+                      pass
+
+          oc = load("openclaw/openclaw.plugin.json")
+          if oc:
+              floors["openclaw/openclaw.plugin.json"] = {
+                  k: v.lstrip(">=") for k, v in (oc.get("pythonDependencies") or {}).items()
+                  if k.startswith("kumiho")
+              }
+
+          gpt = pathlib.Path("gpt/pyproject.toml")
+          if gpt.exists():
+              floors["gpt/pyproject.toml"] = dict(
+                  re.findall(r'"(kumiho(?:-memory)?\[[a-z,]+\])>=([0-9][0-9a-zA-Z.]*)"', gpt.read_text(encoding="utf-8")))
+
+          floors = {k: v for k, v in floors.items() if v}
+          distinct_floors = {tuple(sorted(v.items())) for v in floors.values()}
+          if len(distinct_floors) > 1:
+              failures.append(f"kumiho floors disagree across distribution channels: {floors}")
+          elif floors:
+              print(f"kumiho floors consistent across {len(floors)} channel(s): {dict(next(iter(floors.values())))}")
+
           if failures:
               print("\nFAILURES:", file=sys.stderr)
               for f in failures:
