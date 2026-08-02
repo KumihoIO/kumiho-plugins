@@ -230,10 +230,10 @@ you can point the plugin at it instead — **opt-in**, so cloud users are
 unaffected.
 
 **Easiest path — the wizard.** Run `/kumiho-onboard` and pick
-**Self-hosted (Community Edition)**, or from a terminal:
+**Self-hosted (Community Edition)**, or from a clone of this repo:
 
 ```bash
-python ./kumiho-claude/scripts/setup.py --ce --yes
+python ./claude/scripts/setup.py --ce --yes
 # non-default endpoint: --ce-endpoint HOST:PORT
 ```
 
@@ -295,7 +295,7 @@ under **API Keys**. Then run the onboarding wizard:
 Or cache it from the command line:
 
 ```bash
-python ./kumiho-claude/scripts/setup.py
+python ./claude/scripts/setup.py
 ```
 
 The token is stored under the `api_token` key in
@@ -423,7 +423,7 @@ If the bootstrap logs:
 Run `/kumiho-onboard` to set up authentication, or run:
 
 ```bash
-python ./kumiho-claude/scripts/setup.py
+python ./claude/scripts/setup.py
 ```
 
 ### Auth error (401)
@@ -465,19 +465,25 @@ the default Python user-agent. Override with `KUMIHO_CLAUDE_DISCOVERY_USER_AGENT
 
 ## Validation and smoke test
 
+These run from a clone of this repo, where the plugin lives in `claude/`:
+
+```bash
+git clone https://github.com/KumihoIO/kumiho-plugins && cd kumiho-plugins
+```
+
 ```bash
 # Claude Code — validate plugin manifest:
-claude plugin validate ./kumiho-claude/.claude-plugin/plugin.json
+claude plugin validate ./claude/.claude-plugin/plugin.json
 
 # Provision runtime and verify required modules:
 export KUMIHO_AUTH_TOKEN=YOUR_KUMIHO_BEARER_JWT
-python ./kumiho-claude/scripts/run_kumiho_mcp.py --self-test
+python ./claude/scripts/run_kumiho_mcp.py --self-test
 
 # Test discovery with .env.local:
-python ./kumiho-claude/scripts/test_discovery_env.py --env-file .env.local
+python ./claude/scripts/test_discovery_env.py --env-file .env.local
 
 # Offline checks for self-hosted CE mode (no network/venv needed):
-python ./kumiho-claude/scripts/test_ce_mode.py
+python ./claude/scripts/test_ce_mode.py
 ```
 
 ## Structure

@@ -72,4 +72,4 @@ blocking the default Python user-agent. The launcher uses a custom user-agent;
 you can override it with `KUMIHO_CLAUDE_DISCOVERY_USER_AGENT`.
 
 You can validate discovery directly with:
-`python ./kumiho-claude/scripts/test_discovery_env.py --env-file .env.local`
+`python ./claude/scripts/test_discovery_env.py --env-file .env.local`
