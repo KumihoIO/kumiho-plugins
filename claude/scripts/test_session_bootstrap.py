@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -182,6 +183,80 @@ def test_the_rule_placeholder_never_reaches_the_model(tmp_path, payload):
                   {"KUMIHO_CLAUDE_HOME": str(tmp_path)})
     ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
     assert "__SESSION_ID_RULE__" not in ctx
+
+
+def _drifted_desktop(tmp_path, pinned_to=None):
+    """A Desktop config pinned to some other plugin version that still exists.
+
+    Returns ``(config_path, plugin_root, env_extra)``. The location and the env
+    var that redirects it are platform-specific, exactly as
+    ``session-bootstrap._desktop_config_paths`` reads them -- an earlier version
+    of this helper set only APPDATA, which is Windows-only, so the test passed
+    on the author's machine and failed on Linux CI where the hook looks under
+    ``$HOME/.config``.
+    """
+    plugin_root = Path(__file__).resolve().parent.parent
+    if os.name == "nt":
+        home = tmp_path / "AppData" / "Roaming"
+        cfg = home / "Claude" / "claude_desktop_config.json"
+        env_extra = {"APPDATA": str(home)}
+    else:
+        cfg = tmp_path / ".config" / "Claude" / "claude_desktop_config.json"
+        env_extra = {"HOME": str(tmp_path), "XDG_CONFIG_HOME": str(tmp_path / ".config")}
+    cfg.parent.mkdir(parents=True)
+    env_extra["KUMIHO_CLAUDE_HOME"] = str(tmp_path / "state")
+    env_extra["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
+    if pinned_to is None:
+        # A stand-in for "some other version's script that still exists".
+        # It is fabricated INSIDE tmp_path and only ever written there.
+        old = tmp_path / "cache" / "0.18.2" / "scripts" / "run_kumiho_mcp.py"
+        old.parent.mkdir(parents=True, exist_ok=True)
+        old.write_text("", encoding="utf-8")
+    else:
+        # A real file the caller already has (the live launcher). Never write to
+        # it -- an earlier version of this helper did, and truncated the actual
+        # 1605-line source out of the working tree on every test run.
+        old = pinned_to
+        assert old.is_file(), old
+    cfg.write_text(json.dumps({"mcpServers": {"kumiho-memory": {
+        "command": sys.executable, "args": [str(old)], "env": {"SENTINEL": "keep"}}}}),
+        encoding="utf-8")
+    return cfg, plugin_root, env_extra
+
+
+def test_a_version_drifted_desktop_entry_is_repaired(tmp_path):
+    """The launcher self-heals this config, but that check runs inside whichever
+    launcher the config already points at -- so a stale entry can only be fixed
+    by the stale code, and a later fix never runs. Observed four times on one
+    machine in a day. The hook is the way out: the host substitutes
+    CLAUDE_PLUGIN_ROOT from the INSTALLED plugin, so it is always current."""
+    cfg, plugin_root, env = _drifted_desktop(tmp_path)
+    r = _run_hook("session-bootstrap.py", {"session_id": "s1", "source": "startup"}, env)
+    assert r.returncode == 0, "SessionStart must never fail a session"
+    time.sleep(4)  # the repair is a detached child
+    got = json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]["kumiho-memory"]["args"][0]
+    assert Path(got) == plugin_root / "scripts" / "run_kumiho_mcp.py"
+
+
+def test_a_current_desktop_entry_is_left_alone(tmp_path):
+    """The common case must cost one small JSON read and nothing else."""
+    plugin_root = Path(__file__).resolve().parent.parent
+    cfg, _root, env = _drifted_desktop(
+        tmp_path, pinned_to=plugin_root / "scripts" / "run_kumiho_mcp.py")
+    _run_hook("session-bootstrap.py", {"session_id": "s1", "source": "startup"}, env)
+    time.sleep(3)
+    entry = json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]["kumiho-memory"]
+    assert entry["env"].get("SENTINEL") == "keep", "an up-to-date entry must not be rewritten"
+
+
+def test_repair_does_nothing_without_a_plugin_root(tmp_path):
+    """An unexpanded or absent CLAUDE_PLUGIN_ROOT must not send us guessing."""
+    cfg, _root, env = _drifted_desktop(tmp_path)
+    before = cfg.read_text(encoding="utf-8")
+    _run_hook("session-bootstrap.py", {"session_id": "s1", "source": "startup"},
+              {**env, "CLAUDE_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}"})
+    time.sleep(2)
+    assert cfg.read_text(encoding="utf-8") == before
 
 
 def test_importable_without_side_effects():

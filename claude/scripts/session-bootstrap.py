@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -227,6 +228,44 @@ def _persist_session(payload: dict) -> None:
         pass
 
 
+def _repair_stale_desktop_entry() -> None:
+    """Hand the CURRENT launcher a chance to fix Desktop's server entry.
+
+    The launcher self-heals that config, but the check runs inside whichever
+    launcher the config already names -- so once the entry goes stale, the only
+    code that could repair it is the stale code, and a fix shipped later never
+    runs. Hit four times on one machine in a day. This hook is the way out: the
+    host substitutes CLAUDE_PLUGIN_ROOT from the INSTALLED plugin, so it is
+    always the current version regardless of what the config says.
+
+    It spawns unconditionally rather than checking first. An earlier version
+    read the config here and only spawned on a mismatch, which meant this file
+    had to know where the config lives -- and it got that wrong: it missed
+    XDG_CONFIG_HOME (CI caught it) and the Windows MSIX location, so the hook
+    would see drift the launcher then repaired somewhere else, or miss drift
+    entirely. Two implementations of one path list is the same drift class this
+    function exists to fix. The launcher owns the paths; the child is detached
+    and exits immediately when nothing is wrong.
+    """
+    root = (os.getenv("CLAUDE_PLUGIN_ROOT", "") or "").strip()
+    if not root or "${" in root:
+        return
+    launcher = Path(root) / "scripts" / "run_kumiho_mcp.py"
+    if not launcher.is_file():
+        return
+    kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+              "stderr": subprocess.DEVNULL}
+    if os.name == "nt":
+        kwargs["creationflags"] = 0x00000008 | 0x00000200
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen([sys.executable, str(launcher), "--repair-desktop-entry"],
+                         **kwargs)
+    except OSError:
+        pass  # best-effort; SessionStart must never fail a session
+
+
 def main() -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -234,6 +273,7 @@ def main() -> int:
         pass  # piped children report cp949 on Windows; best-effort
     payload = _read_hook_input()
     _persist_session(payload)
+    _repair_stale_desktop_entry()
     print(
         json.dumps(
             {

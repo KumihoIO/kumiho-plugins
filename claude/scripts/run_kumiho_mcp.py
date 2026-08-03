@@ -1083,8 +1083,12 @@ def _bootstrap_desktop_server_entries() -> None:
                 if not isinstance(entry, dict):
                     continue
                 args = entry.get("args") or []
-                if args and Path(args[0]).exists():
-                    return True
+                if not args or Path(args[0]) != script_path:
+                    continue        # absent, or pinned to another version
+                cmd = entry.get("command")
+                if not cmd or not Path(cmd).exists():
+                    continue        # interpreter went away with an old venv
+                return True
             return False
 
         if _has_valid_entry(body):
@@ -1525,6 +1529,14 @@ def main() -> int:
         help="Provision runtime and verify required modules, then exit.",
     )
     parser.add_argument(
+        "--repair-desktop-entry",
+        action="store_true",
+        help="Rewrite a stale Claude Desktop server entry and exit. Spawned by "
+             "the SessionStart hook, the only caller guaranteed to be the "
+             "CURRENT plugin version -- the launcher a stale entry names cannot "
+             "repair itself.",
+    )
+    parser.add_argument(
         "--provision",
         action="store_true",
         help="Build the runtime and exit. Used by the detached first-run "
@@ -1536,6 +1548,13 @@ def main() -> int:
     # neither may hand provisioning off to yet another detached child.
     if args.provision or args.self_test:
         os.environ[_SYNC_PROVISION_ENV] = "1"
+
+    if args.repair_desktop_entry:
+        _sanitize_placeholder_env_vars()
+        _hydrate_env_from_local_config()
+        if _desktop_bootstrap_enabled():
+            _bootstrap_desktop_server_entries()
+        return 0
 
     if args.provision:
         # Nothing else: no discovery, no Desktop config, no auth. Provisioning
