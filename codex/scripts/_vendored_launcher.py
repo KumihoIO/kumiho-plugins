@@ -1008,6 +1008,33 @@ def _try_sync_token_to_config(config_path: Path, token: str) -> bool:
         return False
 
 
+def _running_from_a_host_install() -> bool:
+    """Is this launcher living where the HOST put it, or in a working copy?
+
+    Deliberately reads ``__file__`` only, never the environment: a dev checkout
+    inherits CLAUDE_PLUGIN_DATA and friends from whatever session started it, so
+    an env-based answer says "installed" for a worktree.
+
+    A host install sits at ``<config>/plugins/cache/<marketplace>/<plugin>/<version>/``
+    or in a Desktop agent-mode snapshot under ``rpm/plugin_<id>/``. Anything else
+    -- ``--plugin-dir``, a clone, a git worktree -- is a working copy whose path
+    moves, gets deleted, or is on a branch under active edit.
+
+    Measured 2026-08-03: running this repo's own test suite from a git worktree
+    repointed the machine's real Claude Desktop config at that worktree. The
+    tests spawn the SessionStart hook, the hook spawns this launcher, and the
+    launcher wrote its own location into every config it could find -- including
+    the Windows MSIX one under LOCALAPPDATA that the tests had not redirected.
+    Nothing about that path is the user's plugin.
+    """
+    parts = Path(__file__).resolve().parts
+    if "cache" in parts:
+        i = len(parts) - 1 - parts[::-1].index("cache")
+        if len(parts) >= i + 4:          # cache/<marketplace>/<plugin>/<version>/...
+            return True
+    return any(p == "rpm" for p in parts)
+
+
 def _desktop_bootstrap_enabled() -> bool:
     """Claude Desktop config writes are for Claude hosts only.
 
@@ -1019,7 +1046,20 @@ def _desktop_bootstrap_enabled() -> bool:
     another tenant's token.
     """
     host = (os.getenv("KUMIHO_CLAUDE_HOST", "") or "").strip().lower()
-    return host in ("", "claude", "claude-code", "claude-desktop", "cowork")
+    if host not in ("", "claude", "claude-code", "claude-desktop", "cowork"):
+        return False
+    # ...and only from where the host installed us. A working copy must never
+    # write its own path into a config the user keeps: see
+    # _running_from_a_host_install for the incident this prevents.
+    if not _running_from_a_host_install():
+        print(
+            "[kumiho-claude] Running from a working copy (%s); leaving Claude "
+            "Desktop configs alone. Install the plugin to have them managed."
+            % Path(__file__).resolve().parent.parent,
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def _bootstrap_desktop_server_entries() -> None:

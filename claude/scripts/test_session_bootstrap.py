@@ -22,6 +22,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -195,14 +196,28 @@ def _drifted_desktop(tmp_path, pinned_to=None):
     on the author's machine and failed on Linux CI where the hook looks under
     ``$HOME/.config``.
     """
-    plugin_root = Path(__file__).resolve().parent.parent
+    # Stage the plugin into an INSTALLED-looking layout inside tmp_path. The
+    # launcher refuses to manage Desktop configs from a working copy (see
+    # test_a_working_copy_never_writes_a_desktop_config), which is exactly the
+    # guard that keeps this suite from touching the real machine -- so the
+    # end-to-end repair has to be exercised against a staged install.
+    plugin_root = (tmp_path / "plugins" / "cache" / "kumiho-plugins"
+                   / "kumiho-memory" / "9.9.9")
+    (plugin_root / "scripts").mkdir(parents=True)
+    for name in ("run_kumiho_mcp.py", "bounded_proc.py", "session-bootstrap.py"):
+        shutil.copy2(SCRIPTS / name, plugin_root / "scripts" / name)
     if os.name == "nt":
         home = tmp_path / "AppData" / "Roaming"
         cfg = home / "Claude" / "claude_desktop_config.json"
-        env_extra = {"APPDATA": str(home)}
+        # LOCALAPPDATA as well as APPDATA: the launcher looks for the MSIX
+        # (Microsoft Store) Claude Desktop config under LocalAppData\Packages,
+        # and leaving that pointed at the real profile is how this suite once
+        # rewrote the machine's actual Desktop config.
+        env_extra = {"APPDATA": str(home), "LOCALAPPDATA": str(tmp_path / "Local")}
     else:
         cfg = tmp_path / ".config" / "Claude" / "claude_desktop_config.json"
-        env_extra = {"HOME": str(tmp_path), "XDG_CONFIG_HOME": str(tmp_path / ".config")}
+        env_extra = {"HOME": str(tmp_path), "XDG_CONFIG_HOME": str(tmp_path / ".config"),
+                     "LOCALAPPDATA": str(tmp_path / "Local")}
     cfg.parent.mkdir(parents=True)
     env_extra["KUMIHO_CLAUDE_HOME"] = str(tmp_path / "state")
     env_extra["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
@@ -224,6 +239,45 @@ def _drifted_desktop(tmp_path, pinned_to=None):
     return cfg, plugin_root, env_extra
 
 
+def test_a_working_copy_never_writes_a_desktop_config(tmp_path, monkeypatch):
+    """This file lives in a git worktree, not a plugin cache -- so the launcher
+    beside it must refuse to manage Desktop configs at all.
+
+    Without this, running the suite rewrote the machine's real Claude Desktop
+    config to point at the worktree: the tests spawn the hook, the hook spawns
+    the launcher, and the launcher wrote its own path into every config it
+    could find. A working copy's path moves, gets deleted, or is mid-edit.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "run_kumiho_mcp", SCRIPTS / "run_kumiho_mcp.py")
+    launcher = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(SCRIPTS))
+    spec.loader.exec_module(launcher)
+
+    monkeypatch.delenv("KUMIHO_CLAUDE_HOST", raising=False)
+    assert not launcher._running_from_a_host_install(),         "this checkout is not a host install; the detector says otherwise"
+    assert not launcher._desktop_bootstrap_enabled(),         "a working copy must not be allowed to write Desktop configs"
+
+
+def test_an_installed_layout_is_allowed_to_manage_configs(tmp_path, monkeypatch):
+    """The guard must not disable the feature for real installs."""
+    spec = importlib.util.spec_from_file_location(
+        "run_kumiho_mcp", SCRIPTS / "run_kumiho_mcp.py")
+    launcher = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(SCRIPTS))
+    spec.loader.exec_module(launcher)
+    monkeypatch.delenv("KUMIHO_CLAUDE_HOST", raising=False)
+
+    installed = tmp_path / "plugins" / "cache" / "kumiho-plugins" / "kumiho-memory"         / "0.19.2" / "scripts" / "run_kumiho_mcp.py"
+    monkeypatch.setattr(launcher, "__file__", str(installed))
+    assert launcher._running_from_a_host_install()
+    assert launcher._desktop_bootstrap_enabled()
+
+    snapshot = tmp_path / "rpm" / "plugin_01ABC" / "scripts" / "run_kumiho_mcp.py"
+    monkeypatch.setattr(launcher, "__file__", str(snapshot))
+    assert launcher._running_from_a_host_install(), "Desktop agent-mode snapshot"
+
+
 def test_a_version_drifted_desktop_entry_is_repaired(tmp_path):
     """The launcher self-heals this config, but that check runs inside whichever
     launcher the config already points at -- so a stale entry can only be fixed
@@ -240,9 +294,9 @@ def test_a_version_drifted_desktop_entry_is_repaired(tmp_path):
 
 def test_a_current_desktop_entry_is_left_alone(tmp_path):
     """The common case must cost one small JSON read and nothing else."""
-    plugin_root = Path(__file__).resolve().parent.parent
-    cfg, _root, env = _drifted_desktop(
-        tmp_path, pinned_to=plugin_root / "scripts" / "run_kumiho_mcp.py")
+    staged = (tmp_path / "plugins" / "cache" / "kumiho-plugins" / "kumiho-memory"
+              / "9.9.9" / "scripts" / "run_kumiho_mcp.py")
+    cfg, _root, env = _drifted_desktop(tmp_path, pinned_to=staged)
     _run_hook("session-bootstrap.py", {"session_id": "s1", "source": "startup"}, env)
     time.sleep(3)
     entry = json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]["kumiho-memory"]

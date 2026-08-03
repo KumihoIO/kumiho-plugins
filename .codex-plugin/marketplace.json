@@ -12,7 +12,7 @@
       "name": "kumiho-memory",
       "source": "./codex",
       "description": "Persistent graph-native memory for Codex — recalls context across sessions, stores decisions and preferences, and mines commits into a git-anchored decision graph (Decision Memory). Cloud (API token) or self-hosted CE.",
-      "version": "0.19.1",
+      "version": "0.19.2",
       "author": {
         "name": "Kumiho Inc.",
         "url": "https://kumiho.io"
