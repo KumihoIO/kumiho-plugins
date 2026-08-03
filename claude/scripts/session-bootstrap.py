@@ -228,31 +228,24 @@ def _persist_session(payload: dict) -> None:
         pass
 
 
-def _desktop_config_paths():
-    """The Claude Desktop config locations, per platform."""
-    if os.name == "nt":
-        base = os.getenv("APPDATA")
-        return [Path(base) / "Claude" / "claude_desktop_config.json"] if base else []
-    home = Path.home()
-    return [
-        home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json",
-        home / ".config" / "Claude" / "claude_desktop_config.json",
-    ]
-
-
 def _repair_stale_desktop_entry() -> None:
-    """Kick the launcher if Desktop's config names a DIFFERENT plugin version.
+    """Hand the CURRENT launcher a chance to fix Desktop's server entry.
 
-    The launcher self-heals this config, but that check runs inside whichever
-    launcher the config already points at -- so once the entry goes stale, the
-    only code that could fix it is the stale code itself, and a fix shipped
-    later never runs. Measured four times on one machine in a day.
+    The launcher self-heals that config, but the check runs inside whichever
+    launcher the config already names -- so once the entry goes stale, the only
+    code that could repair it is the stale code, and a fix shipped later never
+    runs. Hit four times on one machine in a day. This hook is the way out: the
+    host substitutes CLAUDE_PLUGIN_ROOT from the INSTALLED plugin, so it is
+    always the current version regardless of what the config says.
 
-    This hook is the way out: the host substitutes CLAUDE_PLUGIN_ROOT from the
-    INSTALLED plugin, so it is always the current version regardless of what the
-    config says. It does not edit the config itself -- it spawns the current
-    launcher, which owns that file -- and it does nothing at all unless the
-    paths actually differ, so the common case costs one small JSON read.
+    It spawns unconditionally rather than checking first. An earlier version
+    read the config here and only spawned on a mismatch, which meant this file
+    had to know where the config lives -- and it got that wrong: it missed
+    XDG_CONFIG_HOME (CI caught it) and the Windows MSIX location, so the hook
+    would see drift the launcher then repaired somewhere else, or miss drift
+    entirely. Two implementations of one path list is the same drift class this
+    function exists to fix. The launcher owns the paths; the child is detached
+    and exits immediately when nothing is wrong.
     """
     root = (os.getenv("CLAUDE_PLUGIN_ROOT", "") or "").strip()
     if not root or "${" in root:
@@ -260,29 +253,17 @@ def _repair_stale_desktop_entry() -> None:
     launcher = Path(root) / "scripts" / "run_kumiho_mcp.py"
     if not launcher.is_file():
         return
-    for cfg in _desktop_config_paths():
-        try:
-            if not cfg.is_file():
-                continue
-            body = json.loads(cfg.read_text(encoding="utf-8"))
-            entry = (body.get("mcpServers") or {}).get("kumiho-memory")
-            args = (entry or {}).get("args") or []
-            if not args or Path(args[0]) == launcher:
-                continue  # absent (the launcher bootstraps it) or already current
-        except (OSError, ValueError, TypeError):
-            continue
-        try:
-            kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
-                      "stderr": subprocess.DEVNULL}
-            if os.name == "nt":
-                kwargs["creationflags"] = 0x00000008 | 0x00000200
-            else:
-                kwargs["start_new_session"] = True
-            subprocess.Popen([sys.executable, str(launcher), "--repair-desktop-entry"],
-                             **kwargs)
-        except OSError:
-            pass  # best-effort; SessionStart must never fail a session
-        return
+    kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+              "stderr": subprocess.DEVNULL}
+    if os.name == "nt":
+        kwargs["creationflags"] = 0x00000008 | 0x00000200
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen([sys.executable, str(launcher), "--repair-desktop-entry"],
+                         **kwargs)
+    except OSError:
+        pass  # best-effort; SessionStart must never fail a session
 
 
 def main() -> int:

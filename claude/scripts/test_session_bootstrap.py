@@ -202,7 +202,7 @@ def _drifted_desktop(tmp_path, pinned_to=None):
         env_extra = {"APPDATA": str(home)}
     else:
         cfg = tmp_path / ".config" / "Claude" / "claude_desktop_config.json"
-        env_extra = {"HOME": str(tmp_path)}
+        env_extra = {"HOME": str(tmp_path), "XDG_CONFIG_HOME": str(tmp_path / ".config")}
     cfg.parent.mkdir(parents=True)
     env_extra["KUMIHO_CLAUDE_HOME"] = str(tmp_path / "state")
     env_extra["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
