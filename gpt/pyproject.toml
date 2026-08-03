@@ -21,8 +21,12 @@ keywords = ["kumiho", "memory", "mcp", "chatgpt", "connector", "oauth"]
 #   - pyjwt[crypto]                -> sign/verify the gateway's own OAuth tokens
 #   - pyngrok                      -> the ngrok tunnel option (cloudflared is fetched at runtime)
 dependencies = [
-    "kumiho[mcp]>=0.10.4",
-    "kumiho-memory[all]>=0.6.2",
+    # Kept in step with the other distribution channels (claude/, codex/,
+    # openclaw/) — CI fails if these drift apart again. kumiho 0.11.0 is the
+    # first release that runs on mcp 2.x, which every fresh install now
+    # resolves to (KumihoIO/kumiho-SDKs#145).
+    "kumiho[mcp]>=0.11.0",
+    "kumiho-memory[all]>=1.2.1",
     "mcp-proxy>=0.8.0",
     "starlette>=0.37",
     "uvicorn[standard]>=0.30",
