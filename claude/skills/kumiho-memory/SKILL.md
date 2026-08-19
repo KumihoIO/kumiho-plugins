@@ -77,7 +77,7 @@ This does three things in one call:
 
 **What to capture**: decisions, preferences, corrections, facts, architecture choices, bug resolutions, creative outputs. Use absolute dates in titles ("on Mar 27", not "today").
 
-**Route every capture — `space_hint` is not optional.** A capture without one is filed at the project root alongside every other unrouted memory, and the automatic revision stacking then searches *that whole bucket* for something to stack onto — which is how an unrelated capture ends up as a new revision of a months-old item. Reuse a space the graph already has: engage results come back as krefs of the form `kref://<project>/<space>/<item>.<kind>`, so they show you the live space names. When none fits, fall back to the capture's type — `decisions`, `facts`, `preferences`, `corrections`.
+**Route every capture — `space_hint` is not optional.** A capture without one is filed at the project root alongside every other unrouted memory, and the automatic revision stacking then searches *that whole bucket* for something to stack onto — which is how an unrelated capture ends up as a new revision of a months-old item. Reuse a space the graph already has: engage results come back as krefs of the form `kref://<project>/<space>/<item>.<kind>`, so they show you the live space names. Write the hint as the slug **below** the project — `marketing`, never `CognitiveMemory/marketing`: a hint carrying the project name nests a shadow copy under it (`/CognitiveMemory/cognitivememory/marketing`), and a capitalized hint is casefolded on the single-capture path but not on the batched one, so one name splits into two spaces. When none fits, fall back to the capture's type — `decisions`, `facts`, `preferences`, `corrections`.
 
 **What to skip**: trivial one-liners, uncommitted brainstorming, credentials, or secrets. For trivial exchanges, call reflect without captures to buffer the response only.
 
@@ -162,16 +162,16 @@ If no skill matches and you improvised a procedure, capture it via reflect:
 ```
 kumiho_memory_reflect(
   response: "<your response>",
+  space_path: "CognitiveMemory/Skills",
   captures: [{
     type: "skill",
     title: "<skill name>",
     content: "<the procedure you used>",
-    tags: ["skill", "<domain>"],
-    space_hint: "CognitiveMemory/Skills"
+    tags: ["skill", "<domain>"]
   }]
 )
 ```
-DreamState will review and refine it.
+`space_path` here, not `space_hint`: the skill library is one of the few spaces whose name is capitalized, and a hint is slugified — `space_hint: "CognitiveMemory/Skills"` files the capture under `/CognitiveMemory/cognitivememory/skills` instead. `space_path` is taken verbatim. DreamState will review and refine it.
 
 ---
 
