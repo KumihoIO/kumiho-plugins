@@ -204,6 +204,7 @@ def _wire_capture(screened: dict) -> dict:
         "content": screened["content"],
         "event_date": screened.get("event_date", ""),
         "tags": screened.get("tags") or [],
+        "space_hint": screened.get("space_hint", ""),
     }
 
 

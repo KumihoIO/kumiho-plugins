@@ -23,6 +23,13 @@ in later sessions.
      - `title`: short descriptive title with absolute date
      - `content`: the provided memory text
      - `tags`: `["manual-capture"]`
+     - `space_hint`: the space this belongs in, as the slug below the
+       project (`facts`, never `CognitiveMemory/facts` — that nests a
+       shadow space) — reuse one you saw in a step-2 kref
+       (`kref://<project>/<space>/<item>.<kind>`), else the capture type
+       (`facts`, `decisions`, `preferences`). Never omit it:
+       an unrouted capture lands at the project root, where reflect's
+       automatic stacking can fold it into an unrelated memory.
    - `source_krefs`: krefs from step 2 (if any were relevant)
 4. Confirm what was stored and how many edges were created.
 
