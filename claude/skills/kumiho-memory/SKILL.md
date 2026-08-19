@@ -63,8 +63,8 @@ After a substantive response, **reflect** on what matters:
 kumiho_memory_reflect(
   response: "<your response text>",
   captures: [
-    { type: "decision", title: "Chose gRPC on Mar 27", content: "..." },
-    { type: "preference", title: "Prefers concise output", content: "..." }
+    { type: "decision", title: "Chose gRPC on Mar 27", content: "...", space_hint: "architecture" },
+    { type: "preference", title: "Prefers concise output", content: "...", space_hint: "preferences" }
   ],
   source_krefs: [<from engage>]
 )
@@ -76,6 +76,8 @@ This does three things in one call:
 3. **Discovers** additional edges for significant captures (decisions, architecture, implementations)
 
 **What to capture**: decisions, preferences, corrections, facts, architecture choices, bug resolutions, creative outputs. Use absolute dates in titles ("on Mar 27", not "today").
+
+**Route every capture — `space_hint` is not optional.** A capture without one is filed at the project root alongside every other unrouted memory, and the automatic revision stacking then searches *that whole bucket* for something to stack onto — which is how an unrelated capture ends up as a new revision of a months-old item. Reuse a space the graph already has: engage results come back as krefs of the form `kref://<project>/<space>/<item>.<kind>`, so they show you the live space names. When none fits, fall back to the capture's type — `decisions`, `facts`, `preferences`, `corrections`.
 
 **What to skip**: trivial one-liners, uncommitted brainstorming, credentials, or secrets. For trivial exchanges, call reflect without captures to buffer the response only.
 
@@ -175,7 +177,7 @@ DreamState will review and refine it.
 
 ## Memory Discipline
 
-- **Stacking is automatic** — reflect uses `stack_revisions: true` by default. No need to search before storing.
+- **Stacking is automatic, so routing is yours** — reflect uses `stack_revisions: true`: it searches the capture's space for a similar item and stacks a revision onto it rather than creating a new one. Scoped to a topical space that is what you want; at the project root it can fuse unrelated memories. Always pass `space_hint` (see Reflect), then read the result's `stacked` flag — a capture that stacked onto something unrelated is worth telling the user about instead of leaving the graph wrong. No need to search before storing.
 - **Auto-capture**: user decisions, preferences, facts, corrections, tool patterns. Your own: architecture decisions, bug resolutions, complex explanations, config outcomes, long-form drafts (posts, emails, documents), creative outputs, and any substantive content the user would want to recall later.
 - **Don't store**: trivial one-liners, uncommitted brainstorming, credentials/secrets.
 - **Absolute dates always** — titles and content must use absolute dates ("on Feb 24", "2026-02-24"), never relative ("today", "yesterday"). The `created_at` timestamp handles recency at recall time.
