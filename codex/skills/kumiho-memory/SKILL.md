@@ -27,8 +27,8 @@ root, and reflect's automatic revision stacking then searches that whole
 bucket for something to stack onto — that is how an unrelated capture
 becomes a new revision of a months-old item. Reuse a space name you have
 already seen in an engage kref (`kref://<project>/<space>/<item>.<kind>`),
-written as the slug below the project — `marketing`, never
-`CognitiveMemory/marketing`, which nests a shadow space under the project.
+copied exactly: reflect forwards the hint as a space path verbatim, so
+`Skills` and `skills` are two different spaces.
 Fall back to the capture type (`decisions`, `facts`, `preferences`,
 `corrections`) when none fits.
 
