@@ -1,0 +1,28 @@
+name = "kumiho-mcp-edge"
+main = "src/index.ts"
+compatibility_date = "2025-06-01"
+
+# mcp.kumiho.cloud must resolve to this worker (Morpheus: DNS + route).
+routes = [
+  { pattern = "mcp.kumiho.cloud/*", zone_name = "kumiho.cloud" }
+]
+
+[vars]
+ENVIRONMENT = "production"
+# Replaced by the deploy workflow with the App Runner service URL.
+ORIGIN_URL = "http://localhost:8080"
+# Requests per window per client IP. MCP is chatty (one HTTP request per
+# JSON-RPC call in stateless mode), so this is deliberately generous.
+RATE_LIMIT_REQUESTS = "600"
+RATE_LIMIT_WINDOW_MS = "60000"
+
+[env.staging]
+name = "kumiho-mcp-edge-staging"
+vars = { ENVIRONMENT = "staging", ORIGIN_URL = "http://localhost:8080", RATE_LIMIT_REQUESTS = "600", RATE_LIMIT_WINDOW_MS = "60000" }
+
+[env.dev]
+name = "kumiho-mcp-edge-dev"
+vars = { ENVIRONMENT = "development", ORIGIN_URL = "http://localhost:8080", RATE_LIMIT_REQUESTS = "6000", RATE_LIMIT_WINDOW_MS = "60000" }
+
+[observability]
+enabled = true

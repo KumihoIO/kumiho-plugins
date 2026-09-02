@@ -1,0 +1,273 @@
+# Deploy the hosted MCP resource server (cloud-mcp/) to AWS App Runner + the
+# Cloudflare edge worker.
+#
+# ############################################################################
+# NOT WIRED UP YET. This workflow is committed so the deploy path is reviewable
+# alongside the code, but it will fail until Morpheus creates:
+#
+#   Repository secrets
+#     AWS_ROLE_ARN                  OIDC role this workflow assumes
+#     AWS_ACCOUNT_ID                for the ECR access role ARN
+#     MCP_APP_RUNNER_SERVICE_ARN    printed by cloud-mcp/deploy/bootstrap-apprunner.ps1
+#     CLOUDFLARE_API_TOKEN          worker deploy
+#     CLOUDFLARE_ACCOUNT_ID         worker deploy
+#
+#   AWS resources (all created by deploy/bootstrap-apprunner.ps1)
+#     ECR repo kumiho-cloud-mcp, App Runner service kumiho-cloud-mcp,
+#     Secrets Manager entry kumiho/CONTROL_PLANE_INTERNAL_KEY
+#
+# Until then it only runs on workflow_dispatch, so a push to main cannot fire a
+# half-configured deploy.
+# ############################################################################
+
+name: Deploy Cloud MCP
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_worker:
+        description: "Also deploy the Cloudflare edge worker"
+        type: boolean
+        default: true
+  # Enable once the secrets above exist:
+  # push:
+  #   branches: [main]
+  #   paths: ["cloud-mcp/**", ".github/workflows/deploy-cloud-mcp.yml"]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: kumiho-cloud-mcp
+  SERVICE_NAME: kumiho-cloud-mcp
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        working-directory: cloud-mcp
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        working-directory: cloud-mcp
+        run: ruff check kumiho_cloud_mcp tests
+
+      - name: Test
+        working-directory: cloud-mcp
+        # The live-CE test skips itself when no server answers on 127.0.0.1:9190.
+        run: python -m pytest -q
+
+  deploy-apprunner:
+    name: Deploy to App Runner
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      service-url: ${{ steps.deploy.outputs.service-url }}
+      deploy-version: ${{ steps.version.outputs.DEPLOY_VERSION }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get deploy version
+        id: version
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "DEPLOY_VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "DEPLOY_VERSION=manual-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        working-directory: cloud-mcp
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # No build secrets: this image contains no credentials. The one
+          # secret it needs at runtime (the control-plane introspection key)
+          # is injected by App Runner from Secrets Manager.
+          DOCKER_BUILDKIT=1 docker build \
+            --tag "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
+            --tag "$ECR_REGISTRY/$ECR_REPOSITORY:latest" \
+            .
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+
+      - name: Update App Runner service image
+        id: deploy
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+          SERVICE_ARN: ${{ secrets.MCP_APP_RUNNER_SERVICE_ARN }}
+          ACCESS_ROLE_ARN: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/kumiho-cloud-mcp-ecr-access-role
+        run: |
+          if [ -z "$SERVICE_ARN" ]; then
+            echo "::error::MCP_APP_RUNNER_SERVICE_ARN is not set. Run cloud-mcp/deploy/bootstrap-apprunner.ps1 first."
+            exit 1
+          fi
+
+          aws apprunner describe-service \
+            --service-arn "$SERVICE_ARN" \
+            --query 'Service.SourceConfiguration' \
+            --output json > source-configuration.json
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          path = Path("source-configuration.json")
+          source = json.loads(path.read_text())
+          source["AuthenticationConfiguration"]["AccessRoleArn"] = os.environ["ACCESS_ROLE_ARN"]
+          source["AutoDeploymentsEnabled"] = False
+          image = source["ImageRepository"]
+          image["ImageIdentifier"] = (
+              f'{os.environ["ECR_REGISTRY"]}/{os.environ["ECR_REPOSITORY"]}:{os.environ["IMAGE_TAG"]}'
+          )
+          config = image.setdefault("ImageConfiguration", {})
+          config["Port"] = "8080"
+          # Belt and braces: the bootstrap script sets this, but a service that
+          # somehow lost the flag would run the shared server on the
+          # single-tenant code path.
+          config.setdefault("RuntimeEnvironmentVariables", {})["KUMIHO_MCP_HOSTED"] = "1"
+          path.write_text(json.dumps(source))
+          PY
+
+          aws apprunner update-service \
+            --service-arn "$SERVICE_ARN" \
+            --source-configuration file://source-configuration.json
+
+          echo "Waiting for App Runner to stabilize..."
+          for _ in $(seq 1 80); do
+            read -r STATUS SERVICE_URL < <(aws apprunner describe-service \
+              --service-arn "$SERVICE_ARN" \
+              --query 'Service.[Status,ServiceUrl]' \
+              --output text)
+            echo "status: $STATUS"
+            if [ "$STATUS" != "OPERATION_IN_PROGRESS" ]; then
+              if [ "$STATUS" != "RUNNING" ]; then
+                echo "::error::App Runner finished in unexpected state: $STATUS"
+                exit 1
+              fi
+              echo "service-url=https://$SERVICE_URL" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            sleep 15
+          done
+
+          if [ -z "${SERVICE_URL:-}" ] || [ "$STATUS" != "RUNNING" ]; then
+            echo "::error::Timed out waiting for App Runner to reach RUNNING"
+            exit 1
+          fi
+
+      - name: Smoke test the origin
+        env:
+          SERVICE_URL: ${{ steps.deploy.outputs.service-url }}
+        run: |
+          set -e
+          echo "GET $SERVICE_URL/healthz"
+          curl -fsS "$SERVICE_URL/healthz" | tee /tmp/health.json
+          python3 - <<'PY'
+          import json, sys
+          health = json.load(open("/tmp/health.json"))
+          if health.get("tools") != health.get("expected_tools"):
+              print(f"::error::connector exposes {health.get('tools')} tools, expected {health.get('expected_tools')}")
+              sys.exit(1)
+          if health.get("dev_mode"):
+              print("::error::dev mode is enabled on a production deploy")
+              sys.exit(1)
+          PY
+          echo
+          echo "GET $SERVICE_URL/.well-known/oauth-protected-resource"
+          curl -fsS "$SERVICE_URL/.well-known/oauth-protected-resource"
+          echo
+          echo "Unauthenticated POST must 401 with a resource_metadata challenge"
+          curl -sS -o /dev/null -D - -X POST "$SERVICE_URL/mcp" \
+            -H 'content-type: application/json' -d '{}' | grep -i 'www-authenticate' \
+            | grep -q 'resource_metadata'
+
+      - name: Summary
+        run: |
+          {
+            echo "### Cloud MCP deployment"
+            echo ""
+            echo "**Service:** ${{ env.SERVICE_NAME }}"
+            echo "**Region:** ${{ env.AWS_REGION }}"
+            echo "**Origin:** ${{ steps.deploy.outputs.service-url }}"
+            echo "**Version:** ${{ steps.version.outputs.DEPLOY_VERSION }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-worker:
+    name: Deploy edge worker
+    needs: deploy-apprunner
+    if: ${{ inputs.deploy_worker }}
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install
+        working-directory: cloud-mcp/worker
+        run: npm install --no-audit --no-fund
+
+      - name: Type check
+        working-directory: cloud-mcp/worker
+        run: npm run typecheck
+
+      - name: Point the worker at the App Runner origin
+        working-directory: cloud-mcp/worker
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("wrangler.toml")
+          text = path.read_text()
+          placeholder = 'ORIGIN_URL = "http://localhost:8080"'
+          if placeholder not in text:
+              raise SystemExit("ORIGIN_URL placeholder not found in wrangler.toml")
+          # Only the first occurrence: the [env.*] blocks stay on localhost.
+          path.write_text(text.replace(placeholder, 'ORIGIN_URL = "${{ needs.deploy-apprunner.outputs.service-url }}"', 1))
+          PY
+          cat wrangler.toml
+
+      - name: Deploy
+        working-directory: cloud-mcp/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy --var VERSION:${{ needs.deploy-apprunner.outputs.deploy-version }}
+
+      - name: Summary
+        run: |
+          {
+            echo "### Edge worker"
+            echo ""
+            echo "**URL:** https://mcp.kumiho.cloud"
+            echo "**Version:** ${{ needs.deploy-apprunner.outputs.deploy-version }}"
+          } >> "$GITHUB_STEP_SUMMARY"
