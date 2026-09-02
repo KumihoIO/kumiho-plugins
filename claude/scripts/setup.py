@@ -452,7 +452,7 @@ def _setup_venv_locked(base_python: str) -> Path:
     try:
         r = bounded_proc.run(
             [str(VENV_PYTHON), "-m", "pip", "install", "--upgrade", "--quiet",
-             "kumiho[mcp]>=0.11.0", "kumiho-memory[all]>=1.3.0"],
+             "kumiho[mcp]>=0.12.1", "kumiho-memory[all]>=1.3.0"],
             timeout=PIP_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired:
