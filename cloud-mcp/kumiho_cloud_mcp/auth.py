@@ -372,10 +372,16 @@ class Authenticator:
             user_id = claims.get("sub") or claims.get("user_id")
             if not user_id:
                 raise AuthError("invalid_token", "token has no subject", token_present=True)
-            if scopes and REQUIRED_SCOPE not in scopes:
+            # An absent `scope` used to be read as "memory", which turns a
+            # missing grant into a full one. The authorization server always
+            # stamps a scope (it forces `memory` into every grant), so a token
+            # without one did not come from a flow this server understands.
+            if REQUIRED_SCOPE not in scopes:
                 raise AuthError(
                     "insufficient_scope",
-                    f"the {REQUIRED_SCOPE!r} scope is required",
+                    f"the {REQUIRED_SCOPE!r} scope is required"
+                    if scopes
+                    else f"the token carries no scope; {REQUIRED_SCOPE!r} is required",
                     token_present=True,
                     status=403,
                 )
@@ -389,7 +395,7 @@ class Authenticator:
                 tenant_slug=claims.get("tenant_slug"),
                 region_code=claims.get("region_code"),
                 expires_at=expires_at,
-                scopes=scopes or [REQUIRED_SCOPE],
+                scopes=scopes,
                 claims=claims,
             )
 

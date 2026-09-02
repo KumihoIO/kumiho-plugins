@@ -44,7 +44,13 @@ from ._compat import (
     request_context,
 )
 from .auth import Authenticator, AuthError, Principal, challenge_header
-from .clients import ClientPool, DiscoveryRouter, RoutingError
+from .clients import (
+    ClientContractError,
+    ClientPool,
+    DiscoveryRouter,
+    RoutingError,
+    client_construction_problems,
+)
 from .connector_profile import CONNECTOR_TOOL_COUNT, CONNECTOR_TOOLS
 from .logging_setup import configure_logging
 from .middleware import BodyLimitMiddleware, SecurityHeadersMiddleware, TimeoutMiddleware
@@ -238,6 +244,11 @@ def _dependency_problems() -> list:
                 "kumiho-memory %s is older than the required %s"
                 % (kumiho_memory.__version__, ".".join(map(str, MIN_KUMIHO_MEMORY_VERSION)))
             )
+
+    # A client that cannot be built free of the operator's ~/.kumiho token is
+    # the same class of problem: it comes up healthy and serves the wrong
+    # identity. clients.py owns the detail.
+    problems.extend(client_construction_problems(refresh=True))
 
     return problems
 
@@ -487,9 +498,14 @@ code{{background:#f3f3f3;padding:.1em .35em;border-radius:.25em}}</style>
             await _auth_response(settings, exc)(scope, receive, send)
             return None
 
-    async def _client_or_503(principal: Principal, scope, receive, send):
+    async def _lease_or_503(principal: Principal, scope, receive, send):
+        """Borrow a pooled client, or answer 503.
+
+        Returns a lease, not a bare client: the pool closes a channel only when
+        the last borrower releases it, so the caller must release in a finally.
+        """
         try:
-            return await pool.get(principal)
+            return await pool.acquire(principal)
         except RoutingError as exc:
             logger.warning(
                 "routing failed",
@@ -505,6 +521,21 @@ code{{background:#f3f3f3;padding:.1em .35em;border-radius:.25em}}</style>
                 status_code=503,
             )(scope, receive, send)
             return None
+        except ClientContractError as exc:
+            # The startup contract should already have refused to boot; this is
+            # the second line of the same defence, and it must not serve.
+            logger.error(
+                "refusing to build a client on an unsafe SDK",
+                extra={"tenant_id": principal.tenant_id, "error": str(exc)[:300]},
+            )
+            await JSONResponse(
+                {
+                    "error": "service_unavailable",
+                    "error_description": "This deployment is misconfigured. Contact support.",
+                },
+                status_code=503,
+            )(scope, receive, send)
+            return None
 
     async def mcp_asgi(scope, receive, send) -> None:
         if scope["type"] != "http":  # pragma: no cover - no websockets here
@@ -512,8 +543,8 @@ code{{background:#f3f3f3;padding:.1em .35em;border-radius:.25em}}</style>
         principal = await _authorize(scope, receive, send)
         if principal is None:
             return
-        client = await _client_or_503(principal, scope, receive, send)
-        if client is None:
+        leased = await _lease_or_503(principal, scope, receive, send)
+        if leased is None:
             return
 
         ctx = _context_for(principal, Request(scope, receive))
@@ -531,8 +562,13 @@ code{{background:#f3f3f3;padding:.1em .35em;border-radius:.25em}}</style>
 
         import kumiho  # lazy: keeps import order flexible and tests stubbable
 
-        with kumiho.use_client(client), request_context(ctx), redis_token_bridge(principal.token):
-            await session_manager.handle_request(scope, receive, send)
+        try:
+            with kumiho.use_client(leased.client), request_context(ctx), redis_token_bridge(
+                principal.token
+            ):
+                await session_manager.handle_request(scope, receive, send)
+        finally:
+            await leased.release()
 
     async def mcp_route(_request: Request) -> Response:
         return _ASGIPassthrough(mcp_asgi)
@@ -572,27 +608,33 @@ code{{background:#f3f3f3;padding:.1em .35em;border-radius:.25em}}</style>
             principal = await _authorize(scope, receive, send)
             if principal is None:
                 return
-            client = await _client_or_503(principal, scope, receive, send)
-            if client is None:
+            leased = await _lease_or_503(principal, scope, receive, send)
+            if leased is None:
                 return
             ctx = _context_for(principal, Request(scope, receive))
 
             import kumiho
 
-            with kumiho.use_client(client), request_context(ctx), redis_token_bridge(
-                principal.token
-            ):
-                async with sse_transport.connect_sse(scope, receive, send) as (read, write):
-                    session_id = _sse_session_var.get()
-                    if session_id:
-                        sse_sessions[session_id] = principal.tenant_id
-                    try:
-                        await mcp_server.run(
-                            read, write, mcp_server.create_initialization_options()
-                        )
-                    finally:
+            try:
+                with kumiho.use_client(leased.client), request_context(ctx), redis_token_bridge(
+                    principal.token
+                ):
+                    async with sse_transport.connect_sse(scope, receive, send) as (read, write):
+                        session_id = _sse_session_var.get()
                         if session_id:
-                            sse_sessions.pop(session_id, None)
+                            sse_sessions[session_id] = principal.tenant_id
+                        try:
+                            await mcp_server.run(
+                                read, write, mcp_server.create_initialization_options()
+                            )
+                        finally:
+                            if session_id:
+                                sse_sessions.pop(session_id, None)
+            finally:
+                # An SSE stream holds its lease for the life of the connection,
+                # which is exactly what the lease refcount is for: the pool will
+                # not close this channel underneath a live stream.
+                await leased.release()
 
         async def messages_endpoint(scope, receive, send) -> None:
             principal = await _authorize(scope, receive, send)
