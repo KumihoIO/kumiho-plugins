@@ -22,6 +22,16 @@ the returned `source_krefs` for reflect.
 capture titles ("on Jul 11", never "today"). Skip captures for trivial
 exchanges; pass `source_krefs` from engage for provenance.
 
+Give every capture a `space_hint`. Without one it is filed at the project
+root, and reflect's automatic revision stacking then searches that whole
+bucket for something to stack onto — that is how an unrelated capture
+becomes a new revision of a months-old item. Reuse a space name you have
+already seen in an engage kref (`kref://<project>/<space>/<item>.<kind>`),
+copied exactly: reflect forwards the hint as a space path verbatim, so
+`Skills` and `skills` are two different spaces.
+Fall back to the capture type (`decisions`, `facts`, `preferences`,
+`corrections`) when none fits.
+
 ## Session id — you must supply it (Codex)
 
 Codex publishes no session identity to MCP servers, so `kumiho-memory`

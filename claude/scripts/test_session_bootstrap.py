@@ -133,6 +133,17 @@ def test_no_longer_bans_consulting_the_skill(tmp_path):
     assert "MAY consult the kumiho-memory skill" in ctx
 
 
+def test_card_tells_the_agent_to_route_captures(tmp_path):
+    """kumiho-plugins#58 item 3: every capture landed at the project root,
+    where reflect's stacking search then fused unrelated memories (item 2).
+    The per-turn card is the only instruction the agent reads every turn, so
+    the routing rule has to live here, not just in the skill."""
+    r = _run_hook("session-bootstrap.py", {"session_id": "s", "source": "startup"},
+                  {"KUMIHO_CLAUDE_HOME": str(tmp_path)})
+    ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "space_hint" in ctx
+
+
 def test_card_carries_the_real_session_id(tmp_path):
     """The Claude Desktop repair (kumiho-plugins#45 item 4).
 
