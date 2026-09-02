@@ -126,9 +126,15 @@ def test_defaults_match_the_plan():
     assert settings.jwks_url == "https://control.kumiho.cloud/.well-known/kumiho-jwks.json"
     assert settings.audience == "kumiho-server"
     assert settings.max_body_bytes == 2 * 1024 * 1024
-    assert settings.request_timeout_seconds == 60.0
+    # 120 s rather than the plan's 60 s: one `kumiho_memory_consolidate` call
+    # is a whole session's worth of graph writes (see settings.py).
+    assert settings.request_timeout_seconds == 120.0
     assert settings.client_cache_max == 1024
     assert settings.port == 8080
+    # Both default OFF: SSE is the deprecated transport and doubles the
+    # authenticated surface; the shim cannot enforce the reviewed profile.
+    assert settings.enable_sse is False
+    assert settings.allow_shim is False
 
 
 def test_dev_mode_defaults():

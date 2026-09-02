@@ -24,6 +24,7 @@ import contextvars
 import logging
 import os
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import replace
 from typing import Any, Dict, Optional
 
 import httpx
@@ -47,7 +48,7 @@ from .clients import ClientPool, DiscoveryRouter, RoutingError
 from .connector_profile import CONNECTOR_TOOL_COUNT, CONNECTOR_TOOLS
 from .logging_setup import configure_logging
 from .middleware import BodyLimitMiddleware, SecurityHeadersMiddleware, TimeoutMiddleware
-from .settings import Settings, load_settings
+from .settings import DEV_TENANT_HEADER, Settings, dev_identity, load_settings
 
 logger = logging.getLogger("kumiho.cloud_mcp")
 
@@ -119,6 +120,162 @@ def _context_for(principal: Principal, request: Request) -> RequestContext:
     )
 
 
+def _installed_version(module_name: str) -> Optional[str]:
+    """``__version__`` of an already-imported dependency, or ``None``."""
+    import sys
+
+    module = sys.modules.get(module_name)
+    version = getattr(module, "__version__", None) if module is not None else None
+    return version if isinstance(version, str) else None
+
+
+def _tenant_manager_stats() -> Dict[str, Any]:
+    """How many tenants hold a live ``kumiho_memory`` manager right now.
+
+    Read through ``sys.modules`` rather than importing: on a request-free
+    process (a health probe right after boot) ``kumiho_memory.mcp_tools`` may
+    genuinely not be loaded yet, and a health endpoint must not be the thing
+    that loads it.
+    """
+    import sys
+
+    module = sys.modules.get("kumiho_memory.mcp_tools")
+    if module is None:
+        return {"loaded": False, "count": 0}
+    cache = getattr(module, "_tenant_managers", None)
+    singleton = getattr(module, "_manager", None)
+    try:
+        count = len(cache) if cache is not None else 0
+    except Exception:  # noqa: BLE001 - introspection must never break /healthz
+        count = -1
+    return {
+        "loaded": True,
+        "count": count,
+        "max": getattr(cache, "max_entries", None),
+        "idle_ttl_seconds": getattr(cache, "idle_ttl", None),
+        # Must stay False in hosted mode: a process singleton means some path
+        # built a manager with no request context, i.e. from ambient env.
+        "process_singleton": singleton is not None,
+    }
+
+
+def _pool_size(pool: Any) -> int:
+    """Cached gRPC clients. Best-effort: ``ClientPool`` is WP-C/E2's file."""
+    entries = getattr(pool, "_entries", None)
+    try:
+        return len(entries) if entries is not None else -1
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+#: Minimum sibling releases the connector contract (plan §2.1-§2.3) needs.
+MIN_KUMIHO_VERSION = (0, 13, 0)
+MIN_KUMIHO_MEMORY_VERSION = (1, 4, 0)
+
+
+class StartupContractError(RuntimeError):
+    """A dependency too old to serve the connector profile safely."""
+
+
+def _version_tuple(raw: object) -> Optional[tuple]:
+    """``"1.4.0rc1"`` -> ``(1, 4, 0)``; ``None`` when unparseable."""
+    if not isinstance(raw, str):
+        return None
+    parts = []
+    for chunk in raw.split(".")[:3]:
+        digits = ""
+        for char in chunk:
+            if not char.isdigit():
+                break
+            digits += char
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts) if parts else None
+
+
+def _dependency_problems() -> list:
+    """Every way the installed siblings fall short of the contract."""
+    import inspect as _inspect
+
+    problems: list = []
+
+    try:
+        import kumiho  # noqa: F401
+        import kumiho.mcp_server as _ms
+    except Exception as exc:  # noqa: BLE001 - a missing SDK is fatal either way
+        return [f"kumiho is not importable: {exc}"]
+
+    found = _version_tuple(getattr(kumiho, "__version__", None))
+    if found is None:
+        problems.append("kumiho reports no parseable __version__")
+    elif found < MIN_KUMIHO_VERSION:
+        problems.append(
+            "kumiho %s is older than the required %s"
+            % (kumiho.__version__, ".".join(map(str, MIN_KUMIHO_VERSION)))
+        )
+
+    try:
+        params = _inspect.signature(_ms.create_mcp_server).parameters
+    except (TypeError, ValueError):  # pragma: no cover - C callables
+        params = {}
+    if "profile" not in params:
+        problems.append(
+            "kumiho.mcp_server.create_mcp_server has no profile= parameter, so the "
+            "connector profile would be enforced by a local shim instead of the SDK"
+        )
+
+    try:
+        import kumiho_memory
+    except Exception as exc:  # noqa: BLE001
+        problems.append(f"kumiho_memory is not importable: {exc}")
+    else:
+        found = _version_tuple(getattr(kumiho_memory, "__version__", None))
+        if found is None:
+            problems.append("kumiho_memory reports no parseable __version__")
+        elif found < MIN_KUMIHO_MEMORY_VERSION:
+            problems.append(
+                "kumiho-memory %s is older than the required %s"
+                % (kumiho_memory.__version__, ".".join(map(str, MIN_KUMIHO_MEMORY_VERSION)))
+            )
+
+    return problems
+
+
+def _enforce_dependency_contract(settings: Settings) -> None:
+    """Refuse to start a production process on a shimmed dependency set.
+
+    The shim in :mod:`kumiho_cloud_mcp._compat` exists so this service could be
+    developed before WP-A and WP-B landed, and it degrades gracefully — which
+    is exactly the danger now. A deployment that picked up an old ``kumiho``
+    would come up healthy, serve a *different* tool set than the one the Claude
+    directory listing was reviewed against, and lose the SDK's tenant-keyed
+    caches and hosted guards while doing it. That must be a crash, not a log
+    line, so the deploy fails instead of the tenants.
+
+    Dev mode is exempt (it is how the shim gets exercised at all), and
+    ``KUMIHO_MCP_ALLOW_SHIM=1`` is the documented dev-only override.
+    """
+    problems = _dependency_problems()
+    if not problems:
+        return
+    detail = "; ".join(problems)
+    if settings.dev or settings.allow_shim:
+        logger.warning(
+            "dependency contract not met; continuing because this is a dev run",
+            extra={"problems": problems, "allow_shim": settings.allow_shim, "dev": settings.dev},
+        )
+        return
+    logger.error("dependency contract not met", extra={"problems": problems})
+    raise StartupContractError(
+        f"kumiho-cloud-mcp cannot serve the connector profile: {detail}. "
+        f"Install kumiho>={'.'.join(map(str, MIN_KUMIHO_VERSION))} and "
+        f"kumiho-memory>={'.'.join(map(str, MIN_KUMIHO_MEMORY_VERSION))}, or set "
+        "KUMIHO_MCP_ALLOW_SHIM=1 (development only — the shim cannot enforce the "
+        "reviewed tool profile)."
+    )
+
+
 def create_app(settings: Optional[Settings] = None, *, server_factory=None) -> Starlette:
     """Build the ASGI application. Importable as ``kumiho_cloud_mcp.app:app``."""
 
@@ -138,12 +295,18 @@ def create_app(settings: Optional[Settings] = None, *, server_factory=None) -> S
             logger.warning("ignoring KUMIHO_MEMORY_DECISIONS: not supported in hosted mode")
     if settings.dev:
         os.environ.setdefault("KUMIHO_LOCAL_SERVER_ENDPOINT", settings.local_server_endpoint)
-        # The names kumiho_memory's RedisMemoryBuffer looks for. Note that with
-        # KUMIHO_MCP_HOSTED=1 current kumiho-memory ignores them and insists on
-        # the control-plane proxy; see README "Dev mode and Redis".
+        # kumiho-memory >= 1.4.0 arms its direct-Redis escape hatch only when
+        # KUMIHO_HOSTED_LOCAL_REDIS=1 *and* KUMIHO_MCP_HOSTED=1 (set just
+        # above), and then reads KUMIHO_LOCAL_REDIS_URL first, UPSTASH_REDIS_URL
+        # second. Set the documented name explicitly rather than leaning on the
+        # UPSTASH_* fallback: those are the ambient single-tenant credentials
+        # everywhere else, and dev mode should not depend on them.
+        os.environ.setdefault("KUMIHO_HOSTED_LOCAL_REDIS", "1")
+        os.environ.setdefault("KUMIHO_LOCAL_REDIS_URL", settings.local_redis_url)
         os.environ.setdefault("KUMIHO_UPSTASH_REDIS_URL", settings.local_redis_url)
         os.environ.setdefault("UPSTASH_REDIS_URL", settings.local_redis_url)
-        os.environ.setdefault("KUMIHO_HOSTED_LOCAL_REDIS", "1")
+
+    _enforce_dependency_contract(settings)
 
     authenticator = Authenticator(settings)
     router = DiscoveryRouter(settings)
@@ -243,6 +406,17 @@ def create_app(settings: Optional[Settings] = None, *, server_factory=None) -> S
                 "profile_source": profile_source,
                 "tools": len(getattr(_request.app.state, "exposed_tools", []) or []),
                 "expected_tools": CONNECTOR_TOOL_COUNT,
+                # How many tenants currently hold a memory manager in this
+                # process. The number is the load-bearing evidence that hosted
+                # mode is per-tenant and not a singleton: it must track the
+                # number of distinct tenants seen, never stick at 1.
+                "tenant_managers": _tenant_manager_stats(),
+                "clients": _pool_size(pool),
+                "sdk": {
+                    "kumiho": _installed_version("kumiho"),
+                    "kumiho_memory": _installed_version("kumiho_memory"),
+                    "upstream_request_context": HAVE_UPSTREAM_REQUEST_CONTEXT,
+                },
             }
         )
 
@@ -271,10 +445,36 @@ code{{background:#f3f3f3;padding:.1em .35em;border-radius:.25em}}</style>
 
     # ---- the MCP endpoint ----------------------------------------------
 
+    def _apply_dev_tenant(principal: Principal, headers) -> Principal:
+        """Let ``x-kumiho-dev-tenant`` pick a fake tenant — dev mode only.
+
+        Guarded on ``settings.dev``, i.e. the mode that has already turned
+        authentication off; outside it the header is never read and a caller's
+        tenant comes from their verified token alone. Two client sessions
+        carrying different labels are two different tenants all the way down —
+        manager cache entry, Redis key prefix, active-session pointer — which
+        is what makes an isolation test over the real transport possible.
+        """
+        if not settings.dev:
+            return principal
+        label = headers.get(DEV_TENANT_HEADER)
+        if not label or not label.strip():
+            return principal
+        tenant_id, tenant_slug, user_id, token_id = dev_identity(label)
+        return replace(
+            principal,
+            tenant_id=tenant_id,
+            tenant_slug=tenant_slug,
+            user_id=user_id,
+            token_id=token_id,
+        )
+
     async def _authorize(scope, receive, send) -> Optional[Principal]:
         request = Request(scope, receive)
         try:
-            return await authenticator.authenticate(request.headers)
+            return _apply_dev_tenant(
+                await authenticator.authenticate(request.headers), request.headers
+            )
         except AuthError as exc:
             logger.info(
                 "auth rejected",

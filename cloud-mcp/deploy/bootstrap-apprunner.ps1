@@ -243,10 +243,18 @@ $runtimeEnvVars = @{
     KUMIHO_CONTROL_PLANE_URL = $ControlPlaneUrl
     KUMIHO_MCP_DOCS_URL    = "https://kumiho.io/docs/connect/claude"
     KUMIHO_MCP_LOG_LEVEL   = "INFO"
+    # Off by default in code too; pinned here so a future default flip cannot
+    # quietly widen the authenticated surface of a running service. The legacy
+    # SSE transport adds an /sse stream plus a /messages/ POST whose only
+    # tenant binding is an in-process session map.
+    KUMIHO_MCP_ENABLE_SSE  = "0"
     PORT                   = "8080"
-    # Deliberately absent: KUMIHO_MCP_DEV_MODE, KUMIHO_AUTH_TOKEN,
-    # KUMIHO_SERVICE_TOKEN, KUMIHO_MEMORY_DECISIONS, UPSTASH_REDIS_URL.
-    # Any of those would give every tenant one ambient identity.
+    # Deliberately absent: KUMIHO_MCP_DEV_MODE, KUMIHO_MCP_ALLOW_SHIM,
+    # KUMIHO_AUTH_TOKEN, KUMIHO_SERVICE_TOKEN, KUMIHO_MEMORY_DECISIONS,
+    # UPSTASH_REDIS_URL, KUMIHO_HOSTED_LOCAL_REDIS, KUMIHO_LOCAL_REDIS_URL.
+    # Any of those would give every tenant one ambient identity, or would let
+    # the service start on a dependency set that cannot enforce the reviewed
+    # tool profile.
 }
 
 Write-JsonFile -Path $instanceTrustPath -InputObject @{

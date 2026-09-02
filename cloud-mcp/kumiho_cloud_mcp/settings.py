@@ -7,7 +7,9 @@ Runner, under ``uvicorn`` on a laptop, and inside pytest. Nothing is read from
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
@@ -26,8 +28,35 @@ DEV_TENANT_SLUG = "dev-local"
 DEV_USER_ID = "dev-local-user"
 DEV_TOKEN_ID = "dev-local-token"
 
+#: Dev-only header that picks a *different* fake tenant for one request.
+#:
+#: Honoured **only** when ``KUMIHO_MCP_DEV_MODE=ce``, i.e. only in the mode
+#: that has already disabled authentication entirely; outside dev mode the
+#: header is not read at all and a caller's tenant comes from their verified
+#: token and nowhere else. It exists so that the isolation tests can drive two
+#: tenants through one process over the real transport, which a single fixed
+#: fake identity cannot do. Document it as dev-only in README.md.
+DEV_TENANT_HEADER = "x-kumiho-dev-tenant"
+
 SCOPES_SUPPORTED: Tuple[str, ...] = ("memory", "offline_access")
 REQUIRED_SCOPE = "memory"
+
+
+def dev_identity(label: Optional[str]) -> Tuple[str, str, str, str]:
+    """``(tenant_id, tenant_slug, user_id, token_id)`` for a dev-mode label.
+
+    ``None`` or an empty label gives the fixed default identity, so the
+    ordinary dev run is unchanged. Any other label is hashed into a
+    UUID-shaped tenant id — the graph backend and the Redis key namespace both
+    expect a UUID — deterministically, so the same label names the same tenant
+    across restarts and across the two client sessions of an isolation test.
+    """
+    if not label or not label.strip():
+        return DEV_TENANT_ID, DEV_TENANT_SLUG, DEV_USER_ID, DEV_TOKEN_ID
+    slug = re.sub(r"[^a-z0-9-]+", "-", label.strip().lower()).strip("-")[:40] or "dev"
+    digest = hashlib.sha256(f"kumiho-dev-tenant:{slug}".encode()).hexdigest()
+    tenant_id = f"{digest[:8]}-{digest[8:12]}-4{digest[13:16]}-8{digest[17:20]}-{digest[20:32]}"
+    return tenant_id, f"dev-{slug}", f"dev-{slug}-user", f"dev-{slug}-token"
 
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -92,6 +121,7 @@ class Settings:
     log_level: str
     enable_sse: bool
     json_response: bool
+    allow_shim: bool
     scopes_supported: Tuple[str, ...] = field(default=SCOPES_SUPPORTED)
 
     # ---- derived -------------------------------------------------------
@@ -179,7 +209,16 @@ def load_settings(environ: Optional[dict] = None) -> Settings:
         or DEFAULT_LOCAL_REDIS_URL,
         port=port,
         max_body_bytes=_env_int("KUMIHO_MCP_MAX_BODY_BYTES", 2 * 1024 * 1024),
-        request_timeout_seconds=_env_float("KUMIHO_MCP_REQUEST_TIMEOUT_SECONDS", 60.0),
+        # 120 s, not the 60 s of plan §2.4. `kumiho_memory_consolidate` is one
+        # tool call that fans out into a whole session's worth of work —
+        # summarize the buffer, write the memories, discover edges — and each
+        # of those is a round trip to the graph backend. Measured against CE on
+        # a laptop a consolidate of a short session already spends tens of
+        # seconds; a real one on a cold region would trip a 60 s cap and the
+        # client would see a 504 *after* the writes had partly landed, which is
+        # the worst of both outcomes. The cap exists to stop a hung upstream
+        # from pinning a worker, and 120 s still does that.
+        request_timeout_seconds=_env_float("KUMIHO_MCP_REQUEST_TIMEOUT_SECONDS", 120.0),
         jwks_cache_seconds=_env_float("KUMIHO_MCP_JWKS_CACHE_SECONDS", 3600.0),
         jwks_refresh_cooldown_seconds=_env_float("KUMIHO_MCP_JWKS_COOLDOWN_SECONDS", 30.0),
         introspection_cache_seconds=_env_float("KUMIHO_MCP_INTROSPECTION_CACHE_SECONDS", 60.0),
@@ -189,6 +228,16 @@ def load_settings(environ: Optional[dict] = None) -> Settings:
         resource_documentation=_env("KUMIHO_MCP_DOCS_URL", DEFAULT_RESOURCE_DOCUMENTATION)
         or DEFAULT_RESOURCE_DOCUMENTATION,
         log_level=(_env("KUMIHO_MCP_LOG_LEVEL", "INFO") or "INFO").upper(),
-        enable_sse=_env_bool("KUMIHO_MCP_ENABLE_SSE", default=True),
+        # OFF by default. The deprecated HTTP+SSE transport doubles the
+        # authenticated surface (`/sse` plus an unauthenticated-by-design
+        # `/messages/` POST whose only tenant binding is an in-memory session
+        # map) for clients Claude no longer uses. Turn it on per deployment,
+        # knowingly, if some legacy client ever needs it.
+        enable_sse=_env_bool("KUMIHO_MCP_ENABLE_SSE", default=False),
         json_response=_env_bool("KUMIHO_MCP_JSON_RESPONSE", default=False),
+        # Dev-only. Lets the service start on a `kumiho`/`kumiho-memory` older
+        # than the connector contract, falling back to _compat's local tool
+        # filtering. Never set in a deployment: the shim path cannot enforce
+        # the profile the directory listing was reviewed against.
+        allow_shim=_env_bool("KUMIHO_MCP_ALLOW_SHIM", default=False),
     )

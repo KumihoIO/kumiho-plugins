@@ -73,9 +73,14 @@ yours to run.
 
 At the start of a conversation that might have history, call \
 `kumiho_memory_engage` once with the user's opening message as `query`. It \
-returns the user's identity and preferences, the most relevant prior memories, \
-and an active `session_id`. Pass that `session_id` back to every later memory \
-call in the same conversation.
+returns the most relevant prior memories and the krefs they came from; keep \
+those krefs for `kumiho_memory_reflect`.
+
+Never invent a `session_id`. Omit it and the server resolves one, and keeps \
+resolving to that same one for the rest of the conversation. Every \
+session-scoped result — reflect, consolidate, chat — echoes back the \
+`session_id` and `session_id_source` it used; engage is read-only and reports \
+none.
 
 During the conversation, call `kumiho_memory_recall` when the user refers to \
 something you do not have in context ("like we discussed", "the usual setup", \

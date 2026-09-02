@@ -65,14 +65,27 @@ is up with `Test-NetConnection 127.0.0.1 -Port 9190` on Windows.
 
 **Dev mode and Redis.** `KUMIHO_MCP_HOSTED=1` is set even in dev mode, because
 several SDK guards read the process flag between requests and a dev run that
-left it unset would exercise a different code path than production. Current
-`kumiho-memory` treats hosted mode as "the control-plane Redis proxy is the only
-route to Redis", so with no control plane reachable the Redis-backed tools
-(session buffer, consolidate, chat) may fail even though the graph tools work.
-The RS sets `KUMIHO_UPSTASH_REDIS_URL`, `UPSTASH_REDIS_URL` and
-`KUMIHO_HOSTED_LOCAL_REDIS=1` in dev mode in the hope that a future
-`kumiho-memory` honours one of them; until it does, this is a known dev-loop gap
-and not a production concern.
+left it unset would exercise a different code path than production. Hosted mode
+otherwise treats the control-plane Redis proxy as the *only* route to Redis —
+that is what namespaces keys per tenant and authenticates per request — and dev
+mode has no control plane at all.
+
+`kumiho-memory` 1.4.0 adds the escape hatch for exactly this case, and dev mode
+arms it: `KUMIHO_HOSTED_LOCAL_REDIS=1` plus `KUMIHO_LOCAL_REDIS_URL`
+(`KUMIHO_MCP_DEV_REDIS_URL`, default `redis://127.0.0.1:6379`). The hatch only
+fires when `KUMIHO_MCP_HOSTED=1` is *also* set, so a stray env var can never
+redirect a plugin user's working memory to localhost, and keys stay namespaced
+by tenant and user, so two dev tenants sharing one Redis still cannot see each
+other. It logs a `WARNING` on every manager build. Never set it on a deployment
+serving real tenants — the per-request token is not checked by anything.
+
+**Two dev tenants.** In dev mode *only*, `x-kumiho-dev-tenant: <label>` picks a
+different fake tenant for that request: the label is hashed into a stable
+UUID-shaped `tenant_id` with its own `user_id`, so two client sessions get
+separate manager-cache entries, Redis key prefixes and active-session pointers.
+Outside `KUMIHO_MCP_DEV_MODE=ce` the header is not read at all — a caller's
+tenant comes from their verified token and nothing else. It exists so
+`tests/e2e/` can drive real isolation checks through one process.
 
 ### Against the real control plane
 
@@ -101,14 +114,25 @@ cd cloud-mcp
 python -m pytest -q            # everything
 python -m pytest -q -k auth    # just the token branches
 python -m pytest tests/test_live_ce.py -v -s   # real round trip, needs CE on :9190
+python -m pytest tests/e2e -v -s               # full live stack, needs CE + Redis
 ```
 
-The suite is hermetic apart from `test_live_ce.py`, which skips itself when no
-CE server answers. The control plane (JWKS, introspection, discovery) is an
-`httpx.MockTransport`; the gRPC client is a stub. `test_concurrency.py` runs
-several tenants through `/mcp` at once and asserts that a tool handler — reached
-through the same `asyncio.to_thread` hop production uses — never sees another
-tenant's client, context or Redis token.
+The suite is hermetic apart from `test_live_ce.py` and `tests/e2e/`, which skip
+themselves when no CE server (`:9190`) or Redis (`:6379`) answers. The control
+plane (JWKS, introspection, discovery) is an `httpx.MockTransport`; the gRPC
+client is a stub. `test_concurrency.py` runs several tenants through `/mcp` at
+once and asserts that a tool handler — reached through the same
+`asyncio.to_thread` hop production uses — never sees another tenant's client,
+context or Redis token.
+
+`tests/e2e/` is the opposite: nothing is stubbed. It spawns a dev-mode server
+(or reuses one already on the port), drives it with the published `mcp`
+streamable-HTTP client, and asserts the whole contract end to end — the 18-tool
+profile with annotations, an out-of-profile `kumiho_delete_project` refused as a
+tool error, engage → reflect → chat → consolidate → deprecate against the real
+graph, and two `x-kumiho-dev-tenant` tenants that never see each other's
+sessions, Redis keys or buffered messages. Run it with `-s`: every check prints
+the payload it asserted on.
 
 ## Configuration
 
@@ -123,33 +147,57 @@ tenant's client, context or Redis token.
 | `KUMIHO_MCP_HOSTED` | `1` | Shared-server rules: no `~/.kumiho`, no env credentials, per-tenant caches. |
 | `KUMIHO_MCP_DEV_MODE` | — | `ce` disables auth and pins a fake tenant. **Never set in production.** |
 | `KUMIHO_LOCAL_SERVER_ENDPOINT` | `127.0.0.1:9190` | CE backend for dev mode. |
+| `KUMIHO_MCP_DEV_REDIS_URL` | `redis://127.0.0.1:6379` | Direct Redis for dev mode; becomes `KUMIHO_LOCAL_REDIS_URL`. |
+| `KUMIHO_MCP_ALLOW_SHIM` | `0` | **Dev only.** Start even on `kumiho`/`kumiho-memory` older than the connector contract. See *The startup contract*. |
 | `PORT` | `8080` | Listen port. |
 | `KUMIHO_MCP_MAX_BODY_BYTES` | `2097152` | Request body cap (413 above it). |
-| `KUMIHO_MCP_REQUEST_TIMEOUT_SECONDS` | `60` | Wall clock cap on a POST/DELETE; `0` disables. GET streams are exempt. |
+| `KUMIHO_MCP_REQUEST_TIMEOUT_SECONDS` | `120` | Wall clock cap on a POST/DELETE; `0` disables. GET streams are exempt. Sized for `kumiho_memory_consolidate` — one tool call, a whole session's worth of graph writes. |
 | `KUMIHO_MCP_JWKS_CACHE_SECONDS` | `3600` | JWKS cache lifetime. |
 | `KUMIHO_MCP_JWKS_COOLDOWN_SECONDS` | `30` | Minimum gap between refreshes triggered by an unknown `kid`. |
 | `KUMIHO_MCP_INTROSPECTION_CACHE_SECONDS` | `60` | Service-token revocation cache. |
 | `KUMIHO_MCP_DISCOVERY_CACHE_SECONDS` | `600` | Per-tenant routing cache. |
 | `KUMIHO_MCP_CLIENT_CACHE_MAX` | `1024` | gRPC clients held, keyed by `(tenant_id, token_id)`. |
-| `KUMIHO_MCP_ENABLE_SSE` | `1` | Serve the legacy `/sse` + `/messages` transport. |
+| `KUMIHO_MCP_ENABLE_SSE` | `0` | Serve the legacy `/sse` + `/messages` transport. Off by default — see below. |
 | `KUMIHO_MCP_JSON_RESPONSE` | `0` | Answer POSTs with JSON instead of SSE (tests use this). |
 | `KUMIHO_MCP_LOG_LEVEL` | `INFO` | Root log level. |
 
 Variables that must **never** be set on a hosted box, because they would give
 every tenant one ambient identity: `KUMIHO_AUTH_TOKEN`, `KUMIHO_SERVICE_TOKEN`,
-`UPSTASH_REDIS_URL` (production), and `KUMIHO_MEMORY_DECISIONS` (Decision Memory
-assumes a local git checkout; the service drops it with a warning if present).
+`UPSTASH_REDIS_URL` (production), `KUMIHO_HOSTED_LOCAL_REDIS` /
+`KUMIHO_LOCAL_REDIS_URL` (dev-only direct Redis), `KUMIHO_MCP_ALLOW_SHIM`, and
+`KUMIHO_MEMORY_DECISIONS` (Decision Memory assumes a local git checkout; the
+service drops it with a warning if present).
+
+### The SSE fallback is off by default
+
+`KUMIHO_MCP_ENABLE_SSE` defaults to `0`. Claude connects over streamable HTTP,
+and the deprecated HTTP+SSE transport roughly doubles the authenticated surface:
+a long-lived `GET /sse` stream plus a `POST /messages/` whose only binding
+between a message and a tenant is an in-process session map. Turn it on
+knowingly, per deployment, if some legacy client ever needs it — and note that
+`/messages/` then rejects a session id belonging to a different tenant with 403.
+
+### The startup contract
+
+Outside dev mode the service **refuses to start** if `kumiho < 0.13.0`,
+`kumiho-memory < 1.4.0`, or `create_mcp_server` has no `profile=` parameter. The
+`_compat` shim was written so this service could be built before WP-A and WP-B
+landed, and it degrades gracefully — which is the danger. A deploy that picked
+up an old `kumiho` would come up healthy while serving a *different* tool set
+than the one the Claude directory listing was reviewed against, without the
+SDK's tenant-keyed caches. That has to fail the deploy, not the tenants.
+`KUMIHO_MCP_ALLOW_SHIM=1` bypasses the check and is for local development only.
 
 ## Routes
 
 | Route | Auth | Notes |
 |---|---|---|
 | `GET /` | none | Human-readable pointer to the docs. |
-| `GET /healthz` | none | `{"status":"ok", "tools": n, "expected_tools": 18, ...}`. |
+| `GET /healthz` | none | `{"status":"ok", "tools": n, "expected_tools": 18, "tenant_managers": {...}, "clients": n, "sdk": {...}}`. `tenant_managers.count` is how many tenants hold a live memory manager, and `tenant_managers.process_singleton` must stay `false`. |
 | `GET /.well-known/oauth-protected-resource` | none | RFC 9728. `Access-Control-Allow-Origin: *`. |
 | `GET /.well-known/oauth-protected-resource/mcp` | none | Same document, path-suffixed form. |
 | `GET\|POST\|DELETE /mcp` | required | Streamable HTTP, `stateless=True`. |
-| `GET /sse` + `POST /messages/` | required | Legacy SSE transport, off with `KUMIHO_MCP_ENABLE_SSE=0`. |
+| `GET /sse` + `POST /messages/` | required | Legacy SSE transport. **Not mounted unless `KUMIHO_MCP_ENABLE_SSE=1`.** |
 
 Every response carries `Cache-Control: no-store` and `X-Robots-Tag: noindex`.
 
