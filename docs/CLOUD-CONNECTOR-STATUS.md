@@ -136,13 +136,14 @@ Notes on the two non-green lines:
   environmental ones: the first picks up the host's real memory data, the
   second the host's ambient LLM provider env. Both fail on `main` too. Neither
   is in the hosted path.
-- **stdio plugin**: green only with a clean `HOME`.
+- **stdio plugin**: this line originally required a hand-cleaned `HOME` —
   `test_reflex_prefetch.py::test_auth_sentinel_skips_before_any_subprocess`
-  fails when run against the developer's real `~/.claude/settings.json`,
-  because that file pins `KUMIHO_CLAUDE_MODE=ce` and the hook then takes the CE
-  branch instead of the "no auth token" one. With `HOME` pointed at an empty
-  directory, `24 passed` for that module and `159 passed` overall. **This is a
-  latent bug in the test, not in the plugin** — see §4, D-7.
+  failed against the developer's real `~/.claude/settings.json`, which pins
+  `KUMIHO_CLAUDE_MODE=ce`. That was a bug in the test, not the plugin, and it
+  is now fixed: an autouse `hermetic_home` fixture in `claude/scripts/conftest.py`
+  gives every test its own empty HOME and a working directory with no
+  configuration above it, so `159 passed` holds on a machine with the plugin
+  fully installed. See §5, D-7.
 
 ### stdio smoke (WP-A + WP-B, no hosted flag, no request context)
 
@@ -326,12 +327,12 @@ here.
 | D-4 | Low | `kumiho_memory/entity_promotion.py` `_anchor_locks` | Keyed per **entity**, not per tenant, and uncapped: grows with every entity every tenant has ever promoted, for the life of the process. `mcp_tools._recall_scope_locks` was capped for exactly this reason in the same branch. | Memory `faf5497`. Capped at 4096, same sweep shape. |
 | D-5 | Low | `kumiho_memory/redis_memory.py` | The direct-Redis dev `WARNING` printed the resolved URL verbatim. An Upstash URL is `rediss://default:<token>@host` — the token *is* the credential, in a message whose whole purpose is to be found, shipped and pasted into tickets. | Memory `faf5497`. `redact_redis_url` keeps the host, drops the userinfo. |
 | D-6 | Low | `cloud-mcp/kumiho_cloud_mcp/app.py` | Dev mode set `KUMIHO_UPSTASH_REDIS_URL` / `UPSTASH_REDIS_URL` but not `KUMIHO_LOCAL_REDIS_URL`, the name kumiho-memory 1.4.0's escape hatch reads first. It worked only through the `UPSTASH_*` fallback — the ambient single-tenant credential name everywhere else. | RS `76ad1a5`. |
+| D-7 | Low | `claude/scripts/conftest.py` (stdio plugin tests) | The suite read the developer's real `~/.claude/settings.json` and `~/.kumiho`. `test_reflex_prefetch.py::test_auth_sentinel_skips_before_any_subprocess` failed on a machine with `KUMIHO_CLAUDE_MODE=ce` pinned in those settings — the worker took the CE branch, which resolves an endpoint instead of reaching the auth sentinel, so the assertion was about a code path the test never entered. Quieter and worse: `~/.kumiho/kumiho_authentication.json` hydrated the developer's **real bearer token** into the test process. | RS `87ab99a`. Autouse `hermetic_home` fixture: empty HOME per test, `KUMIHO_CONFIG_DIR` inside it, ambient `KUMIHO_*`/`CLAUDE_*` cleared, and a **verified** clean working directory. The last part is the subtle half — redirecting HOME alone is not enough, because the launcher also walks the cwd *and every parent* for `.claude/settings*.json`, and on Windows the pytest temp root sits inside the user profile, so a tmp cwd climbs straight back out to the file just hidden. The fixture picks the fake home only if its ancestry is clean and falls back to the filesystem anchor, then asserts. |
 
 ### Open — not fixed
 
 | # | Sev | Where | What | Why not fixed |
 |---|---|---|---|---|
-| D-7 | Low | `kumiho-plugins/claude/scripts/test_reflex_prefetch.py::test_auth_sentinel_skips_before_any_subprocess` | Reads the developer's real `~/.claude/settings.json`. On a machine with `KUMIHO_CLAUDE_MODE=ce` pinned there, the hook takes the CE branch and the test fails. It passes with `HOME` pointed at an empty directory. | Not on any of my three branches; the plugin tree is `main`. Should get a `HOME`/`USERPROFILE` monkeypatch in `claude/scripts/conftest.py`. |
 | D-8 | Low | `cloud-mcp/kumiho_cloud_mcp/clients.py:130` (**E2's file**) | `ClientPool.get` returns an unpooled client when `ttl <= 0` and never closes it. A gRPC channel leaks per request for a token expiring inside the request window. Narrow (an already-expired token fails `jwt.decode` first) but unbounded over time. | E2 owns the file. |
 | D-9 | Low | `cloud-mcp/kumiho_cloud_mcp/clients.py:181` (**E2's file**) | `_construct_client` drops unsupported kwargs — including `skip_auth_token_load` and `enable_auto_login` — with only a `logger.warning`, then constructs the client anyway. On an SDK without those parameters that is exactly the `~/.kumiho` fallback the docstring exists to prevent, failing **open**. Latent only: kumiho 0.13.0 accepts all six (verified), and E1's new startup contract now refuses to boot on anything older. Still, the right behaviour outside dev mode is to refuse, not warn. | E2 owns the file. |
 | D-10 | Low | `cloud-mcp/kumiho_cloud_mcp/clients.py:40` (**E2's file**) | `DiscoveryRouter._cache` is unbounded and never swept — expired entries are only overwritten, never dropped. Small per entry, but unlike `ClientPool` it has no ceiling. The read at `:48` is also outside the lock the write at `:83` takes. | E2 owns the file. |
@@ -375,6 +376,45 @@ The five regression classes named for this pass, checked across
    No other log or exception interpolates an identifier sourced from shared
    state.
 
+### Post-E1 follow-ups
+
+Handed on rather than dropped. Each is tracked here so the hand-off is a list
+someone can close, not a paragraph someone has to re-derive.
+
+**With E2** (`cloud-mcp/kumiho_cloud_mcp/`, their files — I did not touch them):
+
+| # | Sev | Where | Item |
+|---|---|---|---|
+| D-8 | Low | `clients.py:130` | `ClientPool.get` returns an unpooled client when `ttl <= 0` and never closes it — a gRPC channel leaks per request for a token expiring inside the request window. |
+| D-9 | Low | `clients.py:181` | `_construct_client` drops unsupported kwargs (`skip_auth_token_load`, `enable_auto_login`) with only a warning and builds the client anyway — on an older SDK that is the `~/.kumiho` fallback the docstring exists to prevent, failing **open**. |
+| D-10 | Low | `clients.py:40` | `DiscoveryRouter._cache` is unbounded and never swept; the read at `:48` is outside the lock the write at `:83` takes. |
+| D-11 | Low | `auth.py:375` | An OAuth access token with **no** `scope` claim is treated as carrying `memory`. Defence-in-depth only (the AS always sets it), but the fail direction is open. |
+
+As of this writing E2 has uncommitted work in the shared worktree that appears
+to address D-8 and D-9 — a client *lease* returned from the pool, a
+`ClientContractError`, and a `client_construction_problems()` check wired into
+`app.py`'s startup contract. Left untouched and unstaged; **these four are E2's
+to close, not mine.**
+
+One more for E2, not a defect but a trap in the same tree: `tests/e2e/` needed
+an `__init__.py`, because without one pytest imports both `tests/conftest.py`
+and `tests/e2e/conftest.py` under the bare module name `conftest`, the
+subdirectory one wins, and the entire hermetic suite fails to collect. If
+`tests/contract/` ever grows a `conftest.py` it will hit exactly this (D-16).
+
+**With WP-B** (`kumiho-memory`, in progress):
+
+| # | Sev | Where | Item |
+|---|---|---|---|
+| D-12 | Low | `mcp_tools._build_hosted_manager` | Its docstring says every optional feature is spelled out as an explicit "off" "so a new opt-in feature there cannot silently become hosted default" — but `entity_promotion` is absent from that list and so defaults **on** for hosted tenants, driven by the operator's `KUMIHO_MEMORY_ONTOLOGY` / `KUMIHO_MEMORY_ENTITY_PROMOTION`. Not a leak (it writes to the request's own tenant graph through the request's client), but it is the exact class the docstring warns about, and it makes one operator setting a policy for every tenant. Turning it off changes what hosted users' memory does, so it is a product call. |
+| D-14 | Low | `mcp_tools._identity_from_args_or_request` | An explicit JSON `null` for `context` (`{"context": null}`) now resolves to `"personal"` where it previously stayed `None`, so an id-less ingest lands in a different pointer bucket. Reachable from a stdio client, since MCP arguments are decoded JSON. |
+
+Two further kumiho-memory items are **closed, not handed on**, and are recorded
+here so the accounting is complete: D-13 (`tool_memory_ingest`'s missing-`user_id`
+error changed type and text on the stdio path) is accepted as an improvement,
+and D-15 (the recall-scope lock eviction race) is accepted as benign — the code
+comments already state it and the failure direction is one duplicate recall, not
+a wrong answer.
 ---
 
 ## 6. Release and deploy order
