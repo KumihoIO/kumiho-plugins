@@ -16,6 +16,7 @@ import sys
 import time
 from pathlib import Path
 
+import anyio
 import jwt
 import pytest
 
@@ -233,6 +234,38 @@ async def test_service_token_introspection_is_cached(auth, signer, stub):
     await auth.authenticate(headers(x_api_key=token))
     await auth.authenticate(headers(x_api_key=token))
     assert len(stub.introspect_requests) == 1
+
+
+async def test_introspection_cache_never_outlives_the_keys_own_expiry(auth, signer, stub, fixture):
+    """The AS answers {active, tenant_id, expires_at}; all three are honoured.
+
+    Caching `active: true` for the full 60 s would keep a key that expires in a
+    second reading as live long after it stopped being one.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    soon = datetime.now(timezone.utc) + timedelta(seconds=0.5)
+    stub.introspection[fixture["service_token_id"]] = {
+        "active": True,
+        "tenant_id": fixture["introspection_response"]["tenant_id"],
+        "expires_at": soon.isoformat().replace("+00:00", "Z"),
+    }
+
+    token = signer.sign(signer.service_claims())
+    await auth.authenticate(headers(x_api_key=token))
+    assert len(stub.introspect_requests) == 1
+
+    await anyio.sleep(0.6)
+    stub.introspection[fixture["service_token_id"]] = {
+        "active": False,
+        "tenant_id": None,
+        "expires_at": None,
+    }
+
+    # The cached answer must have lapsed, so the now-inactive key is refused.
+    with pytest.raises(AuthError):
+        await auth.authenticate(headers(x_api_key=token))
+    assert len(stub.introspect_requests) == 2
 
 
 async def test_a_revoked_api_key_is_refused(auth, signer, stub, fixture):

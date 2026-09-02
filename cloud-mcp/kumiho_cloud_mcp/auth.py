@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import anyio
@@ -249,15 +250,27 @@ class ServiceTokenIntrospector:
         if not isinstance(payload, dict):
             raise AuthError("invalid_token", "malformed introspection response", token_present=True)
 
-        async with self._lock:
-            self._cache[token_id] = (
-                time.monotonic() + self.settings.introspection_cache_seconds,
-                payload,
-            )
-            if len(self._cache) > 4096:
-                cutoff = time.monotonic()
-                self._cache = {k: v for k, v in self._cache.items() if v[0] > cutoff}
+        ttl = self._cache_ttl_for(payload)
+        if ttl > 0:
+            async with self._lock:
+                self._cache[token_id] = (time.monotonic() + ttl, payload)
+                if len(self._cache) > 4096:
+                    cutoff = time.monotonic()
+                    self._cache = {k: v for k, v in self._cache.items() if v[0] > cutoff}
         return payload
+
+    def _cache_ttl_for(self, payload: Dict[str, Any]) -> float:
+        """Cache for 60 s, but never past the key's own ``expires_at``.
+
+        The control plane answers ``{active, tenant_id, expires_at}``. Honouring
+        the third field is what stops a key that expires in five seconds from
+        reading as live for another minute.
+        """
+        ttl = float(self.settings.introspection_cache_seconds)
+        remaining = _seconds_until(payload.get("expires_at"))
+        if remaining is None:
+            return ttl
+        return max(0.0, min(ttl, remaining))
 
 
 class Authenticator:
@@ -410,6 +423,24 @@ class Authenticator:
             "token is neither an MCP access token nor a service token",
             token_present=True,
         )
+
+
+def _seconds_until(value: Any) -> Optional[float]:
+    """Seconds from now until an ISO-8601 instant, or None if it is not one.
+
+    The control plane emits JavaScript ``Date.toISOString()``, i.e. a trailing
+    ``Z``; Python 3.11's ``fromisoformat`` accepts that. A null (a key with no
+    expiry) and anything unparseable both mean "no bound".
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        moment = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return (moment - datetime.now(timezone.utc)).total_seconds()
 
 
 def _require(claims: Dict[str, Any], name: str) -> str:
