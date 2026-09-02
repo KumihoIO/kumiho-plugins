@@ -119,7 +119,11 @@ kumiho_memory_decompose(
   kref: "<the stored memory revision — from the reflect/consolidate you just did>",
   entities:  [{ name: "config_from_env", type: "convention" }],     // reusable named hubs
   facts:     [{ statement: "...", about: ["config_from_env"] }],     // claims, each ABOUT its entities
-  relations: [{ subject: "...", predicate: "uses", object: "..." }]  // entity -> entity
+  relations: [{ subject: "...", predicate: "uses", object: "..." }], // entity -> entity
+  supersedes: [{ statement: "<new fact from THIS call>", replaces: "<prior statement or kref>",
+                 reason: "..." }],                                    // belief revision
+  contradicts:[{ statement: "<fact from THIS call>", conflicts_with: "<other statement or kref>",
+                 reason: "..." }]                                     // conflict, no winner yet
 )
 ```
 
@@ -196,7 +200,7 @@ DreamState will review and refine it.
 - **Auto-capture**: user decisions, preferences, facts, corrections, tool patterns. Your own: architecture decisions, bug resolutions, complex explanations, config outcomes, long-form drafts (posts, emails, documents), creative outputs, and any substantive content the user would want to recall later.
 - **Don't store**: trivial one-liners, uncommitted brainstorming, credentials/secrets.
 - **Absolute dates always** — titles and content must use absolute dates ("on Feb 24", "2026-02-24"), never relative ("today", "yesterday"). The `created_at` timestamp handles recency at recall time.
-- **Contradictions**: acknowledge evolution, capture the new fact. SUPERSEDES edges are automatic.
+- **Contradictions**: acknowledge evolution, capture the new fact. Do NOT reach for a SUPERSEDES edge — `kumiho_create_edge` does not advertise it and the dispatcher validates against that schema, so the call is rejected. Belief revision is a protocol whose halves live in the memory layer, and which half runs depends on the path: the code-decision and dedup passes demote the superseded revision to `status: superseded`, while ontology decomposition ripples grounding staleness to what depended on it. A bare edge write does neither, which is how recall ends up serving dependent decisions as if their grounding were intact. Your route is `kumiho_memory_decompose(supersedes=[…])` — see Build the typed graph.
 
 ---
 
@@ -234,6 +238,8 @@ Then `<drain_cmd>` lists pending entries as a JSON array of `{repo, commit, subj
 
 **Creative output tracking**: See creative-memory skill (Skill Discovery) — composes `kumiho_search_items`, `kumiho_create_item`, `kumiho_create_revision`, `kumiho_create_artifact`, `kumiho_create_edge`, `kumiho_memory_reflect`
 
-**Edge types**: DERIVED_FROM (default, auto from reflect), DEPENDS_ON (assumptions), REFERENCED (auto from discover_edges), CREATED_FROM (artifacts), SUPERSEDES (belief revision), CONTAINS (bundles)
+**Edge types you can write** with `kumiho_create_edge`: DERIVED_FROM (default, and what reflect's `source_krefs` creates for you), DEPENDS_ON (assumptions), REFERENCED (auto from discover_edges), CREATED_FROM (artifacts), PRODUCED_BY (a result from a flow run), MIGRATED_FROM (a revision moved from another), CONTAINS and BELONGS_TO (grouping, bundles), SUPPORTS (evidence corroborating the claim it points to). That is the whole advertised set — nine types. SUPPORTS needs kumiho >= 0.12.1 and is create-only: `kumiho_delete_edge` offers eight and cannot remove it.
+
+**Written by the memory layer, not by you**: SUPERSEDES (belief revision). Declare it through `kumiho_memory_decompose(supersedes=[…])`; see Contradictions above for why a direct edge write is the wrong move.
 
 Note: Tool names are agent-specific. Claude uses the tool's advertised name directly (`kumiho_memory_engage`), OpenClaw uses wrapped names like `memory_search`.

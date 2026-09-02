@@ -6,3 +6,7 @@ __pycache__/
 .tmpcodexhome/
 pip/
 .env.local
+
+# Agent worktrees. A stale one duplicates the whole tree, so every grep and
+# every skill-file search returns each hit twice.
+.claude/worktrees/
