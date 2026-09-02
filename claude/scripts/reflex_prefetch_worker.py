@@ -523,7 +523,16 @@ def _prefetch(session_id: str, cwd_arg: str) -> int:
 
     python_path = _venv_ready(launcher)
     if python_path is None:
-        rs.log("skip: venv not provisioned")
+        # Name the two states apart. "No venv yet" is normal before onboarding;
+        # "venv but no marker" is a BROKEN install -- and it is the one that
+        # cost a full working session (kumiho-plugins#65), because the server
+        # kept starting while every turn's recall silently did not. The extra
+        # stat is off the happy path: this arm runs only when already skipping.
+        if launcher._venv_python(launcher._venv_dir()).exists():
+            rs.log("skip: venv present but %s missing -- install incomplete; "
+                   "re-run /kumiho-onboard" % MARKER_FILE)
+        else:
+            rs.log("skip: venv not provisioned")
         return 0
 
     try:

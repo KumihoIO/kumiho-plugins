@@ -20,9 +20,11 @@ from __future__ import annotations
 import argparse
 import base64
 import getpass
+import importlib.util
 import json
 import os
 import platform
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -130,6 +132,52 @@ INGEST_SCRIPT = SCRIPT_DIR / "ingest-skills.py"
 # Self-hosted Community Edition (CE) defaults — mirror run_kumiho_mcp.py.
 DEFAULT_CE_ENDPOINT = "127.0.0.1:9190"
 DEFAULT_CE_REDIS_URL = "redis://127.0.0.1:6379"
+
+
+# ---------------------------------------------------------------------------
+# The launcher, for the parts of provisioning it OWNS
+# ---------------------------------------------------------------------------
+
+def _load_launcher():
+    """Import ``run_kumiho_mcp`` for the provisioning facts it is the source of.
+
+    Safe pre-install: the launcher is stdlib-only and its ``main()`` is
+    ``__main__``-guarded -- the same idiom ``reflex_prefetch_worker`` uses to
+    ask it where the venv lives.
+
+    The path helpers above are still mirrored (they are module-level constants
+    here, and this file must keep working if it is ever run alone), but the
+    marker is deliberately NOT mirrored: its name, location and contents are a
+    contract between the launcher and ``reflex_prefetch_worker``, and a wizard
+    writing a *slightly* different one is worse than writing none at all.
+    """
+    path = SCRIPT_DIR / "run_kumiho_mcp.py"
+    spec = importlib.util.spec_from_file_location("kumiho_claude_launcher", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+LAUNCHER = _load_launcher()
+
+
+def package_spec() -> str:
+    """What to install, resolved exactly the way the launcher resolves it.
+
+    Not a second hardcoded package list: the wizard and the launcher share ONE
+    venv and ONE marker, so a spec differing by a single token means the
+    launcher tears down and reinstalls what onboarding just built.
+    """
+    raw = (os.getenv("KUMIHO_CLAUDE_PACKAGE_SPEC", "") or "").strip()
+    if raw and not LAUNCHER._looks_like_placeholder(raw):
+        return raw
+    return LAUNCHER.DEFAULT_PACKAGE_SPEC
+
+
+def marker_path() -> Path:
+    """The provisioning marker, named and located by the launcher."""
+    return LAUNCHER._state_dir() / LAUNCHER.MARKER_FILE
+
 
 # ---------------------------------------------------------------------------
 # Console helpers
@@ -449,10 +497,11 @@ def _setup_venv_locked(base_python: str) -> Path:
     # unannounced silence is indistinguishable from a hang.
     log("Installing kumiho packages (first run downloads ~150 MB; "
         "several minutes is normal)...")
+    spec = package_spec()
     try:
         r = bounded_proc.run(
             [str(VENV_PYTHON), "-m", "pip", "install", "--upgrade", "--quiet",
-             "kumiho[mcp]>=0.12.1", "kumiho-memory[all]>=1.3.0"],
+             *shlex.split(spec)],
             timeout=PIP_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired:
@@ -475,6 +524,28 @@ def _setup_venv_locked(base_python: str) -> Path:
         fail("kumiho.mcp_server not importable — check installation")
         sys.exit(1)
     ok("kumiho.mcp_server verified")
+
+    # The provisioning marker, written only now that the install is VERIFIED --
+    # never on a pip or import failure, both of which exit above.
+    #
+    # ``reflex_prefetch_worker._venv_ready`` requires the interpreter AND this
+    # file. Without it auto-recall and the reflect/consolidate nudges are dead
+    # every single turn, and the only evidence is "skip: venv not provisioned"
+    # in reflex.log -- the MCP server keeps starting fine, because it decides by
+    # comparing installed versions and consults the marker only for extras
+    # identity. That asymmetry is why a wizard that built the venv and never
+    # wrote the marker went unnoticed for a full working session
+    # (kumiho-plugins#65).
+    marker = marker_path()
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(spec, encoding="utf-8")
+        ok(f"Provisioning marker written: {marker}")
+    except OSError as exc:
+        # Not fatal -- the packages ARE installed and the server will run. Say
+        # what is lost, because the symptom otherwise appears nowhere.
+        warn(f"Could not write the provisioning marker {marker}: {exc}\n"
+             f"      Auto-recall stays off until the MCP server rewrites it.")
 
     return VENV_PYTHON
 
