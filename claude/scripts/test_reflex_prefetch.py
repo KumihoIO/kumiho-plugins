@@ -74,6 +74,9 @@ def _prepare(tmp_path, monkeypatch, *, sid="s1", prompt="why did we pick postgre
     monkeypatch.delenv("KUMIHO_REFLEX_PREFETCH", raising=False)
     monkeypatch.delenv("KUMIHO_CLAUDE_MODE", raising=False)
     monkeypatch.delenv("KUMIHO_CLAUDE_SERVER_ENDPOINT", raising=False)
+    # Cleared unconditionally: a leaked host value points at a REAL venv, so
+    # "no venv" would not be no venv at all.
+    monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
 
     reflex = tmp_path / "reflex"
     reflex.mkdir(parents=True, exist_ok=True)
@@ -251,6 +254,21 @@ def test_missing_venv_skips_before_any_subprocess(tmp_path, monkeypatch):
     mod = _prepare(tmp_path, monkeypatch, spy=spy, venv=False)
     assert mod.main() == 0
     assert "skip: venv not provisioned" in _log(tmp_path)
+    assert spy.calls == []
+    assert _recall(tmp_path) is None
+
+
+def test_a_venv_without_its_marker_is_logged_as_a_broken_install(tmp_path, monkeypatch):
+    """A venv with no marker is not "onboarding has not run yet", it is a
+    half-finished install -- and it is invisible everywhere else, because the
+    MCP server decides by installed versions and starts fine (#65). This log
+    line is the only evidence there is, so it has to say which of the two
+    states it found."""
+    spy = _Spy(_payload())
+    mod = _prepare(tmp_path, monkeypatch, spy=spy)
+    (tmp_path / ".installed-packages.txt").unlink()
+    assert mod.main() == 0
+    assert "install incomplete" in _log(tmp_path)
     assert spy.calls == []
     assert _recall(tmp_path) is None
 
