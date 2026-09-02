@@ -27,7 +27,14 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:$PATH" \
     KUMIHO_MCP_HOSTED=1 \
+    KUMIHO_STACK_MIDDLE_BAND=0 \
     PORT=8080
+
+# KUMIHO_STACK_MIDDLE_BAND=0: revision stacking runs strong-only on a shared
+# server (score >= 0.75 plus the lexical floor; the 0.55 type-match band is
+# withheld). The app sets the same default at startup, so this is belt and
+# braces for anything that bypasses create_app -- but the image is also what
+# a `docker run ... python -c` debugging session inherits.
 
 # Non-root, and a writable HOME that deliberately contains no ~/.kumiho:
 # hosted mode must never pick up ambient credentials.

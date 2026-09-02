@@ -41,6 +41,42 @@ DEV_TENANT_HEADER = "x-kumiho-dev-tenant"
 SCOPES_SUPPORTED: Tuple[str, ...] = ("memory", "offline_access")
 REQUIRED_SCOPE = "memory"
 
+#: The SDK's revision-stacking gate switch (kumiho-SDKs #168), read by
+#: ``kumiho.mcp_server._middle_band_enabled`` out of ``os.environ`` on every
+#: store — not by this package.
+STACK_MIDDLE_BAND_ENV = "KUMIHO_STACK_MIDDLE_BAND"
+
+#: Hosted deployments run **strong-only**: a capture stacks onto an existing
+#: item only at score >= 0.75 *and* above the lexical-overlap floor; the 0.55
+#: type-match band is withheld.
+#:
+#: The SDK's own default is the two-band gate, which is right for a single
+#: operator who can watch their own corpus. It is not right here. The bands
+#: were calibrated on one corpus, and the contested 0.55-0.75 middle is where
+#: an unrelated same-type neighbour in a topically homogeneous space scores —
+#: a false stack there moves the ``published`` tag onto somebody else's
+#: memory, i.e. it *hides* a memory rather than merely duplicating one. A
+#: shared server has no way to watch per-tenant score distributions yet, so it
+#: takes the conservative half until the ``stack_*`` telemetry on every store
+#: result says otherwise. ``stack_mode`` on that result names which gate fired.
+HOSTED_STACK_MIDDLE_BAND_DEFAULT = False
+
+
+def middle_band_enabled(default: bool = HOSTED_STACK_MIDDLE_BAND_DEFAULT) -> bool:
+    """Whether the SDK's middle stacking band is on, per the live environment.
+
+    Deliberately the SDK's own predicate ("anything but ``0`` is on"), not
+    :func:`_env_bool`: an operator who wrote ``KUMIHO_STACK_MIDDLE_BAND=true``
+    must get the same answer here as the SDK gives itself, or ``/healthz``
+    would report a mode the store path is not in. Only the *unset* case
+    differs, and that difference is the whole point — unset means strong-only
+    for a hosted process, two-band for a laptop.
+    """
+    raw = os.environ.get(STACK_MIDDLE_BAND_ENV)
+    if raw is None:
+        return default
+    return raw.strip() != "0"
+
 
 def dev_identity(label: Optional[str]) -> Tuple[str, str, str, str]:
     """``(tenant_id, tenant_slug, user_id, token_id)`` for a dev-mode label.
@@ -122,6 +158,7 @@ class Settings:
     enable_sse: bool
     json_response: bool
     allow_shim: bool
+    stack_middle_band: bool
     scopes_supported: Tuple[str, ...] = field(default=SCOPES_SUPPORTED)
 
     # ---- derived -------------------------------------------------------
@@ -240,4 +277,8 @@ def load_settings(environ: Optional[dict] = None) -> Settings:
         # filtering. Never set in a deployment: the shim path cannot enforce
         # the profile the directory listing was reviewed against.
         allow_shim=_env_bool("KUMIHO_MCP_ALLOW_SHIM", default=False),
+        # Strong-only unless the operator says otherwise. Read here so the
+        # decision is part of the settings snapshot, and published back into
+        # os.environ by ``create_app`` — the SDK reads the variable, not us.
+        stack_middle_band=middle_band_enabled(),
     )

@@ -54,7 +54,14 @@ from .clients import (
 from .connector_profile import CONNECTOR_TOOL_COUNT, CONNECTOR_TOOLS
 from .logging_setup import configure_logging
 from .middleware import BodyLimitMiddleware, SecurityHeadersMiddleware, TimeoutMiddleware
-from .settings import DEV_TENANT_HEADER, Settings, dev_identity, load_settings
+from .settings import (
+    DEV_TENANT_HEADER,
+    STACK_MIDDLE_BAND_ENV,
+    Settings,
+    dev_identity,
+    load_settings,
+    middle_band_enabled,
+)
 
 logger = logging.getLogger("kumiho.cloud_mcp")
 
@@ -304,6 +311,27 @@ def create_app(settings: Optional[Settings] = None, *, server_factory=None) -> S
         # connector profile — a stray value would only mislead.
         if os.environ.pop("KUMIHO_MEMORY_DECISIONS", None) is not None:
             logger.warning("ignoring KUMIHO_MEMORY_DECISIONS: not supported in hosted mode")
+
+    # Revision stacking: strong-only on a shared server (settings.py explains
+    # why). Written into os.environ because that is where the SDK reads it —
+    # `kumiho.mcp_server._middle_band_enabled()` consults the environment on
+    # every store, and nothing passes the flag down as an argument.
+    #
+    # Three properties this line has to have, in order:
+    #
+    #  * a bare `uvicorn kumiho_cloud_mcp.app:app` in production must get it.
+    #    That is why it lives here and not in a Dockerfile ENV alone: the image
+    #    and the App Runner env list both set it, but neither covers someone
+    #    running the module directly, and "the default depends on how you
+    #    started the process" is the kind of difference nobody finds twice.
+    #  * an explicit value must win. `settings.stack_middle_band` already read
+    #    the environment with the SDK's own semantics, so writing it back is
+    #    idempotent for any value an operator actually set.
+    #  * dev mode must behave identically. It is deliberately outside the
+    #    `settings.dev` branch below — a dev run that stacked on a different
+    #    gate than production would be testing the wrong thing.
+    os.environ[STACK_MIDDLE_BAND_ENV] = "1" if settings.stack_middle_band else "0"
+
     if settings.dev:
         os.environ.setdefault("KUMIHO_LOCAL_SERVER_ENDPOINT", settings.local_server_endpoint)
         # kumiho-memory >= 1.4.0 arms its direct-Redis escape hatch only when
@@ -423,6 +451,12 @@ def create_app(settings: Optional[Settings] = None, *, server_factory=None) -> S
                 # number of distinct tenants seen, never stick at 1.
                 "tenant_managers": _tenant_manager_stats(),
                 "clients": _pool_size(pool),
+                # Which revision-stacking gate the SDK will apply to the next
+                # store. Read from the live environment rather than from
+                # ``settings`` so the answer is the one the SDK will actually
+                # give itself; `stack_mode` on every store result is the
+                # matching per-write telemetry.
+                "stacking": {"middle_band": middle_band_enabled()},
                 "sdk": {
                     "kumiho": _installed_version("kumiho"),
                     "kumiho_memory": _installed_version("kumiho_memory"),

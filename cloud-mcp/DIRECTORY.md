@@ -349,6 +349,7 @@ stays that way: it can run code on your machine, and a remote MCP server cannot.
 | Recall at session start | Claude calls `engage` (guided by server instructions) | **Automatic** — SessionStart hook injects it before the first token |
 | Session rotation on `/clear` | No | **Yes** |
 | Capture | Claude calls `reflect` when something settles | Same, plus host-side transcript mining |
+| Revision stacking | **Strong-only** — a new capture merges into an existing memory only on a strong match, so a near-miss becomes its own memory rather than overwriting yours | Two-band (the SDK default), tunable against your own corpus |
 | Decision Memory over git | No — there is no repo on a hosted box | **Yes** — `kumiho_code_why`, commit + session mining |
 | History backfill from past sessions | No | **Yes** — `/kumiho-backfill` over Claude Code, Codex and ChatGPT history |
 | Local conversation artifacts | No | **Yes** — raw transcripts stay on your machine |

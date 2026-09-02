@@ -157,6 +157,7 @@ the payload it asserted on.
 | `KUMIHO_MCP_INTROSPECTION_CACHE_SECONDS` | `60` | Service-token revocation cache. |
 | `KUMIHO_MCP_DISCOVERY_CACHE_SECONDS` | `600` | Per-tenant routing cache. |
 | `KUMIHO_MCP_CLIENT_CACHE_MAX` | `1024` | gRPC clients held, keyed by `(tenant_id, token_id)`. |
+| `KUMIHO_STACK_MIDDLE_BAND` | `0` | Read by the SDK, not by this service. `0` — the hosted default, pinned into the environment at startup — is **strong-only** revision stacking; `1` restores the SDK's two-band gate. See below. |
 | `KUMIHO_MCP_ENABLE_SSE` | `0` | Serve the legacy `/sse` + `/messages` transport. Off by default — see below. |
 | `KUMIHO_MCP_JSON_RESPONSE` | `0` | Answer POSTs with JSON instead of SSE (tests use this). |
 | `KUMIHO_MCP_LOG_LEVEL` | `INFO` | Root log level. |
@@ -167,6 +168,34 @@ every tenant one ambient identity: `KUMIHO_AUTH_TOKEN`, `KUMIHO_SERVICE_TOKEN`,
 `KUMIHO_LOCAL_REDIS_URL` (dev-only direct Redis), `KUMIHO_MCP_ALLOW_SHIM`, and
 `KUMIHO_MEMORY_DECISIONS` (Decision Memory assumes a local git checkout; the
 service drops it with a warning if present).
+
+### Hosted runs strong-only revision stacking
+
+When a capture is stored, the SDK looks for an existing item in the same space
+to stack a new revision onto instead of minting a duplicate. The gate has two
+bands: a **strong** one (similarity `>= 0.75`) and a **middle** one (`>= 0.55`
+*and* the candidate's `memory_type` agrees). A lexical-overlap floor binds in
+both. `KUMIHO_STACK_MIDDLE_BAND` (kumiho-SDKs #168) selects which bands apply.
+
+**Hosted runs strong-only** (`KUMIHO_STACK_MIDDLE_BAND=0`), and this service
+writes that default into its own environment at startup — in dev mode too, so a
+dev run stacks on the same gate production does. An explicit value in the
+environment wins. The image, `deploy/bootstrap-apprunner.ps1` and
+`deploy-cloud-mcp.yml` all pin it as well, and the deploy smoke test fails if
+`/healthz` reports anything else.
+
+The reason is that the bands were calibrated on one corpus. The middle band is
+where an unrelated same-type neighbour in a topically homogeneous space scores,
+and stacking *moves the `published` tag* — so a false stack there hides a
+memory rather than merely duplicating one. On a shared server that is one
+tenant's calibration applied to everybody's corpus, in whatever language and at
+whatever capture length they write.
+
+`stack_mode` in every store result (`"strong-only"` / `"two-band"`) tells
+telemetry which gate fired, alongside `stack_score`, `stack_runner_up` and
+`stack_overlap`. `GET /healthz` reports the process-wide answer as
+`{"stacking": {"middle_band": false}}`. Turn the band back on per deployment
+once those numbers justify it — not before.
 
 ### The SSE fallback is off by default
 
@@ -193,7 +222,7 @@ SDK's tenant-keyed caches. That has to fail the deploy, not the tenants.
 | Route | Auth | Notes |
 |---|---|---|
 | `GET /` | none | Human-readable pointer to the docs. |
-| `GET /healthz` | none | `{"status":"ok", "tools": n, "expected_tools": 18, "tenant_managers": {...}, "clients": n, "sdk": {...}}`. `tenant_managers.count` is how many tenants hold a live memory manager, and `tenant_managers.process_singleton` must stay `false`. |
+| `GET /healthz` | none | `{"status":"ok", "tools": n, "expected_tools": 18, "tenant_managers": {...}, "clients": n, "stacking": {"middle_band": false}, "sdk": {...}}`. `tenant_managers.count` is how many tenants hold a live memory manager, and `tenant_managers.process_singleton` must stay `false`. `stacking.middle_band` is the revision-stacking gate the next store will use — `false` is strong-only. |
 | `GET /.well-known/oauth-protected-resource` | none | RFC 9728. `Access-Control-Allow-Origin: *`. |
 | `GET /.well-known/oauth-protected-resource/mcp` | none | Same document, path-suffixed form. |
 | `GET\|POST\|DELETE /mcp` | required | Streamable HTTP, `stateless=True`. |

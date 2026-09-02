@@ -18,7 +18,9 @@
         guards read the process flag between requests, and a missing flag would
         silently put a shared server on the single-tenant code path;
       * KUMIHO_MEMORY_DECISIONS is deliberately never set (Decision Memory
-        assumes a local git checkout, which a hosted box does not have).
+        assumes a local git checkout, which a hosted box does not have);
+      * KUMIHO_STACK_MIDDLE_BAND=0 — hosted runs strong-only revision stacking
+        until per-tenant score telemetry says the middle band is safe here.
 
     Idempotent: re-running updates the existing service in place.
 
@@ -248,6 +250,16 @@ $runtimeEnvVars = @{
     # SSE transport adds an /sse stream plus a /messages/ POST whose only
     # tenant binding is an in-process session map.
     KUMIHO_MCP_ENABLE_SSE  = "0"
+    # Revision stacking runs strong-only for hosted tenants: a capture stacks
+    # onto an existing item only at similarity >= 0.75 and above the lexical
+    # overlap floor; the 0.55 type-match band is withheld. The SDK's own
+    # default is the two-band gate, calibrated on one corpus, and its false
+    # positives move the "published" tag onto an unrelated item -- they hide a
+    # memory rather than merely duplicating one. Pinned here as well as in the
+    # image and in code, so the mode survives a base-image change and is
+    # visible in `aws apprunner describe-service`. Flip to "1" only for a
+    # deployment whose own stack_mode / stack_score telemetry justifies it.
+    KUMIHO_STACK_MIDDLE_BAND = "0"
     PORT                   = "8080"
     # Deliberately absent: KUMIHO_MCP_DEV_MODE, KUMIHO_MCP_ALLOW_SHIM,
     # KUMIHO_AUTH_TOKEN, KUMIHO_SERVICE_TOKEN, KUMIHO_MEMORY_DECISIONS,
