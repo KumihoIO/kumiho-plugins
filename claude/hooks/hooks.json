@@ -32,7 +32,7 @@
         ]
       },
       {
-        "matcher": "mcp__.*kumiho-memory.*__kumiho_memory_(engage|reflect)",
+        "matcher": "mcp__.*kumiho-memory.*__kumiho_memory_(engage|reflect|consolidate)",
         "hooks": [
           {
             "type": "command",

@@ -32,5 +32,5 @@ kumiho_memory_reflect(response=<compact summary>, captures=[{type:"summary", tit
 For sessions with 2+ meaningful exchanges, at task boundaries or session end:
 
 1. Write markdown to `{artifact_dir}/{YYYY-MM-DD}/{session_id}.md` with YAML frontmatter (session_id, user_id, agent_name, date, topics, summary) + exchanges — use the `session_id` a memory tool reported in its result, never one you invent
-2. `kumiho_memory_consolidate()`
+2. `kumiho_memory_consolidate(summary: <written by you or a subagent>)` — keyless; see the Consolidation section of SKILL.md. Never call it without `summary`.
 3. Close with continuity — reference what's open for next session

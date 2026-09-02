@@ -35,6 +35,8 @@ _DEFAULT_TTL_S = 900
 _DEFAULT_FLOOR = 3
 _DEFAULT_BUDGET_CHARS = 6000
 _FLOOR_COOLDOWN_TURNS = 5
+_DEFAULT_CONSOLIDATE_FLOOR = 20
+_CONSOLIDATE_COOLDOWN_TURNS = 5
 _QUEUE_COOLDOWN_TURNS = 20
 _QUEUE_MIN_PENDING = 10
 # The recall query is capped at 200 chars anyway, so storing more prompt than
@@ -97,6 +99,50 @@ def _turns_since_reflect(ledger_path) -> int:
         if row.get("kind") == "stop" and not row.get("tool_only"):
             n += 1
     return n
+
+
+def _turns_since_consolidate(ledger_path) -> int:
+    """Completed, non-tool-only turns since the last SUCCESSFUL consolidate.
+
+    A consolidate that came back success:false left the buffer full, so it
+    does not reset the count (the observer stamps ``ok`` on the row). No
+    consolidate in the ledger means the count runs from the first turn the
+    ledger saw: the buffer has never been drained this session."""
+    n = 0
+    for line in reversed(rs.tail_lines(ledger_path, max_lines=400)):
+        try:
+            row = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if row.get("kind") == "tool" and row.get("tool") == "consolidate" and row.get("ok", True):
+            break
+        if row.get("kind") == "stop" and not row.get("tool_only"):
+            n += 1
+    return n
+
+
+def _consolidate_line(n: int, floor: int, session_id: str) -> str:
+    """The keyless consolidation instruction.
+
+    Consolidation used to be an adjective ("after 20+ exchanges") with no
+    counter behind it, and the tool hard-failed keyless anyway. kumiho-memory
+    now takes an agent-written ``summary`` and skips its summarizer, so the
+    floor is a counted fact and the line carries the one thing the model must
+    not get wrong: the summary is ITS job (or a subagent's), never an external
+    LLM's."""
+    return (
+        "Completed turns since this session was last consolidated: %d (floor %d). "
+        "Consolidate now, keyless: write the session summary yourself from the "
+        "conversation, or delegate it to a subagent (Agent tool, e.g. model "
+        "sonnet) fed the transcript from kumiho_chat_get(session_id=%s). Then "
+        "call kumiho_memory_consolidate(session_id=%s, summary={title, summary, "
+        "events, knowledge: {facts, decisions, actions, open_questions}, "
+        "classification: {topics, entities}}, implications=[...]) -- only "
+        "summary is required. Never call it without summary: that path needs an "
+        "external LLM and fails keyless. The working memory expires after an "
+        "hour idle, so do not defer this past a long pause."
+        % (n, floor, session_id, session_id)
+    )
 
 
 def _pending_count() -> int:
@@ -187,6 +233,15 @@ def main(argv: list) -> int:
                 "values above as source_krefs. Otherwise ignore this line."
                 % (n_since, session_id))
             turn["last_floor_turn"] = n_turn
+
+        # --- consolidation floor: keyless, counted from the same ledger -------
+        floor_c = _int_env("KUMIHO_REFLEX_CONSOLIDATE_FLOOR", _DEFAULT_CONSOLIDATE_FLOOR)
+        last_c = int(turn.get("last_consolidate_turn") or -99)
+        if floor_c > 0 and (n_turn - last_c) >= _CONSOLIDATE_COOLDOWN_TURNS:
+            n_c = _turns_since_consolidate(d / ("%s.turns.jsonl" % session_id))
+            if n_c >= floor_c:
+                parts.append(_consolidate_line(n_c, floor_c, session_id))
+                turn["last_consolidate_turn"] = n_turn
 
         # --- pending keyless capture queue ------------------------------------
         last_q = int(turn.get("last_queue_turn") or -99)

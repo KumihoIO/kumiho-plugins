@@ -3,7 +3,7 @@
 Persistent graph-native memory plugin for Claude. Runs a local Kumiho MCP
 server with `kumiho-memory` so Claude **remembers you across sessions**.
 
-Version: **0.19.2** | Requires: `kumiho>=0.11.0`, `kumiho-memory>=1.2.1`
+Version: **0.20.0** | Requires: `kumiho>=0.11.0`, `kumiho-memory>=1.3.0`
 (installed automatically into an isolated venv — nothing to `pip install`)
 
 Also consumable by **OpenAI Codex** — Codex reads this repo's marketplace
@@ -72,7 +72,7 @@ The Kumiho plugins share the same Neo4j + Redis backend, `CognitiveMemory` graph
 | Session bootstrap | SessionStart hook + SKILL bootstrap         | TypeScript identity bootstrap in `before_prompt_build` |
 | Recall behavior   | Agent-triggered recall guided by SKILL      | Automatic `before_prompt_build` hook           |
 | Capture behavior  | Agent-triggered `store` / `add_response`    | Automatic `agent_end` buffering + capture      |
-| Consolidation     | Agent-triggered                             | Threshold + idle timer + manual tool           |
+| Consolidation     | Keyless: agent- or subagent-written summary via `kumiho_memory_consolidate(summary=…)`; host-counted 20-turn floor + manual tool | Threshold + idle timer + manual tool           |
 | Dream State       | `/dream-state` command                      | Config schedule + manual tool                  |
 | Setup wizard      | `python scripts/setup.py`                   | `npx kumiho-setup`                             |
 | Skill ingestion   | Local SKILL + bundled references            | Claude canonical SKILL + bundled references |
@@ -148,7 +148,7 @@ python ./claude/scripts/setup.py --ce --yes \
 |---|---|---|
 | `--ce-endpoint` | the CE server's gRPC endpoint (fronts Neo4j) | `127.0.0.1:9190` |
 | `--ce-redis-url` | working-memory Redis | `redis://127.0.0.1:6379` |
-| `--ce-llm-base-url` | OpenAI-compatible LLM for summarization/embedding (Ollama, llama.cpp, vLLM, …) | fail-fast (set one for consolidation) |
+| `--ce-llm-base-url` | OpenAI-compatible LLM for summarizer-written consolidation (Ollama, llama.cpp, vLLM, …) | fail-fast (only calls to `kumiho_memory_consolidate` without `summary` need one) |
 
 No API token is involved in CE mode. Full CE environment details are in
 [Self-hosted (Community Edition)](#self-hosted-community-edition) below.
@@ -159,12 +159,16 @@ you left off automatically.
 
 ## Hooks
 
-The plugin registers three hooks that run automatically:
+The plugin registers these hooks; all run automatically:
 
 | Hook | Script | Purpose |
 |------|--------|---------|
-| `SessionStart` | `session-bootstrap.py` | Loads auth token, runs control-plane discovery, hints the agent to load user identity |
-| `SessionEnd` | `save-session-artifact.py` | Saves conversation as a local Markdown artifact |
+| `SessionStart` | `session-bootstrap.py` | Injects the session card (identity lookup with the CE fallback, mandatory onboarding when identity is missing, the two reflexes, the live `session_id`), persists the session facts for the reflex, repairs a stale Desktop server entry |
+| `UserPromptSubmit` | `memory-reflex.py` | Injects prefetched recall from the local cache, the reflect floor, and the keyless consolidation floor (`KUMIHO_REFLEX_CONSOLIDATE_FLOOR`) |
+| `SubagentStart` | `memory-reflex.py --subagent` | Hands subagents the memory rules and the live `session_id` |
+| `Stop` | `reflex-observe.py` | Ledgers the completed turn and spawns the detached recall prefetch |
+| `PostToolUse` | `reflex-observe.py`, `code-capture-hook.py` | Ledgers engage / reflect / consolidate calls (consolidate with an `ok` flag); queues commits for Decision Memory after `git commit` |
+| `SessionEnd` | `save-session-artifact.py`, `code-capture-hook.py` | Saves the conversation as a local Markdown artifact; drains queued commit captures |
 | `PermissionRequest` | `auto-approve-memory.py` | Auto-approves Kumiho memory MCP tool calls (`kumiho_*`) |
 
 ## Slash commands
@@ -218,7 +222,7 @@ gRPC endpoint via control-plane discovery, and launches the MCP server.
 Default package spec:
 
 ```text
-kumiho[mcp]>=0.11.0 kumiho-memory[all]>=1.2.1
+kumiho[mcp]>=0.11.0 kumiho-memory[all]>=1.3.0
 ```
 
 ## Self-hosted (Community Edition)
@@ -264,8 +268,10 @@ In CE mode the launcher:
 - Logs the selected mode and resolved endpoint on startup so
   "why is my memory empty / not connecting" is answerable at a glance.
 
-For consolidation/reflect summarization in CE mode, point at a local or
-self-provided LLM instead of the fail-fast dead-port fallback:
+Reflect and keyless consolidation (the agent passes `summary`) need no LLM.
+For summarizer-written consolidation in CE mode (calls without `summary`),
+point at a local or self-provided LLM instead of the fail-fast dead-port
+fallback:
 
 ```dotenv
 # OpenAI-compatible local server (Ollama, llama.cpp, vLLM, …)
@@ -348,7 +354,8 @@ memory/graph operations require a valid token.
 
 ### LLM provider for summarization
 
-For higher-quality summarization during memory consolidation, set either:
+Consolidation is keyless when the agent passes `summary`. For summarizer-written
+summaries (calls without `summary`), set either:
 
 - `OPENAI_API_KEY` (default provider path), or
 - `ANTHROPIC_API_KEY` with `KUMIHO_LLM_PROVIDER=anthropic`.
@@ -392,6 +399,7 @@ YAML frontmatter (session_id, date, topics, summary) and structured
 | `KUMIHO_MCP_LOG_LEVEL` | `INFO` | MCP server log level |
 | `KUMIHO_CLAUDE_HOME` | *(platform default)* | Override the runtime state directory (logs, markers, reflex state). Since 0.18.2 the **venv** lives under the plugin data directory instead, so hooks can name its interpreter — this variable no longer moves it. |
 | `KUMIHO_CLAUDE_PACKAGE_SPEC` | *(see above)* | Override pip install spec |
+| `KUMIHO_REFLEX_CONSOLIDATE_FLOOR` | `20` | Completed turns after which the UserPromptSubmit hook asks the agent to consolidate the session (keyless: the agent or a subagent writes the summary). `0` disables the nudge. |
 | `KUMIHO_CLAUDE_DISABLE_LLM_FALLBACK` | *(unset)* | Set to `1` to disable local no-key LLM fallback |
 | `KUMIHO_CLAUDE_DISCOVERY_USER_AGENT` | `kumiho-claude/0.16.0` | Override discovery HTTP User-Agent |
 | `KUMIHO_ARTIFACT_DIR` | `~/.kumiho/artifacts/` | Override conversation artifact directory |
@@ -403,7 +411,7 @@ YAML frontmatter (session_id, date, topics, summary) and structured
 | `KUMIHO_CLAUDE_MODE` | *(unset)* | Set to `ce` (or `community` / `self-hosted` / `local`) to target a self-hosted CE server instead of cloud discovery |
 | `KUMIHO_CLAUDE_SERVER_ENDPOINT` | `127.0.0.1:9190` | CE gRPC endpoint; setting it also enables CE mode |
 | `UPSTASH_REDIS_URL` | `redis://127.0.0.1:6379` | CE working-memory Redis URL (CE only) |
-| `KUMIHO_LLM_BASE_URL` | *(unset)* | OpenAI-compatible LLM endpoint for summarization; when set, replaces the fail-fast dead-port fallback |
+| `KUMIHO_LLM_BASE_URL` | *(unset)* | OpenAI-compatible LLM endpoint for summarizer-written consolidation summaries (only used when the agent calls `kumiho_memory_consolidate` without `summary`); when set, replaces the fail-fast dead-port fallback |
 
 `KUMIHO_SERVER_ENDPOINT` and `KUMIHO_SERVER_ADDRESS` are intentionally
 ignored by the launcher to enforce control-plane discovery routing in cloud
@@ -500,7 +508,7 @@ python ./claude/scripts/test_ce_mode.py
 │   ├── memory-capture.md      # /memory-capture slash command
 │   └── dream-state.md         # /dream-state slash command
 ├── hooks/
-│   └── hooks.json             # SessionStart, SessionEnd, PermissionRequest hooks
+│   └── hooks.json             # SessionStart, UserPromptSubmit, SubagentStart, Stop, PostToolUse, SessionEnd, PermissionRequest hooks
 ├── skills/
 │   └── kumiho-memory/
 │       ├── SKILL.md           # Core behavioral instructions

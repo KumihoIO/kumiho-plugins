@@ -2,6 +2,19 @@
 
 When no `agent.instruction` exists — first meeting with the user.
 
+## When and how
+
+- Runs on the **first message**, after both identity lookups in
+  [bootstrap](bootstrap.md) returned not-found, and **before you answer that
+  message** — the answers (name, language, tone) shape the answer.
+- Ask with `AskUserQuestion` when the host offers it; otherwise ask in plain
+  chat. Ask in the language the user wrote in.
+- Ask, then **stop and wait**. Never fill in an answer yourself, never persist
+  defaults the user did not choose, never proceed with a partial identity.
+- An auth or connection error is not a first meeting — do not onboard onto a
+  backend you cannot reach.
+- After step D below, answer the user's original message.
+
 ## Introduction
 
 Introduce yourself, explain persistent memory, proactively address privacy:

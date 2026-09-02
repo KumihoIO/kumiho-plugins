@@ -14,7 +14,7 @@ recording what was said.
 
 Wired to two events, both ``async: true`` so neither blocks the turn:
   Stop          -> one {"kind":"stop"} line per completed turn
-  PostToolUse   -> one {"kind":"tool"} line per engage/reflect call
+  PostToolUse   -> one {"kind":"tool"} line per engage/reflect/consolidate call
                    (matcher-scoped to the kumiho memory tools)
 
 Exits 0 on every path, including BaseException: an observer that can fail a
@@ -121,18 +121,50 @@ def _spawn_prefetch(payload: dict, session_id: str) -> None:
         rs.log("prefetch spawn failed: %s" % exc)
 
 
+def _tool_ok(payload: dict) -> bool:
+    """Best-effort success flag from the tool response; unknown counts as ok.
+
+    Only the consolidate floor reads it: a consolidate that answered
+    success:false left the buffer full, and resetting the count on it would
+    silence the nudge for another full floor -- the silent failure the ledger
+    exists to surface. No response text is stored, only the flag."""
+    resp = payload.get("tool_response")
+    if resp is None:
+        return True  # nothing reached the hook: unknown, not a failure
+    try:
+        text = resp if isinstance(resp, str) else json.dumps(resp, ensure_ascii=True)
+    except (TypeError, ValueError):
+        return True
+    low = text.lower()
+    # POSITIVE detection: a consolidate that stored something always answers
+    # success:true. success:false, a bare {"error": ...} from an exception,
+    # or an MCP error envelope all lack it, and none of those drained the
+    # buffer -- so none of them may reset the floor.
+    return any(m in low for m in (
+        '"success": true', '"success":true',
+        '\\"success\\": true', '\\"success\\":true',
+    ))
+
+
 def _on_tool(payload: dict, session_id: str) -> None:
     tool = str(payload.get("tool_name") or "")
     if not tool:
         return
-    short = "engage" if tool.endswith("engage") else ("reflect" if tool.endswith("reflect") else tool[-40:])
-    rs.append_jsonl(_ledger_path(session_id), {
+    short = tool[-40:]
+    for name in ("engage", "reflect", "consolidate"):
+        if tool.endswith(name):
+            short = name
+            break
+    entry = {
         "kind": "tool",
         "session_id": session_id,
         "tool": short,
         "prompt_id": str(payload.get("prompt_id") or ""),
         "ts": int(time.time()),
-    })
+    }
+    if short == "consolidate":
+        entry["ok"] = _tool_ok(payload)
+    rs.append_jsonl(_ledger_path(session_id), entry)
 
 
 def main() -> int:

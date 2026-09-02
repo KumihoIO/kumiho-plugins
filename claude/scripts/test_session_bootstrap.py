@@ -321,5 +321,51 @@ def test_importable_without_side_effects():
     assert isinstance(mod.CONTEXT, str)
 
 
+def _card(tmp_path) -> str:
+    r = _run_hook("session-bootstrap.py", {"session_id": "s1", "source": "startup"},
+                  {"KUMIHO_CLAUDE_HOME": str(tmp_path)})
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_card_mandates_the_identity_lookup_with_the_ce_fallback(tmp_path):
+    """The card is the only text guaranteed in the model's context on turn 1;
+    bootstrap.md is a reference it may never open. On 2026-09-02 a session
+    against a self-hosted CE tenant looked up the space-less kref, got
+    not_found, and had no instruction in front of it to try the
+    space-qualified one -- the only form CE resolves (kumiho-plugins#31/#32)."""
+    ctx = _card(tmp_path)
+    first = ctx.index("kref://CognitiveMemory/agent.instruction")
+    fallback = ctx.index("kref://CognitiveMemory/personal/agent.instruction")
+    assert first < fallback, "cloud shorthand first, CE space-qualified second"
+    assert "kumiho_get_revision_by_tag" in ctx
+
+
+def test_card_mandates_onboarding_when_identity_is_missing_on_both_krefs(tmp_path):
+    """A missing identity must produce questions to the user, not a session
+    that quietly runs without one -- and an auth error must NOT read as a
+    first meeting, or a returning user gets onboarded onto a dead backend."""
+    ctx = _card(tmp_path)
+    block = ctx[ctx.index("=== FIRST MESSAGE ONLY ==="):ctx.index("=== ALWAYS ===")]
+    assert "NOT FOUND ON BOTH = FIRST MEETING" in block
+    assert "AskUserQuestion" in block
+    assert "STOP and wait" in block
+    assert "CognitiveMemory/personal" in block
+    assert "connection error is NOT a first meeting" in block
+    # Identity is adopted BEFORE the broad engage, so the first recall and the
+    # first answer already carry the user's name, language and tone.
+    assert block.index("LOAD IDENTITY") < block.index("kumiho_memory_engage")
+
+
+def test_later_turns_may_finish_a_pending_onboarding(tmp_path):
+    """The old every-turn rule ("Do NOT call kumiho_get_revision_by_tag.
+    Identity is already loaded.") asserted a fact that is false on a first
+    meeting, and read as a ban on finishing onboarding once the user had
+    answered the questions on turn 2."""
+    ctx = _card(tmp_path)
+    assert "Identity is already loaded" not in ctx
+    assert "finish it before anything else" in ctx
+
+
 if __name__ == "__main__":
     sys.exit(subprocess.call([sys.executable, "-m", "pytest", __file__, "-q"]))

@@ -22,7 +22,7 @@ from pathlib import Path
 import bounded_proc
 
 
-DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.11.0 kumiho-memory[all]>=1.2.1"
+DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.11.0 kumiho-memory[all]>=1.3.0"
 MARKER_FILE = ".installed-packages.txt"
 #: Asking an existing venv what it has installed. This is on the server-start
 #: critical path, so it is short -- a venv that cannot answer in this long is
@@ -1440,6 +1440,7 @@ def _sanitize_placeholder_env_vars() -> None:
         "KUMIHO_REFLEX_MAX_CHARS",
         "KUMIHO_REFLEX_TTL_S",
         "KUMIHO_REFLEX_FLOOR",
+        "KUMIHO_REFLEX_CONSOLIDATE_FLOOR",
         "KUMIHO_REFLEX_SESSION_BUDGET_CHARS",
         "KUMIHO_REFLEX_STORE_PROMPT",
         "KUMIHO_ARTIFACT_MAX_BYTES",
@@ -1471,6 +1472,7 @@ _REFLEX_CONFIG_KEYS = (
     "KUMIHO_REFLEX_MAX_CHARS",
     "KUMIHO_REFLEX_TTL_S",
     "KUMIHO_REFLEX_FLOOR",
+    "KUMIHO_REFLEX_CONSOLIDATE_FLOOR",
     "KUMIHO_REFLEX_SESSION_BUDGET_CHARS",
     "KUMIHO_REFLEX_STORE_PROMPT",
     "KUMIHO_ARTIFACT_MAX_BYTES",
@@ -1550,7 +1552,9 @@ def _configure_llm_fallback() -> None:
     print(
         f"[kumiho-claude] Keyless operation ({mode}): core memory tools "
         "(reflect, decompose, code_capture, code_why, recall) fully work "
-        "without an LLM. Optional LLM enrichment (automatic edge discovery, "
+        "without an LLM, and so does consolidation when the agent supplies "
+        "the summary (kumiho_memory_consolidate summary=...). Optional LLM "
+        "enrichment (automatic edge discovery, summarizer-written "
         "consolidation summaries) is off — a fail-fast placeholder LLM config "
         "is pinned (dummy OPENAI_API_KEY, dead-port KUMIHO_LLM_BASE_URL). To "
         "opt in, set KUMIHO_LLM_BASE_URL to an OpenAI-compatible endpoint AND "

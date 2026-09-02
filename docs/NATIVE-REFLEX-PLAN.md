@@ -743,3 +743,29 @@ Iterate without republishing by pointing `~/.claude/settings.json` hooks at abso
 - Keyless with no auth token: `_bootstrap_server_endpoint()` sets `KUMIHO_SERVER_ENDPOINT='needs-auth.kumiho.invalid:443'` and returns 0 without raising. Always check the sentinel before any gRPC call.
 - `tool_memory_engage` reads `limit` / `space_paths` / `memory_types`; `top_k` is ignored and `session_id` is unused. `recall_mode="summarized"` is title+summary only, no LLM.
 - `pytest claude/scripts/ -q` → 13 passed. `conftest.py collect_ignore` is an **opt-OUT** list; the house return-bool style is never actually enforced, so new tests are pytest-native and are **not** added to that list.
+
+---
+
+## Addendum — 2026-09-02: keyless consolidation
+
+Decision D4 and the "20-turn auto-`consolidate`" discard (§1) rested on one fact:
+`consolidate_session` hard-required an LLM, so keyless it was a guaranteed
+failure. kumiho-memory now takes an agent-written `summary` (and
+`implications`) on `kumiho_memory_consolidate` and skips its summarizer when it
+is present — the in-loop model, or a subagent it delegates to (e.g. Sonnet via
+the Agent tool), writes the summary, exactly as reflect / decompose /
+code_capture already work.
+
+What shipped in the plugin on top of that:
+
+- `reflex-observe.py` ledgers `consolidate` calls with a best-effort `ok` flag
+  read from the tool response; the PostToolUse matcher includes the tool.
+- `memory-reflex.py` counts completed turns since the last *successful*
+  consolidate and, at `KUMIHO_REFLEX_CONSOLIDATE_FLOOR` (default 20, `0`
+  disables), injects one keyless consolidation instruction carrying the
+  session id and the call shape. Five-turn cooldown, same discipline as the
+  reflect floor.
+- Still NOT host-executed: the host has no model to write the summary with,
+  so the model (or its subagent) does, on the nudge. D4's "SessionEnd + manual
+  tool only" is superseded by "counted floor + manual tool", not by an
+  automatic write.

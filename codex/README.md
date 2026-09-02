@@ -66,9 +66,10 @@ rotating credentials (delete the `[mcp_servers.kumiho-memory]` block
 first — an existing block is never overwritten).
 
 An LLM key in the environment at setup time (`OPENAI_API_KEY`,
-`ANTHROPIC_API_KEY`, or `KUMIHO_LLM_*`) is captured for consolidation and
-decision mining; without one, summarization falls back to fail-fast mode
-and decision capture skips quietly.
+`ANTHROPIC_API_KEY`, or `KUMIHO_LLM_*`) is captured for summarizer-written
+consolidation (calls without `summary`) and decision mining. Without one,
+consolidation is keyless — the agent writes the summary — the summarizer
+fallback is fail-fast, and decision capture skips quietly.
 
 ## Agent protocol
 
