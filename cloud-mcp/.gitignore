@@ -1,0 +1,13 @@
+.venv/
+# Integration runs build side-by-side venvs (.venv-e1, …) that pin the sibling
+# branches by path. Same reason as .venv/: never committed.
+.venv-*/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+node_modules/
+.wrangler/

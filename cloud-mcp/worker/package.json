@@ -1,0 +1,20 @@
+{
+  "name": "@kumiho/mcp-edge-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker edge for mcp.kumiho.cloud (CORS + rate limit, never caches)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:dev": "wrangler deploy --env dev",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "typescript": "^5.5.4",
+    "wrangler": "^4.54.0"
+  }
+}
