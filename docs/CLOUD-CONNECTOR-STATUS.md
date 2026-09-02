@@ -415,6 +415,21 @@ error changed type and text on the stdio path) is accepted as an improvement,
 and D-15 (the recall-scope lock eviction race) is accepted as benign — the code
 comments already state it and the failure direction is one duplicate recall, not
 a wrong answer.
+
+### Hand-offs closed (2026-09-02, later the same day)
+
+| # | Closed by | Commit | Resolution |
+|---|---|---|---|
+| D-8 | E2 | kumiho-plugins `223a444` | Every client is pooled (TTL floored at 30 s, key still carries the jti); entries are refcounted leases, eviction retires an entry and closes the channel only when its last lease releases; `app.py` releases in `finally` on both transports. |
+| D-9 | E2 | kumiho-plugins `223a444` | `client_construction_problems()` folds into `StartupContractError`; `_construct_client` raises instead of dropping `skip_auth_token_load`; the `kumiho.connect()` fallback (the actual fail-open path) is removed. Dev mode exempt. |
+| D-10 | E2 | kumiho-plugins `223a444` | `DiscoveryRouter._cache` is a 1024-entry LRU with expiry sweep; the read path takes the lock. |
+| D-11 | E2 | kumiho-plugins `223a444` | `scope` must contain `memory` for `token_use=mcp_access`; otherwise **403** with `error="insufficient_scope"` (RFC 6750 §3.1). Service tokens unchanged (no scope claim by design). |
+| D-12 | WP-B | kumiho-memory `c60778b` | Entity promotion off for hosted tenants unless `KUMIHO_HOSTED_LLM=1` or `KUMIHO_MEMORY_ENTITY_PROMOTION=1`. Ontology stays on (keyless; `kumiho_memory_decompose` depends on it). |
+| D-13 | WP-B | kumiho-memory `c60778b` | Reopened and fixed: the stdio path raises `KeyError("user_id")` again; the descriptive `ValueError` is hosted-only. |
+| D-14 | WP-B | kumiho-memory `c60778b` | `_MISSING` sentinel keeps absent and explicit-null `context` distinct on stdio; hosted fills both from `ctx.context`. |
+| — | E2 | kumiho-control `a3838d8` | Dead `revoked_at` check removed from `introspectServiceToken`; revocation is row deletion, pinned by a test. |
+
+After these: cloud-mcp `139 passed, 1 skipped`, kumiho-memory `1167 passed` (same five environmental failures), origin `102 passed`, worker `45 passed`. D-16 (`tests/contract/` conftest collision) remains a documented trap, not a defect.
 ---
 
 ## 6. Release and deploy order
