@@ -28,7 +28,18 @@ MARKER_FILE = ".installed-packages.txt"
 #: critical path, so it is short -- a venv that cannot answer in this long is
 #: broken, and the caller reinstalls.
 PROBE_TIMEOUT_S = 60
-DEFAULT_DISCOVERY_USER_AGENT = "kumiho-claude/0.16.0"
+#: Product token for the discovery User-Agent. The version half is read from
+#: the plugin manifest at startup (see ``_default_discovery_user_agent``)
+#: rather than pinned here -- a pinned copy sat at 0.16.0 through five minor
+#: releases and made server-side version telemetry meaningless. The token
+#: itself stays ``kumiho-claude``: it is a wire identifier the control plane
+#: and its edge rules already match on, so renaming it is a protocol change
+#: rather than housekeeping.
+DISCOVERY_USER_AGENT_PRODUCT = "kumiho-claude"
+#: Used only when the manifest is unreadable (a partial install, or a host
+#: that copies scripts/ without .claude-plugin/). Deliberately not a version
+#: number: a wrong number is worse telemetry than an honest "unknown".
+DISCOVERY_USER_AGENT_UNKNOWN_VERSION = "unknown"
 
 # Self-hosted Community Edition (CE) defaults.  Mirrors the kumiho-gpt-connect
 # CE backend: the SDK routes to a loopback CE server when no auth token is set,
@@ -1186,10 +1197,40 @@ def _load_control_plane_url() -> str:
     return raw or "https://control.kumiho.cloud"
 
 
+def _plugin_manifest_version() -> "str | None":
+    """The version declared by the plugin manifest shipped beside this file.
+
+    One stdlib ``json`` read of a file already on disk, once per process, on a
+    path that is about to do a network round trip anyway -- so deriving the
+    user-agent costs nothing measurable and adds no dependency.
+
+    Both manifest names are tried because ``codex/scripts/_vendored_launcher.py``
+    is a byte-identical copy of this file (guarded by test_launcher_parity.py)
+    that sits next to ``.codex-plugin`` instead of ``.claude-plugin``.
+    """
+    root = Path(__file__).resolve().parent.parent
+    for manifest in (
+        root / ".claude-plugin" / "plugin.json",
+        root / ".codex-plugin" / "plugin.json",
+    ):
+        try:
+            version = json.loads(manifest.read_text(encoding="utf-8")).get("version")
+        except Exception:
+            continue
+        if isinstance(version, str) and version.strip():
+            return version.strip()
+    return None
+
+
+def _default_discovery_user_agent() -> str:
+    version = _plugin_manifest_version() or DISCOVERY_USER_AGENT_UNKNOWN_VERSION
+    return f"{DISCOVERY_USER_AGENT_PRODUCT}/{version}"
+
+
 def _load_discovery_user_agent() -> str:
     raw = (os.getenv("KUMIHO_CLAUDE_DISCOVERY_USER_AGENT", "") or "").strip()
     if not raw or _looks_like_placeholder(raw):
-        return DEFAULT_DISCOVERY_USER_AGENT
+        return _default_discovery_user_agent()
     return raw
 
 
