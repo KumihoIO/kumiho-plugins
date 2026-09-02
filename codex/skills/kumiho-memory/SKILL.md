@@ -32,6 +32,36 @@ copied exactly: reflect forwards the hint as a space path verbatim, so
 Fall back to the capture type (`decisions`, `facts`, `preferences`,
 `corrections`) when none fits.
 
+## Every answer you had to ask for gets stored
+
+If you had to ask the user, the answer was not in the code, the docs or
+the git history — which makes it the most valuable thing in the session
+and the most expensive to lose. So:
+
+**Capture it, always.** Every question you put to the user — a structured
+prompt or a line of prose — gets its answer stored via
+`kumiho_memory_reflect` as `type: "decision"`, in the same turn you
+receive it. Not "if it seems substantive": you asked because you could
+not derive it, and that is the whole test.
+
+**Keep the question with the answer.** "Postgres" is not a memory; "Asked
+whether the queue should back onto Postgres or Redis for the ingest path;
+chose Postgres — one datastore to operate" is. Put the question in the
+`content` (and in the `title`, as the choice it settled), or a later
+session recalls a word with nothing to attach it to.
+
+**Route it.** Give the capture a `space_hint` naming the topic it belongs
+to — `architecture`, `deployment`, the space you saw in an engage kref —
+so it lands where the next session will look, not at the project root
+with everything else. `decisions` when nothing better fits.
+
+**Recall before you ask.** If a question could plausibly have been settled
+before, `kumiho_memory_engage` on it first and use what comes back —
+naturally, as something you know ("you had this on Postgres for the ingest
+path") — rather than asking again. Confirm a stale or uncertain answer
+instead of re-opening it from scratch; re-asking a question the graph
+already answers is a memory failure, not diligence.
+
 ## Session id — you must supply it (Codex)
 
 Codex publishes no session identity to MCP servers, so `kumiho-memory`
@@ -55,6 +85,24 @@ kref returned by reflect: pass the entities (reusable named hubs), facts
 (claims, each ABOUT its entities), and entity→entity relations you
 distilled yourself. No external LLM key; keep it lean (a handful of each)
 and reuse existing entity names so hubs merge across sessions.
+
+`decompose` takes two more lists, and they are the only route you have to
+record that a belief changed:
+
+- `supersedes: [{ statement, replaces, reason }]` — the new claim wins.
+  `statement` is a fact from THIS call, `replaces` is the prior statement
+  or its kref. Decomposition demotes what it replaces and ripples
+  grounding staleness to whatever depended on it.
+- `contradicts: [{ statement, conflicts_with, reason }]` — the two claims
+  disagree and you cannot say which is right. Records the conflict
+  without picking a winner, so recall surfaces both.
+
+Do not reach for a SUPERSEDES edge instead. `kumiho_create_edge` does not
+advertise that type and the call is rejected; even if it were accepted, a
+bare edge write does neither the demotion nor the staleness ripple, which
+is how recall ends up serving a dependent decision as though its grounding
+were still sound. When the user corrects you or a fact changes, capture
+the new fact via reflect and declare the revision here.
 
 ## Decision Memory (code work)
 
