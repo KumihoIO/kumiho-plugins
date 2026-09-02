@@ -230,7 +230,7 @@ DreamState will review and refine it.
 
 `python "<abs>/code_capture_pending.py" count` → `{pending, overflow, queue_path, drain_cmd}`, where `drain_cmd` is absolute and runnable.
 
-Then `<drain_cmd>` lists pending entries as a JSON array of `{repo, commit, subject}`. For each entry worth a "why?", `git -C <repo> show --stat <commit>` to read the change, distill the decision, call `kumiho_code_capture(commit_ref=<commit>, files=[…], title/decision/rationale/why_question/evidence)`, then the same script with `done <commit>` to dequeue. This closes the loop keyless — the hook enqueues, YOU (the model already in the loop) extract; no external key. Skip/`done` a queued commit that's just a mechanical edit.
+Then `<drain_cmd>` lists pending entries as a JSON array of `{repo, commit, subject}`. For each entry worth a "why?", `git -C <repo> show --stat <commit>` to read the change, distill the decision, call `kumiho_code_capture(commit_ref=<commit>, files=[…], title/decision/rationale/why_question/evidence)`, then the same script with `done <commit>` to dequeue — it prints `{"removed": 1}` on success and exits non-zero with `not found` when the hash matched nothing, so check the result rather than assuming the drain happened. This closes the loop keyless — the hook enqueues, YOU (the model already in the loop) extract; no external key. Skip/`done` a queued commit that's just a mechanical edit.
 
 **Creative output tracking**: See creative-memory skill (Skill Discovery) — composes `kumiho_search_items`, `kumiho_create_item`, `kumiho_create_revision`, `kumiho_create_artifact`, `kumiho_create_edge`, `kumiho_memory_reflect`
 
