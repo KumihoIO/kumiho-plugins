@@ -148,7 +148,7 @@ python ./claude/scripts/setup.py --ce --yes \
 |---|---|---|
 | `--ce-endpoint` | the CE server's gRPC endpoint (fronts Neo4j) | `127.0.0.1:9190` |
 | `--ce-redis-url` | working-memory Redis | `redis://127.0.0.1:6379` |
-| `--ce-llm-base-url` | OpenAI-compatible LLM for summarizer-written consolidation (Ollama, llama.cpp, vLLM, …) | fail-fast (only calls to `kumiho_memory_consolidate` without `summary` need one) |
+| `--ce-llm-base-url` | OpenAI-compatible LLM for the LLM-backed paths: summarizer-written consolidation, Dream State (`/dream-state`), LLM edge discovery (Ollama, llama.cpp, vLLM, …) | fail-fast (reflect and keyless consolidation, i.e. `kumiho_memory_consolidate` with `summary`, need none) |
 
 No API token is involved in CE mode. Full CE environment details are in
 [Self-hosted (Community Edition)](#self-hosted-community-edition) below.
@@ -411,7 +411,7 @@ YAML frontmatter (session_id, date, topics, summary) and structured
 | `KUMIHO_CLAUDE_MODE` | *(unset)* | Set to `ce` (or `community` / `self-hosted` / `local`) to target a self-hosted CE server instead of cloud discovery |
 | `KUMIHO_CLAUDE_SERVER_ENDPOINT` | `127.0.0.1:9190` | CE gRPC endpoint; setting it also enables CE mode |
 | `UPSTASH_REDIS_URL` | `redis://127.0.0.1:6379` | CE working-memory Redis URL (CE only) |
-| `KUMIHO_LLM_BASE_URL` | *(unset)* | OpenAI-compatible LLM endpoint for summarizer-written consolidation summaries (only used when the agent calls `kumiho_memory_consolidate` without `summary`); when set, replaces the fail-fast dead-port fallback |
+| `KUMIHO_LLM_BASE_URL` | *(unset)* | OpenAI-compatible LLM endpoint for the LLM-backed paths: summarizer-written consolidation (calls without `summary`), Dream State (`/dream-state`) and LLM edge discovery; reflect and keyless consolidation need none. When set, replaces the fail-fast dead-port fallback |
 
 `KUMIHO_SERVER_ENDPOINT` and `KUMIHO_SERVER_ADDRESS` are intentionally
 ignored by the launcher to enforce control-plane discovery routing in cloud

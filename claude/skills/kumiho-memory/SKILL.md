@@ -92,7 +92,7 @@ This does three things in one call:
 <!-- inline -->
 ## Consolidation
 
-- Consolidation is **keyless**: the summary is written by you (you have the whole conversation) or by a subagent you delegate to (`Agent` tool, e.g. model `sonnet`, fed the transcript from `kumiho_chat_get`). Never by an external LLM. Then:
+- Consolidation is **keyless**: the summary is written by you (you have the whole conversation) or by a subagent you delegate to (`Agent` tool, e.g. model `sonnet`, fed the transcript from `kumiho_chat_get` with `limit: 1000`, since it returns only the last 50 messages by default). Never by an external LLM. Then:
   ```
   kumiho_memory_consolidate(
     summary: { title, summary,

@@ -1554,7 +1554,7 @@ def _configure_llm_fallback() -> None:
         "(reflect, decompose, code_capture, code_why, recall) fully work "
         "without an LLM, and so does consolidation when the agent supplies "
         "the summary (kumiho_memory_consolidate summary=...). Optional LLM "
-        "enrichment (automatic edge discovery, summarizer-written "
+        "enrichment (automatic edge discovery, Dream State, summarizer-written "
         "consolidation summaries) is off — a fail-fast placeholder LLM config "
         "is pinned (dummy OPENAI_API_KEY, dead-port KUMIHO_LLM_BASE_URL). To "
         "opt in, set KUMIHO_LLM_BASE_URL to an OpenAI-compatible endpoint AND "
