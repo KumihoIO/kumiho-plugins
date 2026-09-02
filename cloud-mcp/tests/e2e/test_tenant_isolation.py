@@ -21,9 +21,9 @@ import json
 
 import anyio
 import pytest
+
 from e2e._client import connect
 from e2e.conftest import REDIS_HOST, REDIS_PORT
-
 from kumiho_cloud_mcp.settings import DEV_TENANT_HEADER, dev_identity
 
 pytestmark = pytest.mark.anyio

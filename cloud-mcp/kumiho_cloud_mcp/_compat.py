@@ -17,7 +17,7 @@ Three things are shimmed:
 ``build_server()``
     Calls ``create_mcp_server(profile="connector", instructions=...)`` when the
     installed signature accepts it. Otherwise builds the full server and wraps
-    its ``ListToolsRequest`` / ``CallToolRequest`` handlers so only the 19
+    its ``ListToolsRequest`` / ``CallToolRequest`` handlers so only the 18
     connector tools are visible or callable, attaching annotations from
     :mod:`kumiho_cloud_mcp.connector_profile`.
 
@@ -270,7 +270,7 @@ def _restrict_to_connector_profile(server: Any, allowed: tuple) -> None:
                 warned.append("done")
                 missing = sorted(allowed_set - available)
                 if missing:
-                    # The connector profile names 19 tools; anything the
+                    # The connector profile names 18 tools; anything the
                     # installed SDK does not define simply cannot be exposed.
                     logger.warning(
                         "connector profile tools missing from the installed SDK",
