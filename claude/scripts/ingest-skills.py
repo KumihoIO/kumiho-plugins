@@ -9,7 +9,7 @@ All agents (Claude, OpenClaw) share the same graph — skills ingested here
 are discoverable by any agent via the Skill Discovery Protocol.
 
 Usage:
-    pip install "kumiho[mcp]>=0.12.1" "kumiho-memory[all]>=1.3.0"
+    pip install "kumiho[mcp]>=0.12.2" "kumiho-memory[all]>=1.3.1"
     export KUMIHO_AUTH_TOKEN=kh_live_...
     python scripts/ingest-skills.py          # ingest all
     python scripts/ingest-skills.py --dry-run  # preview only
@@ -43,7 +43,7 @@ def main() -> int:
     except ImportError:
         print(
             "ERROR: kumiho-memory package not installed.\n"
-            "  pip install 'kumiho-memory[all]>=1.3.0'",
+            "  pip install 'kumiho-memory[all]>=1.3.1'",
             file=sys.stderr,
         )
         return 1

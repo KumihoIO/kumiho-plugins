@@ -2,8 +2,8 @@
   "id": "openclaw-kumiho",
   "kind": "memory",
   "pythonDependencies": {
-    "kumiho[mcp]": ">=0.12.1",
-    "kumiho-memory[all]": ">=1.3.0"
+    "kumiho[mcp]": ">=0.12.2",
+    "kumiho-memory[all]": ">=1.3.1"
   },
   "uiHints": {
     "mode": {
