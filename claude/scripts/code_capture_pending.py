@@ -14,7 +14,8 @@ No external API key, end to end -- exactly the plugin's hard constraint.
 Subcommands (the agent uses ``list`` / ``done``; the worker uses ``enqueue``):
   enqueue <repo> [commit]   append a commit (default HEAD) to the queue, deduped
   list                       print pending entries as a JSON array (for the agent)
-  done <commit>              drop an entry once the agent has captured it
+  done <commit>              drop an entry once the agent has captured it;
+                             exits 1 and says so when nothing matched
   count                      queue depth + the absolute drain command
 """
 import json
@@ -165,6 +166,34 @@ def enqueue(repo: str, commit: str = "") -> None:
     _write(keep)
 
 
+def done(commit: str) -> dict:
+    """Drop the queue entry for ``commit`` once the agent has captured it.
+
+    The argument is stripped first: the agent usually pipes the hash out of a
+    shell, and on Windows that pipe carries a trailing carriage return. On
+    2026-09-02 four ``done <sha>\r`` calls each exited 0 and removed nothing,
+    so the queue looked drained while every entry was still there. A hash that
+    matches nothing, or a prefix that matches more than one entry, is reported
+    in the result and the command exits non-zero: a silent no-op here is the
+    invisible failure the queue exists to prevent. A prefix counts only from
+    seven characters, git's own short-hash floor.
+    """
+    wanted = (commit or "").strip()
+    entries = _read()
+    matched = [e for e in entries if e.get("commit") == wanted]
+    if not matched and len(wanted) >= 7:
+        matched = [e for e in entries
+                   if str(e.get("commit") or "").startswith(wanted)]
+    if not wanted or not matched:
+        return {"removed": 0, "commit": wanted, "error": "not found"}
+    if len(matched) > 1:
+        return {"removed": 0, "commit": wanted, "error": "ambiguous prefix",
+                "candidates": [e.get("commit") for e in matched]}
+    target = matched[0].get("commit")
+    _write([e for e in entries if e.get("commit") != target])
+    return {"removed": 1, "commit": target}
+
+
 def count() -> dict:
     """Queue depth plus a drain command that actually runs.
 
@@ -199,8 +228,9 @@ def main(argv: list) -> int:
         print(json.dumps(count(), ensure_ascii=True))
         return 0
     if cmd == "done" and len(argv) >= 2:
-        _write([e for e in _read() if e.get("commit") != argv[1]])
-        return 0
+        result = done(argv[1])
+        print(json.dumps(result, ensure_ascii=True))
+        return 0 if result["removed"] else 1
     print("bad args")
     return 2
 

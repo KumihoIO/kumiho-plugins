@@ -88,6 +88,56 @@ def test_enqueue_spills_and_logs_every_eviction(tmp_path, monkeypatch):
     assert len(ccp._read()) == 200
 
 
+def _seed(ccp, *commits):
+    ccp._write([{"repo": "r", "commit": c, "subject": "s"} for c in commits])
+
+
+def test_done_removes_the_exact_commit_and_reports_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("KUMIHO_CLAUDE_HOME", str(tmp_path))
+    ccp = _load("code_capture_pending.py")
+    _seed(ccp, "a" * 40, "b" * 40)
+    assert ccp.done("a" * 40) == {"removed": 1, "commit": "a" * 40}
+    assert [e["commit"] for e in ccp._read()] == ["b" * 40]
+
+
+def test_done_strips_the_carriage_return_a_windows_pipe_adds(tmp_path, monkeypatch):
+    """Four `done <sha>\\r` calls on 2026-09-02 each exited 0 and removed
+    nothing; the queue looked drained while every entry was still there."""
+    monkeypatch.setenv("KUMIHO_CLAUDE_HOME", str(tmp_path))
+    ccp = _load("code_capture_pending.py")
+    _seed(ccp, "a" * 40)
+    assert ccp.done("a" * 40 + "\r\n")["removed"] == 1
+    assert ccp._read() == []
+
+
+def test_done_with_an_unknown_commit_is_loud_and_leaves_the_queue_alone(tmp_path, monkeypatch):
+    monkeypatch.setenv("KUMIHO_CLAUDE_HOME", str(tmp_path))
+    ccp = _load("code_capture_pending.py")
+    _seed(ccp, "a" * 40)
+    out = subprocess.run(
+        [sys.executable, str(SCRIPTS / "code_capture_pending.py"), "done", "f" * 40],
+        capture_output=True, text=True, encoding="utf-8",
+        env={**os.environ, "KUMIHO_CLAUDE_HOME": str(tmp_path), "PYTHONIOENCODING": "utf-8"},
+    )
+    assert out.returncode == 1, out.stderr
+    assert json.loads(out.stdout) == {"removed": 0, "commit": "f" * 40, "error": "not found"}
+    assert len(ccp._read()) == 1
+
+
+def test_done_accepts_a_unique_prefix_but_refuses_an_ambiguous_one(tmp_path, monkeypatch):
+    monkeypatch.setenv("KUMIHO_CLAUDE_HOME", str(tmp_path))
+    ccp = _load("code_capture_pending.py")
+    _seed(ccp, "abc1234" + "0" * 33, "abc1234" + "1" * 33, "def5678" + "0" * 33)
+    ambiguous = ccp.done("abc1234")
+    assert ambiguous["removed"] == 0 and ambiguous["error"] == "ambiguous prefix"
+    assert len(ccp._read()) == 3
+    assert ccp.done("def5678")["removed"] == 1
+    assert len(ccp._read()) == 2
+    # shorter than git's own short hash is never treated as a prefix
+    assert ccp.done("abc")["error"] == "not found"
+    assert len(ccp._read()) == 2
+
+
 def test_count_reports_an_absolute_runnable_drain_cmd(tmp_path, monkeypatch):
     monkeypatch.setenv("KUMIHO_CLAUDE_HOME", str(tmp_path))
     out = subprocess.run(
