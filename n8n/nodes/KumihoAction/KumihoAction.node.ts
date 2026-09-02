@@ -1390,9 +1390,14 @@ export class KumihoAction implements INodeType {
           { name: 'Created From', value: 'CREATED_FROM' },
           { name: 'Depends On', value: 'DEPENDS_ON' },
           { name: 'Derived From', value: 'DERIVED_FROM' },
+          { name: 'Migrated From', value: 'MIGRATED_FROM' },
+          { name: 'Produced By', value: 'PRODUCED_BY' },
           { name: 'Referenced', value: 'REFERENCED' },
+          { name: 'Supports', value: 'SUPPORTS' },
         ],
         default: 'DEPENDS_ON',
+        description:
+          'The nine edge types the API accepts. SUPERSEDES is not among them: belief revision also demotes the superseded revision and ripples grounding staleness, so it is written by the memory layer rather than by a bare edge write.',
         displayOptions: {
           show: {
             resource: ['revision'],

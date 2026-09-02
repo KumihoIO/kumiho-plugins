@@ -138,10 +138,12 @@ Create dependency relationships between revisions.
 **Inputs:**
 - `source_kref`: Source revision kref
 - `target_kref`: Target revision kref
-- `edge_type`: Relationship type (DEPENDS_ON, DERIVED_FROM, REFERENCED, CONTAINS, CREATED_FROM)
+- `edge_type`: Relationship type — one of the nine the API accepts: `DEPENDS_ON`, `DERIVED_FROM`, `REFERENCED`, `CONTAINS`, `CREATED_FROM`, `PRODUCED_BY`, `MIGRATED_FROM`, `BELONGS_TO`, `SUPPORTS`
 
 **Outputs:**
 - `edge_id`: The created edge identifier
+
+> **Note**: `SUPPORTS` is create-only — `kumiho_delete_edge` accepts the other eight and cannot remove it. `SUPERSEDES` is deliberately not offered: belief revision also demotes the superseded revision and ripples grounding staleness to whatever depended on it, so the memory layer writes it rather than a bare edge call.
 
 #### 🔹 Kumiho Tag Revision
 Apply tags to revisions for easy retrieval.

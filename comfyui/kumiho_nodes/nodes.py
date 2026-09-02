@@ -2612,7 +2612,18 @@ class KumihoCreateEdge:
                     "default": "",
                     "multiline": False,
                 }),
-                "edge_type": (["DEPENDS_ON", "DERIVED_FROM", "REFERENCED", "CONTAINS", "CREATED_FROM", "USED_MODEL", "USED_LORA", "USED_INPUT"],),
+                # The nine types the Kumiho API accepts. SUPPORTS is create-only
+                # (delete_edge takes the other eight). SUPERSEDES is deliberately
+                # absent: belief revision also demotes the superseded revision and
+                # ripples grounding staleness, so the memory layer writes it, not a
+                # bare edge call. The USED_* labels are ComfyUI-side aliases used by
+                # the auto-lineage nodes and are mapped to these before any API call
+                # (see the edge_type_map in _KumihoSaveBase) -- not accepted here.
+                "edge_type": ([
+                    "DEPENDS_ON", "DERIVED_FROM", "REFERENCED", "CONTAINS",
+                    "CREATED_FROM", "PRODUCED_BY", "MIGRATED_FROM", "BELONGS_TO",
+                    "SUPPORTS",
+                ],),
             },
             "optional": {
                 "metadata_json": ("STRING", {
