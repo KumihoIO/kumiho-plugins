@@ -571,3 +571,127 @@ No live OAuth token has ever crossed from the control plane to the resource
 server. Both sides are tested against the same fixtures
 (`cloud-mcp/tests/contract/`, WP-D's vitest suite), and the fixtures agree —
 but a fixture is not a deployment. Step 6 of §6 is the real gate.
+
+---
+
+## 8. Post-E2: strong-only stacking, and the tenant-scoped write proof
+
+Two changes on `feat/cloud-mcp` after the hand-offs above closed. Both are in
+`cloud-mcp/`; neither touches `kumiho-SDKs` or `kumiho-memory`.
+
+### 8.1 Hosted runs strong-only revision stacking
+
+kumiho-SDKs #168 (merged) added `KUMIHO_STACK_MIDDLE_BAND`. The SDK's default
+`1` keeps the two-band gate; `0` is **strong-only** — a capture stacks onto an
+existing item at similarity `>= 0.75` plus the lexical-overlap floor, and the
+`0.55` type-match band is withheld. It also added `stack_mode` to every store
+result.
+
+**Hosted deployments run strong-only** until per-tenant telemetry exists. The
+bands were calibrated on one corpus; the middle band is where an unrelated
+same-type neighbour in a topically homogeneous space scores, and stacking
+*moves the `published` tag*, so a false positive there hides a memory rather
+than merely duplicating one. On a shared server that would be one operator's
+calibration applied to every tenant's corpus, in whatever language and at
+whatever capture length they write. **`stack_mode` in store results
+(`"strong-only"` / `"two-band"`) tells telemetry which gate fired**, alongside
+`stack_score`, `stack_runner_up` and `stack_overlap` — those are the numbers
+that decide when the band goes back on.
+
+Set in five places, deliberately overlapping:
+
+| Where | What |
+|---|---|
+| `cloud-mcp/kumiho_cloud_mcp/settings.py` | `HOSTED_STACK_MIDDLE_BAND_DEFAULT = False`, `middle_band_enabled()`, `Settings.stack_middle_band`. The predicate is the SDK's own ("anything but `0` is on"), not `_env_bool`, so `/healthz` cannot report a mode the store path is not in. |
+| `cloud-mcp/kumiho_cloud_mcp/app.py` | `create_app` writes the resolved value into `os.environ` — that is where the SDK reads it, on every store. Unconditional, so a bare `uvicorn kumiho_cloud_mcp.app:app` gets it and **dev mode stacks on the production gate**. An explicit env value wins. |
+| `cloud-mcp/Dockerfile` | `ENV KUMIHO_STACK_MIDDLE_BAND=0`. |
+| `cloud-mcp/deploy/bootstrap-apprunner.ps1` | In `$runtimeEnvVars`, so the mode is visible in `aws apprunner describe-service`. |
+| `.github/workflows/deploy-cloud-mcp.yml` | Re-asserted in `RuntimeEnvironmentVariables` on every deploy, and the origin smoke test **fails the deploy** if `/healthz` does not report `stacking.middle_band == false`. |
+
+`GET /healthz` gained `"stacking": {"middle_band": false}`, read from the live
+environment rather than from the settings snapshot.
+
+### 8.2 Tenant-scoped writes, proved (kumiho-memory #22)
+
+kumiho-memory issue #22 asked whether the hosted store path can write through
+the process-default SDK client. The shape of the concern is real:
+`kumiho_memory_reflect` carries no client — it calls the SDK's *module-level*
+`kumiho.mcp_server.tool_memory_store`, which resolves through
+`kumiho.get_client()`, which prefers the `use_client` contextvar and **falls
+back to the process default**. Every tenant's project is named
+`CognitiveMemory`, so a store that took the fallback would write a
+plausible-looking memory into the wrong graph with nothing downstream looking
+wrong.
+
+`cloud-mcp/tests/test_tenant_scoped_writes.py` (4 tests) closes it. Nothing
+between reflect and the graph is mocked: the real `tool_memory_reflect`, the
+real per-tenant manager, the real `tool_memory_store` with its real caches,
+stacking search and gates. The fakes are *graph clients* that record every
+call — extending `conftest.FakeKumihoClient` rather than mocking
+`tool_memory_store`, which would have removed the code under test. Only Redis
+is stubbed, because the buffer hop is not what #22 is about.
+
+`test_reflect_writes_only_to_the_calling_tenants_client` drives two signed
+tenants concurrently through `/mcp`, twice each (round 2 exercises the
+*stacking* path, which reads an existing item and moves its `published` tag —
+the write where a wrong client would do the most damage), and asserts:
+
+1. **Attribution.** For every graph call, the receiving client's `x-tenant-id`
+   equals `current_request().tenant_id` at the instant of the call. Two
+   independently derived strings, not one compared with itself. Also that
+   `{owner}` for A's calls is exactly `{A}` and never contains B, and
+   symmetrically; and that the `use_client`-bound client *is* the client used.
+2. **No ambient fallback.** `kumiho._default_client` is `None` at every single
+   graph call (sampled inside the call, not after) and afterwards.
+3. **No cross-tenant reference.** Every kref reflect reports for A names an
+   item/revision created on A's client and never contains B's space; A's
+   round-2 revision is `?r=2` of A's *own* round-1 item; and every
+   `bundle.add_member` added a member minted on the bundle's own client.
+
+`test_tenant_caches_do_not_serve_the_second_tenant` runs A then B **serially**,
+which is the only way the cache failure appears: an unprefixed
+`_project_cache` would hand B the `Project` handle — and so the channel and
+credentials — that A cached, and no assertion about the request context would
+notice. It pins that B fetched its own project and that `_project_cache` holds
+two tenant-prefixed keys.
+
+`test_store_refuses_to_run_without_a_bound_client` covers the other direction
+at the function level (the transport cannot produce this state, which is why
+the guard needs its own test): hosted, inside `request_context`, **without**
+`use_client`, with a poisoned `kumiho._default_client` that fails the test on
+any attribute access. `tool_memory_store` raises the SDK's `RuntimeError`
+naming `use_client`, nothing touches the default client, and zero graph calls
+happen. `test_the_guard_is_hosted_only` pins that this is the hosted rule and
+not an incidental import failure.
+
+**Mutation-checked, not just green.** Each assertion was confirmed to fail when
+the property is broken:
+
+- Neutering `_tenant_key` to drop the tenant prefix → **6 misrouted graph
+  calls** caught (`project.create_space`, `project.create_item`,
+  `item.create_revision`, `revision.tag`, `project.create_bundle`,
+  `bundle.add_member` — all reaching tenant A's client while serving B).
+- Replacing `kumiho.use_client` with a no-op → reflect returns the SDK's
+  `RuntimeError` text and **0 graph calls** are made. Fail-closed holds through
+  the real transport as well as at the function level.
+- `_should_stack(score=0.60, type_matches=True, overlap=0.40)` → `True` under
+  two-band, `False` under strong-only; the strong band survives in both.
+
+**No gap found.** No graph call reached the default client on any path
+exercised, so nothing needed fixing in the RS and no test is xfail. The
+remaining unproven layer is the one §4 already names: CE does not enforce
+`x-tenant-id` the way the managed backend does, so graph *authorization* is
+still kumiho-server's and is still unverified here. What is now proved is that
+the RS never asks the wrong client in the first place.
+
+### 8.3 Suites after these changes
+
+| Suite | Command | Result |
+|---|---|---|
+| cloud-mcp | `pytest -q` in `cloud-mcp` | `151 passed, 1 skipped, 1 warning` (139 + 12 new) |
+| cloud-mcp | `ruff check kumiho_cloud_mcp tests` | `All checks passed!` |
+| stdio plugin | `pytest -q` in `claude/scripts` | `168 passed, 13 warnings` — untouched by this diff |
+
+Against `kumiho` 0.13.0 (`kumiho-SDKs.wt-connector` @ `024c196`, rebased onto
+`origin/main` `6b35bda`, the #168 commit) and `kumiho-memory` 1.4.0, in
+`cloud-mcp/.venv-e1`.
