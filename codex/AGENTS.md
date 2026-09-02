@@ -53,4 +53,6 @@ skip captured commits at zero LLM cost).
   memories when they conflict with stale ones.
 - After 20+ exchanges or at session end, call
   `kumiho_memory_consolidate` with the session id you have been using all
-  along (see "Session id" above).
+  along (see "Session id" above) and a `summary` you wrote yourself from
+  the conversation (keyless — without `summary` the call needs an external
+  LLM and fails).

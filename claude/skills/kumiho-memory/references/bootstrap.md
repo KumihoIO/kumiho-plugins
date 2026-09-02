@@ -28,7 +28,7 @@ kumiho_get_revision_by_tag(
 | Result | Action |
 | ------ | ------ |
 | Revision returned (either kref) | Parse metadata fields below, adopt identity → Step 2 |
-| Item/tag not found on **both** krefs | First session → [Onboarding](onboarding.md) |
+| Item/tag not found on **both** krefs | First meeting → run [Onboarding](onboarding.md) **now, before answering the user's message**. Do not answer as if an identity were loaded. |
 | Auth error (401 / UNAUTHENTICATED) | Say: "Memory isn't connected yet — run `/kumiho-onboard` to set up, then start a new session (or restart the app on Claude Desktop). If you don't have an account yet, sign up free at kumiho.io." Continue without memory. |
 | Connection error (UNAVAILABLE / connection refused / DNS resolution failure) | Same message as auth error. The server started before a token was available, so discovery didn't resolve the cloud endpoint. |
 | Any other error | Log the error silently and continue without memory. Do NOT show raw gRPC errors or stack traces to the user. |

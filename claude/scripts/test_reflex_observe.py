@@ -96,6 +96,30 @@ def test_stop_hook_active_writes_nothing(tmp_path):
     assert _ledger(tmp_path, "s3") == []
 
 
+def test_post_tool_use_records_consolidate_with_a_success_flag(tmp_path):
+    """The consolidate floor resets only on a consolidate that actually
+    succeeded, so the row carries what the response said -- and nothing else
+    from it."""
+    base = {"hook_event_name": "PostToolUse", "prompt_id": "p9",
+            "tool_name": "mcp__plugin_kumiho-memory_kumiho-memory__kumiho_memory_consolidate"}
+    _run_hook({**base, "session_id": "s6", "tool_response": {"content": [
+        {"type": "text", "text": '{"success": false, "error": "summarization failed"}'}]}},
+        tmp_path)
+    _run_hook({**base, "session_id": "s7", "tool_response": {"content": [
+        {"type": "text", "text": '{"success": true, "summary": "..."}'}]}}, tmp_path)
+    _run_hook({**base, "session_id": "s8"}, tmp_path)
+    # An exception surfaces as {"error": ...} with no success key at all; it
+    # stored nothing, so it must not reset the floor either.
+    _run_hook({**base, "session_id": "s9", "tool_response": {"content": [
+        {"type": "text", "text": '{"error": "Credential pattern detected"}'}]}}, tmp_path)
+    failed, ok, unknown, raised = (_ledger(tmp_path, s)[0] for s in ("s6", "s7", "s8", "s9"))
+    assert failed["tool"] == "consolidate" and failed["ok"] is False
+    assert ok["ok"] is True
+    assert unknown["ok"] is True, "no response at all must not read as a failure"
+    assert raised["ok"] is False, "an error envelope stored nothing"
+    assert "summarization failed" not in json.dumps(failed)
+
+
 def test_post_tool_use_records_the_long_mcp_name(tmp_path):
     r = _run_hook({"hook_event_name": "PostToolUse", "session_id": "s4",
                    "prompt_id": "p9",

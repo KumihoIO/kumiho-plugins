@@ -236,5 +236,54 @@ def test_prompt_storage_can_be_turned_off(tmp_path):
     assert json.loads(raw)["prompt"] == ""
 
 
+def test_consolidate_floor_is_silent_below_threshold(tmp_path):
+    _ledger(tmp_path, "cf01", [{"kind": "stop", "tool_only": False}] * 19)
+    r = _run(_ups("cf01"), tmp_path)
+    assert "last consolidated" not in r.stdout
+
+
+def test_consolidate_floor_fires_at_threshold_with_the_keyless_call_shape(tmp_path):
+    """Consolidation was an adjective ("after 20+ exchanges") with no counter
+    behind it. Now it is a counted fact, and the line carries the one thing the
+    model must not get wrong: the summary is ITS job, not an external LLM's."""
+    _ledger(tmp_path, "cf02", [{"kind": "stop", "tool_only": False}] * 20)
+    r = _run(_ups("cf02"), tmp_path)
+    ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "last consolidated: 20 (floor 20)" in ctx
+    assert "kumiho_memory_consolidate(session_id=cf02, summary=" in ctx
+    assert "subagent" in ctx
+    assert "Never call it without summary" in ctx
+
+
+def test_a_successful_consolidate_in_the_ledger_resets_the_count(tmp_path):
+    rows = [{"kind": "stop", "tool_only": False}] * 20
+    rows += [{"kind": "tool", "tool": "consolidate", "ok": True}]
+    rows += [{"kind": "stop", "tool_only": False}] * 3
+    _ledger(tmp_path, "cf03", rows)
+    r = _run(_ups("cf03"), tmp_path)
+    assert "last consolidated" not in r.stdout
+
+
+def test_a_failed_consolidate_does_not_reset_the_count(tmp_path):
+    """A consolidate that came back success:false left the buffer full; going
+    quiet for another 20 turns would be exactly the silent failure the ledger
+    exists to surface."""
+    rows = [{"kind": "stop", "tool_only": False}] * 20
+    rows += [{"kind": "tool", "tool": "consolidate", "ok": False}]
+    rows += [{"kind": "stop", "tool_only": False}]
+    _ledger(tmp_path, "cf04", rows)
+    r = _run(_ups("cf04"), tmp_path)
+    assert "last consolidated: 21" in r.stdout
+
+
+def test_consolidate_floor_honours_a_cooldown_and_can_be_disabled(tmp_path):
+    _ledger(tmp_path, "cf05", [{"kind": "stop", "tool_only": False}] * 25)
+    assert "last consolidated" in _run(_ups("cf05"), tmp_path).stdout
+    assert "last consolidated" not in _run(_ups("cf05"), tmp_path).stdout  # cooldown
+    _ledger(tmp_path, "cf06", [{"kind": "stop", "tool_only": False}] * 25)
+    r = _run(_ups("cf06"), tmp_path, env_extra={"KUMIHO_REFLEX_CONSOLIDATE_FLOOR": "0"})
+    assert "last consolidated" not in r.stdout
+
+
 if __name__ == "__main__":
     sys.exit(subprocess.call([sys.executable, "-m", "pytest", __file__, "-q"]))
