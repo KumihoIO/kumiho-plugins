@@ -83,18 +83,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # The version checks compare this tree against the commit it branched
+          # from, so the base commit has to actually be in the clone.
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: Validate
-        # The plugin version is written in four separate files and the release
-        # spec in five. Nothing but care kept them in step, and care is exactly
-        # what fails during a hurried release.
+        # The plugin version is written in five separate files -- claude/README.md
+        # is the fifth, and was outside this check until #70 -- and the release
+        # spec in five more. Nothing but care kept them in step, and care is
+        # exactly what fails during a hurried release.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           python - <<'PY'
-          import json, pathlib, sys
+          import json, os, pathlib, re, subprocess, sys
 
           failures = []
+
 
           def load(path):
               try:
@@ -102,6 +110,7 @@ jobs:
               except Exception as exc:
                   failures.append(f"{path}: {exc}")
                   return None
+
 
           # Every manifest must parse.
           manifests = sorted(
@@ -114,28 +123,154 @@ jobs:
               load(m)
           print(f"parsed {len(manifests)} manifest(s)")
 
-          # The kumiho-memory plugin version, in all four places it is written.
-          versions = {}
-          claude_plugin = load("claude/.claude-plugin/plugin.json")
-          if claude_plugin:
-              versions["claude/.claude-plugin/plugin.json"] = claude_plugin.get("version")
-          codex_plugin = load("codex/.codex-plugin/plugin.json")
-          if codex_plugin:
-              versions["codex/.codex-plugin/plugin.json"] = codex_plugin.get("version")
-          for market in (".claude-plugin/marketplace.json", ".codex-plugin/marketplace.json"):
-              data = load(market)
-              if data:
-                  for entry in data.get("plugins", []):
-                      if entry.get("name") == "kumiho-memory":
-                          versions[market] = entry.get("version")
+          # --- the kumiho-memory plugin version, on every surface that states it ------
+          #
+          # A surface missing from this list is a surface a hurried release forgets:
+          # claude/README.md carried the version by hand for four releases with nothing
+          # checking it.  Absence is an error, not agreement -- a marketplace entry that
+          # loses its `version` key used to shrink the comparison set to one and pass.
+          SEMVER = re.compile(r"^\d+\.\d+\.\d+([-+][0-9A-Za-z.+-]+)?$")
+          README_VERSION = re.compile(r"^Version: \*\*([^*]+)\*\*", re.MULTILINE)
 
+
+          def _entry_version(text, path):
+              data = json.loads(text)
+              for entry in data.get("plugins", []):
+                  if entry.get("name") == "kumiho-memory":
+                      return entry.get("version")
+              raise KeyError(f"no kumiho-memory entry in {path}")
+
+
+          def _manifest_version(text, path):
+              return json.loads(text).get("version")
+
+
+          def _readme_version(text, path):
+              m = README_VERSION.search(text)
+              if not m:
+                  raise KeyError(f"no 'Version: **x.y.z**' line in {path}")
+              return m.group(1).strip()
+
+
+          VERSION_SURFACES = {
+              "claude/.claude-plugin/plugin.json": _manifest_version,
+              "codex/.codex-plugin/plugin.json": _manifest_version,
+              ".claude-plugin/marketplace.json": _entry_version,
+              ".codex-plugin/marketplace.json": _entry_version,
+              "claude/README.md": _readme_version,
+          }
+
+
+          def collect_versions(read, sink):
+              """version-by-surface for one tree. `read(path)` returns text or None."""
+              versions = {}
+              for path, pick in VERSION_SURFACES.items():
+                  text = read(path)
+                  if text is None:
+                      sink.append(f"{path}: version surface is missing")
+                      continue
+                  try:
+                      value = pick(text, path)
+                  except Exception as exc:
+                      sink.append(f"{path}: cannot read the plugin version ({exc})")
+                      continue
+                  if not value:
+                      sink.append(f"{path}: has no version (absence is not agreement)")
+                      continue
+                  if not SEMVER.match(str(value)):
+                      sink.append(f"{path}: version {value!r} is not semver")
+                      continue
+                  versions[path] = str(value)
+              return versions
+
+
+          def read_worktree(path):
+              p = pathlib.Path(path)
+              return p.read_text(encoding="utf-8") if p.exists() else None
+
+
+          versions = collect_versions(read_worktree, failures)
           distinct = set(versions.values())
+          current = next(iter(distinct)) if len(distinct) == 1 else None
           if len(distinct) > 1:
               failures.append(f"plugin version disagrees across files: {versions}")
+          elif len(versions) < len(VERSION_SURFACES):
+              print(f"plugin version readable on only {len(versions)}/{len(VERSION_SURFACES)} surface(s)")
           else:
-              print(f"plugin version {distinct.pop() if distinct else '?'} consistent across {len(versions)} file(s)")
+              print(f"plugin version {current} consistent across all "
+                    f"{len(versions)} surface(s)")
 
-          # The provisioning spec, which decides what lands in a user's venv.
+          # --- did a bump actually happen? -------------------------------------------
+          #
+          # Self-consistency alone is blind to history: leaving every surface on the
+          # previous number passes green.  Two anchors close that, both fail-open when
+          # the base commit is not fetched so this never goes red for the wrong reason.
+          #
+          #   * monotonic -- the version must never go backwards.
+          #   * declared  -- this repo names the release in the commit subject
+          #     ("fix(claude): ..., 0.20.1").  When a commit in this push/PR declares a
+          #     version, the surfaces must actually be at it.  That is the case the
+          #     old check could not see: a release commit whose files were never edited.
+          base = (os.getenv("BASE_SHA") or "").strip()
+
+
+          def git(*args):
+              # Explicit utf-8: git blobs and commit subjects here contain em dashes, and
+              # decoding them with the ambient locale codec fails on some runners.
+              return subprocess.run(("git",) + args, capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace")
+
+
+          def base_usable():
+              if not base or set(base) == {"0"}:
+                  return False
+              return git("cat-file", "-e", base + "^{commit}").returncode == 0
+
+
+          def key(v):
+              return tuple(int(x) for x in v.split("-")[0].split("+")[0].split("."))
+
+
+          if not base_usable():
+              print("no usable base commit (BASE_SHA unset or unfetched); "
+                    "skipping the bump checks")
+          elif current is None:
+              print("version not resolvable; skipping the bump checks")
+          else:
+              def read_base(path):
+                  r = git("show", f"{base}:{path}")
+                  return r.stdout if r.returncode == 0 else None
+
+              base_versions = collect_versions(read_base, [])
+              base_distinct = set(base_versions.values())
+              previous = next(iter(base_distinct)) if len(base_distinct) == 1 else None
+
+              if previous is None:
+                  print(f"base {base[:8]} has no single version; skipping the monotonic check")
+              elif key(current) < key(previous):
+                  failures.append(f"plugin version went backwards: {previous} -> {current}")
+              elif current == previous:
+                  print(f"plugin version unchanged at {current} since {base[:8]}")
+              else:
+                  print(f"plugin version bumped {previous} -> {current}")
+
+              subjects = git("log", "--format=%s", f"{base}..HEAD").stdout.splitlines()
+              declared = set()
+              for subject in subjects:
+                  m = re.search(r",\s*(\d+\.\d+\.\d+)\s*$", subject)
+                  if m:
+                      declared.add(m.group(1))
+              if not declared:
+                  print(f"no commit declares a release version in its subject "
+                        f"({len(subjects)} commit(s)); nothing to cross-check")
+              elif current in declared:
+                  print(f"commit subject declares {current}, and every surface is at it")
+              else:
+                  failures.append(
+                      f"commit subject(s) declare release version {sorted(declared)} but the "
+                      f"manifests are at {current} -- the bump was announced, not applied")
+
+          # --- the provisioning spec, which decides what lands in a user's venv -------
           spec_sites = {
               "claude/.mcp.json": lambda d: d["mcpServers"]["kumiho-memory"]["env"]["KUMIHO_CLAUDE_PACKAGE_SPEC"],
               "codex/.mcp.json": lambda d: d["mcpServers"]["kumiho-memory"]["env"]["KUMIHO_CLAUDE_PACKAGE_SPEC"],
@@ -156,23 +291,35 @@ jobs:
           # The launcher default must match what the manifests declare, or a
           # host that ignores .mcp.json provisions something else entirely.
           launcher = pathlib.Path("claude/scripts/run_kumiho_mcp.py").read_text(encoding="utf-8")
-          import re
           m = re.search(r'DEFAULT_PACKAGE_SPEC = "([^"]+)"', launcher)
           if not m:
               failures.append("could not find DEFAULT_PACKAGE_SPEC in the launcher")
           elif specs:
-              declared = next(iter(specs.values()))
-              if m.group(1) not in declared:
+              declared_spec = next(iter(specs.values()))
+              if m.group(1) not in declared_spec:
                   failures.append(
-                      f"launcher DEFAULT_PACKAGE_SPEC {m.group(1)!r} is not the manifest spec {declared!r}")
+                      f"launcher DEFAULT_PACKAGE_SPEC {m.group(1)!r} is not the manifest spec {declared_spec!r}")
               else:
                   print("launcher default matches the manifest spec")
 
-          # The kumiho / kumiho-memory floors, across every distribution
-          # channel. gpt/ sat six minor versions behind the other three for
-          # exactly as long as nothing compared them: 0.19.0 raised claude/,
-          # codex/ and openclaw/ to 0.11.0 + 1.2.1 and left gpt/ on
-          # 0.10.4 + 0.6.2. A channel nobody checks is a channel that drifts.
+          # The discovery user-agent must stay derived from the plugin manifest. A
+          # pinned copy is how it sat at 0.16.0 for five releases (#71).
+          if re.search(r'DEFAULT_DISCOVERY_USER_AGENT\s*=\s*"[^"]*\d+\.\d+\.\d+', launcher):
+              failures.append("the launcher pins a discovery user-agent version; derive it from the manifest")
+          elif 'DISCOVERY_USER_AGENT_PRODUCT' not in launcher:
+              failures.append("could not find DISCOVERY_USER_AGENT_PRODUCT in the launcher")
+          else:
+              claude_mcp = load("claude/.mcp.json") or {}
+              ua = (claude_mcp.get("mcpServers", {}).get("kumiho-memory", {})
+                    .get("env", {}).get("KUMIHO_CLAUDE_DISCOVERY_USER_AGENT", ""))
+              if re.search(r"\d+\.\d+\.\d+", ua):
+                  failures.append(
+                      f"claude/.mcp.json pins a discovery user-agent version ({ua!r}); "
+                      "leave it as a bare ${VAR} so the launcher derives it")
+              else:
+                  print("discovery user-agent is derived from the plugin manifest")
+
+          # --- the kumiho / kumiho-memory floors, across every distribution channel ---
           floors = {}
 
           for path in ("claude/.mcp.json", "codex/.mcp.json"):

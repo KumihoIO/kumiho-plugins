@@ -401,7 +401,7 @@ YAML frontmatter (session_id, date, topics, summary) and structured
 | `KUMIHO_CLAUDE_PACKAGE_SPEC` | *(see above)* | Override pip install spec |
 | `KUMIHO_REFLEX_CONSOLIDATE_FLOOR` | `20` | Completed turns after which the UserPromptSubmit hook asks the agent to consolidate the session (keyless: the agent or a subagent writes the summary). `0` disables the nudge. |
 | `KUMIHO_CLAUDE_DISABLE_LLM_FALLBACK` | *(unset)* | Set to `1` to disable local no-key LLM fallback |
-| `KUMIHO_CLAUDE_DISCOVERY_USER_AGENT` | `kumiho-claude/0.16.0` | Override discovery HTTP User-Agent |
+| `KUMIHO_CLAUDE_DISCOVERY_USER_AGENT` | `kumiho-claude/<plugin version>` | Override discovery HTTP User-Agent. The default is derived from `.claude-plugin/plugin.json` at startup, so it always reports the running version — there is no pinned copy to bump. |
 | `KUMIHO_ARTIFACT_DIR` | `~/.kumiho/artifacts/` | Override conversation artifact directory |
 
 ### Self-hosted (Community Edition)
@@ -499,8 +499,9 @@ python ./claude/scripts/test_ce_mode.py
 ```text
 .
 ├── .claude-plugin/
-│   ├── plugin.json            # Plugin manifest (name, version, entry points)
-│   └── marketplace.json       # Marketplace metadata
+│   └── plugin.json            # Plugin manifest (name, version, entry points)
+│                              # (the marketplace manifest lives at the repo
+│                              #  root, not here — see ../.claude-plugin/)
 ├── .mcp.json                  # MCP server definition (kumiho-memory stdio)
 ├── .env.local.example         # Template for local auth config
 ├── commands/

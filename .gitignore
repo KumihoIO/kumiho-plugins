@@ -10,3 +10,11 @@ pip/
 # Agent worktrees. A stale one duplicates the whole tree, so every grep and
 # every skill-file search returns each hit twice.
 .claude/worktrees/
+# Per-developer permission grants written by Claude Code. Same class as the
+# scratch state above: machine-local config that must never be committed.
+.claude/settings.local.json
+
+# Generated build-check bundles from openclaw's tsup/vitest runs. They inline
+# every tool description, so a tracked copy makes each repo-wide grep hit
+# return twice — the same duplication problem as a stale worktree.
+openclaw/.tmp/
