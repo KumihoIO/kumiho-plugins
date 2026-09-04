@@ -54,8 +54,9 @@ Fall back to the capture type (`decisions`, `facts`, `preferences`,
 
 Recall is a working context, not a transcript dump. For a substantive request
 whose topic may have history, make one targeted `kumiho_memory_engage` call
-derived from the current user message. Prefer the summarized mode with
-`limit=3`; keep the query short and specific. Do not fetch whole spaces,
+derived from the current user message. The normal call shape is
+`kumiho_memory_engage(query=<current request>, limit=3, recall_mode="summarized")`;
+keep the query short and specific. Do not fetch whole spaces,
 session transcripts, or old artifacts just to be safe.
 
 Keep only the few returned memories that constrain the current answer (their
