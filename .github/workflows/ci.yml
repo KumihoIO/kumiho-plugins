@@ -83,6 +83,10 @@ jobs:
           claude/scripts/test_bounded_proc.py
           claude/scripts/test_cloud_safety.py
           claude/scripts/test_state_home.py
+          claude/scripts/test_reflex_prefetch.py
+          claude/scripts/test_hook_interpreter.py
+          claude/scripts/test_memory_reflex.py
+          claude/scripts/test_session_bootstrap.py
           codex/scripts/test_backend_fail_closed.py
           -q
       - name: Validate native plugin structure

@@ -404,9 +404,24 @@ def test_find_python_fails_closed_when_the_external_base_is_broken(
 
     monkeypatch.setattr(wizard.bounded_proc, "run", version)
 
-    expected = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
+    # find_python probes the external base first and then sys.executable,
+    # skipping duplicates and anything inside the shared venv.  A test runner
+    # that is itself a venv therefore yields two candidates; a bare
+    # interpreter yields one.  Mirror that instead of assuming the runner.
+    expected = []
+    for raw in (getattr(sys, "_base_executable", None), sys.executable):
+        if not raw:
+            continue
+        current = str(Path(raw).resolve())
+        try:
+            Path(current).relative_to(wizard.VENV_DIR.resolve())
+            continue
+        except ValueError:
+            pass
+        if current not in expected:
+            expected.append(current)
     assert wizard.find_python() is None
-    assert calls == [[expected, "--version"]]
+    assert calls == [[cmd, "--version"] for cmd in expected]
 
 
 def test_setup_quarantines_a_broken_shared_runtime_and_rebuilds_it(

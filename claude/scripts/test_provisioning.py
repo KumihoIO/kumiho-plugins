@@ -1036,11 +1036,67 @@ def test_legacy_hook_venv_is_preserved_before_aliasing(state, monkeypatch):
 
     monkeypatch.setattr(L, "_create_directory_alias", fake_alias)
     L._ensure_plugin_data_venv_alias(shared)
-    assert aliases == [(legacy, shared)]
+    # The alias is staged under a temporary name while the legacy venv is
+    # still in place, then swapped in by rename: the legacy runtime is never
+    # absent from ``venv`` while the slow alias creation runs.
+    assert [target for _, target in aliases] == [shared]
+    assert aliases[0][0] == data / "venv.shared-alias.tmp"
     assert (data / "venv.pre-shared" / "legacy.txt").read_text(
         encoding="utf-8"
     ) == "keep"
     assert legacy.is_dir()
+    assert not (data / "venv.shared-alias.tmp").exists()
+
+
+def test_alias_creation_failure_leaves_legacy_venv_in_place(state, monkeypatch):
+    """The slow step fails before anything is renamed: hooks keep working."""
+    data = state / "pdata"
+    legacy = data / "venv"
+    legacy.mkdir(parents=True)
+    (legacy / "legacy.txt").write_text("keep", encoding="utf-8")
+    shared = state / "venv"
+    shared_python = L._venv_python(shared)
+    shared_python.parent.mkdir(parents=True)
+    shared_python.write_text("", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(data))
+    monkeypatch.setattr(L, "_create_directory_alias", lambda *_a: False)
+
+    L._ensure_plugin_data_venv_alias(shared)
+
+    assert (legacy / "legacy.txt").read_text(encoding="utf-8") == "keep"
+    assert not list(data.glob("venv.pre-shared*"))
+    assert not (data / "venv.shared-alias.tmp").exists()
+
+
+def test_stale_staged_alias_is_replaced_not_reused(state, monkeypatch):
+    """A leftover staging entry from a killed attempt must not be trusted."""
+    data = state / "pdata"
+    legacy = data / "venv"
+    legacy.mkdir(parents=True)
+    (legacy / "legacy.txt").write_text("keep", encoding="utf-8")
+    stale = data / "venv.shared-alias.tmp"
+    stale.mkdir()
+    (stale / "stale.txt").write_text("old", encoding="utf-8")
+    shared = state / "venv"
+    shared_python = L._venv_python(shared)
+    shared_python.parent.mkdir(parents=True)
+    shared_python.write_text("", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(data))
+
+    def fake_alias(link, target):
+        assert not link.exists(), "staging path must be cleared before reuse"
+        link.mkdir()
+        (link / "fresh.txt").write_text("new", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(L, "_create_directory_alias", fake_alias)
+    L._ensure_plugin_data_venv_alias(shared)
+
+    assert (legacy / "fresh.txt").read_text(encoding="utf-8") == "new"
+    assert not (legacy / "stale.txt").exists()
+    assert (data / "venv.pre-shared" / "legacy.txt").read_text(
+        encoding="utf-8"
+    ) == "keep"
 
 
 def test_live_desktop_lock_defers_legacy_venv_alias_migration(state, monkeypatch):

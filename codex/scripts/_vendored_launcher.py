@@ -747,45 +747,83 @@ def _ensure_plugin_data_venv_alias(venv_dir: Path) -> None:
 def _migrate_plugin_data_venv_alias(
     data: Path, link: Path, venv_dir: Path
 ) -> None:
-    """Move one idle legacy venv aside and replace it with the shared alias."""
-    backup: Path | None = None
-    if os.path.lexists(link):
-        backup = data / "venv.pre-shared"
-        suffix = 1
-        while os.path.lexists(backup):
-            backup = data / f"venv.pre-shared.{suffix}"
-            suffix += 1
-        try:
-            _assert_provision_lock_owned()
-            link.rename(backup)
-            print(
-                f"[kumiho-claude] Preserved the previous hook runtime at {backup}.",
-                file=sys.stderr,
-            )
-        except OSError as exc:
-            print(
-                f"[kumiho-claude] Could not migrate the previous hook runtime "
-                f"yet ({exc}); retry after active hooks exit.",
-                file=sys.stderr,
-            )
-            return
+    """Move one idle legacy venv aside and replace it with the shared alias.
 
-    _assert_provision_lock_owned()
-    if _create_directory_alias(link, venv_dir):
+    Ordering is what makes this survive a crash.  The alias is built first,
+    under a temporary name, so the slow step (a PowerShell junction, up to a
+    couple of seconds on Windows) happens while the legacy venv is still in
+    place and every hook can still spawn.  Only then are the two renames done,
+    each of which is a single directory-entry update.  A kill between them
+    leaves either the legacy venv or the finished alias at ``link`` -- never
+    an absent path that neither ``.mcp.json`` nor a hook could start from and
+    that this launcher could not come back to repair.
+    """
+    if not os.path.lexists(link):
+        _assert_provision_lock_owned()
+        if not _create_directory_alias(link, venv_dir):
+            print(
+                f"[kumiho-claude] Could not link the hook runtime {link} to {venv_dir}.",
+                file=sys.stderr,
+            )
         return
 
+    staged = data / "venv.shared-alias.tmp"
+    if os.path.lexists(staged):
+        # A previous attempt died after staging.  A junction/symlink is a
+        # single directory entry, so removing it never touches the target.
+        try:
+            if os.name == "nt":
+                os.rmdir(staged)
+            else:
+                os.unlink(staged)
+        except OSError:
+            shutil.rmtree(staged, ignore_errors=True)
+    _assert_provision_lock_owned()
+    if not _create_directory_alias(staged, venv_dir):
+        print(
+            f"[kumiho-claude] Could not link the hook runtime {link} to {venv_dir}; "
+            "the previous hook runtime is left in place.",
+            file=sys.stderr,
+        )
+        return
+
+    backup = data / "venv.pre-shared"
+    suffix = 1
+    while os.path.lexists(backup):
+        backup = data / f"venv.pre-shared.{suffix}"
+        suffix += 1
+    try:
+        _assert_provision_lock_owned()
+        link.rename(backup)
+    except OSError as exc:
+        print(
+            f"[kumiho-claude] Could not migrate the previous hook runtime "
+            f"yet ({exc}); retry after active hooks exit.",
+            file=sys.stderr,
+        )
+        try:
+            if os.name == "nt":
+                os.rmdir(staged)
+            else:
+                os.unlink(staged)
+        except OSError:
+            pass
+        return
     print(
-        f"[kumiho-claude] Could not link the hook runtime {link} to {venv_dir}.",
+        f"[kumiho-claude] Preserved the previous hook runtime at {backup}.",
         file=sys.stderr,
     )
-    if backup is not None and not os.path.lexists(link):
+    try:
+        _assert_provision_lock_owned()
+        staged.rename(link)
+    except OSError as exc:
+        print(
+            f"[kumiho-claude] Could not install the hook runtime alias ({exc}); "
+            "restoring the previous hook runtime.",
+            file=sys.stderr,
+        )
         try:
-            _assert_provision_lock_owned()
             backup.rename(link)
-            print(
-                "[kumiho-claude] Restored the previous hook runtime.",
-                file=sys.stderr,
-            )
         except OSError:
             pass
 
@@ -3684,8 +3722,21 @@ def _resolve_ce_endpoint() -> str | None:
         if normalized:
             if not _ce_server_target_is_safe(
                 normalized,
+                # User-global Claude settings mark the key when they load it.
+                # The OS user environment (HKCU / ~/.profile) is the other
+                # trusted source and is hydrated earlier with set-if-absent
+                # semantics, so compare the live value against it directly
+                # instead of relying on a mark that hydration cannot leave.
                 allow_user_global_tls=(
                     "KUMIHO_CLAUDE_SERVER_ENDPOINT" in _TRUSTED_GLOBAL_CE_KEYS
+                    or (
+                        _host_launch_isolated()
+                        and raw == (
+                            _trusted_persisted_user_environment().get(
+                                "KUMIHO_CLAUDE_SERVER_ENDPOINT", ""
+                            ) or ""
+                        ).strip()
+                    )
                 ),
             ):
                 raise SystemExit(
