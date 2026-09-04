@@ -190,8 +190,14 @@ def _ensure_hook_interpreter(venv_dir: Path) -> None:
     exists, so a symlink to ``bin/python`` provides the same name.
     """
     _link_windows_bin(venv_dir)
-    if os.name == "nt":
-        return
+    if os.name != "nt":
+        _link_posix_pythonw(venv_dir)
+
+
+def _link_posix_pythonw(venv_dir: Path) -> None:
+    """``bin/pythonw`` -> ``python`` inside a POSIX venv, a copy where the
+    filesystem refuses symlinks. Idempotent and never raises: a hook that
+    cannot start is reported, not turned into a launcher failure."""
     bin_dir = venv_dir / "bin"
     target, link = bin_dir / "python", bin_dir / "pythonw"
     if link.exists() or not target.exists():
@@ -1694,6 +1700,18 @@ def main() -> int:
              "provisioner, which is not on the host's MCP startup clock.",
     )
     args, passthrough = parser.parse_known_args()
+
+    # Before anything that can take time (env hydration, discovery, auth): the
+    # hooks name <venv>/bin/pythonw, which on POSIX exists only once this link
+    # does, and SessionStart fires in parallel with this server's start. Cheap
+    # and idempotent; a venv that does not exist yet is _ensure_runtime's job.
+    try:
+        _early_venv = _venv_dir()
+        if _early_venv.exists():
+            _ensure_hook_interpreter(_early_venv)
+    except Exception as exc:  # noqa: BLE001 -- never fail the server for this
+        print("[kumiho-claude] Hook interpreter check skipped: %s" % exc,
+              file=sys.stderr)
 
     # Both flags mean "do the work here"; neither is on a startup clock, so
     # neither may hand provisioning off to yet another detached child.
