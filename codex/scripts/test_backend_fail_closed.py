@@ -110,6 +110,9 @@ def test_backend_independent_maintenance_can_repair_bad_config(
     launcher = tmp_path / "shared_launcher.py"
     launcher.write_text("", encoding="utf-8")
     monkeypatch.setattr(shim, "_LAUNCHER_CANDIDATES", (launcher,))
+    # shim.main writes this through os.environ directly. Register an initial
+    # value so monkeypatch removes it at teardown even when it began absent.
+    monkeypatch.setenv("KUMIHO_CLAUDE_HOST", "")
     monkeypatch.setattr(
         shim,
         "_apply_codex_config",
