@@ -155,7 +155,7 @@ def test_memory_skill_pins_bounded_recall_contract():
     for marker in (
         "## Bounded recall — Codex only",
         "limit=3",
-        "recall_mode=\"summarized\"",
+        "`recall_mode=\"summarized\"`",
         "1,200 characters or three items",
         "Do not fetch whole spaces",
         "kumiho_code_why",
