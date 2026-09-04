@@ -18,6 +18,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -37,8 +38,50 @@ SKILL_MD = PLUGIN_DIR / "skills" / "kumiho-memory" / "SKILL.md"
 REFS_DIR = PLUGIN_DIR / "skills" / "kumiho-memory" / "references"
 
 
+def _configure_explicit_ce() -> None:
+    """Bind CE directly so cached Cloud auth can never redirect ingestion."""
+    mode = (os.getenv("KUMIHO_CLAUDE_MODE", "") or "").strip().lower()
+    endpoint = (os.getenv("KUMIHO_SERVER_ENDPOINT", "") or "").strip()
+    if mode not in {"ce", "community", "self-hosted", "self_hosted", "local"}:
+        return
+    if not endpoint:
+        raise RuntimeError("CE ingestion requires KUMIHO_SERVER_ENDPOINT")
+    for key in (
+        "KUMIHO_AUTO_CONFIGURE",
+        "KUMIHO_CONTROL_PLANE_URL",
+        "KUMIHO_CONTROL_PLANE_API_URL",
+        "KUMIHO_DISCOVERY_CACHE_FILE",
+        "KUMIHO_TENANT_HINT",
+        "KUMIHO_FIREBASE_API_KEY",
+        "KUMIHO_FIREBASE_PROJECT_ID",
+        "KUMIHO_SERVER_USE_TLS",
+        "KUMIHO_SERVER_AUTHORITY",
+        "KUMIHO_SSL_TARGET_OVERRIDE",
+        "KUMIHO_SERVER_CA_FILE",
+        "KUMIHO_REQUIRE_TLS",
+    ):
+        os.environ.pop(key, None)
+    scheme = endpoint.partition("://")[0].lower() if "://" in endpoint else ""
+    if scheme in {"grpcs", "https"}:
+        os.environ["KUMIHO_SERVER_USE_TLS"] = "true"
+        os.environ["KUMIHO_REQUIRE_TLS"] = "1"
+    else:
+        os.environ["KUMIHO_SERVER_USE_TLS"] = "false"
+    os.environ["KUMIHO_AUTH_TOKEN"] = ""
+    import kumiho
+
+    client = kumiho.connect(
+        endpoint=endpoint,
+        token="",
+        enable_auto_login=False,
+        use_discovery=False,
+    )
+    kumiho.configure_default_client(client)
+
+
 def main() -> int:
     try:
+        _configure_explicit_ce()
         from kumiho_memory.skill_ingest import ingest_batch, ingest_skill, parse_skill
     except ImportError:
         print(
@@ -46,6 +89,9 @@ def main() -> int:
             "  pip install 'kumiho-memory[all]>=1.4.0'",
             file=sys.stderr,
         )
+        return 1
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
     dry_run = "--dry-run" in sys.argv or "-n" in sys.argv

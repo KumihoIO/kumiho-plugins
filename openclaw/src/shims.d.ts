@@ -1,18 +1,37 @@
 declare module "node:os" {
   export function homedir(): string;
   export function platform(): string;
+  export function userInfo(): { homedir: string };
 }
 
 declare module "node:path" {
   export function join(...paths: string[]): string;
+  export function isAbsolute(path: string): boolean;
 }
 
 declare module "node:fs" {
+  interface FileStats {
+    size: number;
+    isFile(): boolean;
+  }
+
+  export function closeSync(fd: number): void;
   export function existsSync(path: string): boolean;
+  export function fstatSync(fd: number): FileStats;
+  export function openSync(path: string, flags: string): number;
   export function readFileSync(
-    path: string,
+    path: string | import("node:url").URL,
     encoding?: string,
   ): string;
+  export function readSync(
+    fd: number,
+    buffer: Buffer,
+    offset: number,
+    length: number,
+    position: number,
+  ): number;
+  export function realpathSync(path: string): string;
+  export function statSync(path: string): FileStats;
   export function writeFileSync(
     path: string,
     data: string,
@@ -62,6 +81,7 @@ declare module "node:child_process" {
     env?: Record<string, string | undefined>;
     cwd?: string;
     detached?: boolean;
+    windowsHide?: boolean;
   }
 
   export function spawn(
@@ -73,6 +93,7 @@ declare module "node:child_process" {
   export interface SpawnSyncOptions {
     encoding?: string;
     timeout?: number;
+    windowsHide?: boolean;
   }
 
   export function spawnSync(
@@ -109,9 +130,16 @@ declare module "node:url" {
   export class URL {
     constructor(input: string, base?: string);
     hostname: string;
+    username: string;
+    password: string;
+    pathname: string;
+    search: string;
+    hash: string;
     port: string;
     protocol: string;
   }
+
+  export function fileURLToPath(url: URL): string;
 }
 
 declare module "node:crypto" {
@@ -215,9 +243,16 @@ declare module "openclaw/plugin-sdk" {
 
 declare const process: {
   env: Record<string, string | undefined>;
+  execPath: string;
+  platform: string;
 };
 
 declare class Buffer {
+  static alloc(size: number): Buffer;
+  static from(data: number[]): Buffer;
+  readUInt32LE(offset: number): number;
+  equals(otherBuffer: Buffer): boolean;
+  readonly [index: number]: number;
   toString(encoding?: string): string;
 }
 

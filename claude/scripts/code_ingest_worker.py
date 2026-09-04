@@ -9,7 +9,7 @@ environment hydration + venv provisioning + LLM mining pass:
    CE-mode endpoint bootstrap / LLM fallback) by importing
    ``run_kumiho_mcp`` from this directory — the worker connects to exactly
    the same server the MCP tools use, cloud or self-hosted CE alike.
-2. Ensures the plugin venv (same one the MCP server runs in).
+2. Ensures the shared Kumiho venv (same one Desktop, Claude, and Codex use).
 3. Runs ``python -m kumiho_memory code-ingest <repo>`` in incremental
    mode: already-captured commits are marker-skipped at zero LLM cost, so
    over-triggering costs nothing.
@@ -120,9 +120,18 @@ def main() -> int:
         env = dict(os.environ)
         env["KUMIHO_MEMORY_CODE"] = "1"
         log(f"ingest start: repo={repo_dir} (newest {MAX_COMMITS}, incremental)")
+        command = [
+            str(python_path), "-m", "kumiho_memory", "code-ingest", repo_dir,
+            "--max-commits", str(MAX_COMMITS),
+        ]
+        if launcher._ce_mode_enabled():
+            adapter = Path(__file__).resolve().parent / "run_kumiho_ce.py"
+            command = [
+                str(python_path), str(adapter), "--module", "kumiho_memory",
+                "code-ingest", repo_dir, "--max-commits", str(MAX_COMMITS),
+            ]
         proc = bounded_proc.run(
-            [str(python_path), "-m", "kumiho_memory", "code-ingest", repo_dir,
-             "--max-commits", str(MAX_COMMITS)],
+            command,
             env=env, timeout=INGEST_TIMEOUT_S,
         )
         tail = (proc.stdout or "").strip().splitlines()[-12:]

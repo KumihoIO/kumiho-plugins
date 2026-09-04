@@ -59,11 +59,13 @@ class _Spy:
 
     def __init__(self, result=None, error=""):
         self.calls = []
+        self.ce_modes = []
         self.result = result
         self.error = error
 
-    def __call__(self, python_path, args):
+    def __call__(self, python_path, args, *, ce_mode=False):
         self.calls.append((str(python_path), args))
+        self.ce_modes.append(ce_mode)
         return self.result, self.error
 
 
@@ -71,6 +73,7 @@ def _prepare(tmp_path, monkeypatch, *, sid="s1", prompt="why did we pick postgre
              endpoint="grpc.kumiho.example:443", venv=True, spy=None, mod=None):
     """A warm, offline environment: state dir, fake venv, cached endpoint."""
     monkeypatch.setenv("KUMIHO_CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setenv("KUMIHO_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("KUMIHO_REFLEX_PREFETCH", raising=False)
     monkeypatch.delenv("KUMIHO_CLAUDE_MODE", raising=False)
     monkeypatch.delenv("KUMIHO_CLAUDE_SERVER_ENDPOINT", raising=False)
@@ -81,14 +84,13 @@ def _prepare(tmp_path, monkeypatch, *, sid="s1", prompt="why did we pick postgre
     reflex = tmp_path / "reflex"
     reflex.mkdir(parents=True, exist_ok=True)
     if venv:
-        # Build the fake venv where the worker ACTUALLY looks. This fixture used
-        # to hardcode <state>/venv; when the real venv moved under the plugin
-        # data dir the worker went dead in production while these tests stayed
-        # green, because the fixture and the bug agreed with each other.
+        # Build the fake venv at the shared Kumiho-home path where the worker
+        # actually looks. CLAUDE_PLUGIN_DATA remains a deliberately different
+        # path so a regression back to the old per-plugin runtime fails loudly.
         monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "pdata"))
         (tmp_path / ".installed-packages.txt").write_text("kumiho", encoding="utf-8")
         for sub in ("Scripts", "bin"):
-            d = tmp_path / "pdata" / "venv" / sub
+            d = tmp_path / "venv" / sub
             d.mkdir(parents=True, exist_ok=True)
             (d / "python.exe").write_text("", encoding="utf-8")
             (d / "python").write_text("", encoding="utf-8")
@@ -102,6 +104,20 @@ def _prepare(tmp_path, monkeypatch, *, sid="s1", prompt="why did we pick postgre
             json.dumps({"prompt": prompt}, ensure_ascii=True), encoding="utf-8")
 
     mod = mod or _load()
+    real_load_launcher = mod._load_launcher
+
+    def isolated_launcher():
+        launcher = real_load_launcher()
+        # The worker deliberately mirrors Claude's normal hydration pipeline,
+        # but this test must not import the developer machine's real
+        # ~/.claude/settings.json or repository .env files.  Keep the pipeline
+        # itself and replace only its external candidate sources.
+        launcher._hydrate_env_from_dotenv = lambda: None
+        launcher._hydrate_env_from_claude_settings = lambda: None
+        launcher._hydrate_env_from_plugin_mcp = lambda: None
+        return launcher
+
+    monkeypatch.setattr(mod, "_load_launcher", isolated_launcher)
     if spy is not None:
         monkeypatch.setattr(mod, "_call_engage", spy)
     monkeypatch.setattr(sys, "argv",
@@ -149,6 +165,18 @@ def test_engage_payload_produces_the_exact_cache_contract(tmp_path, monkeypatch)
     assert args["recall_mode"] == "summarized"
     assert "top_k" not in args and "session_id" not in args
     assert "postgres" in args["query"].lower()
+    assert spy.ce_modes == [False]
+
+
+def test_endpoint_only_ce_prefetch_uses_the_tokenless_adapter(tmp_path, monkeypatch):
+    """An explicit CE endpoint is a complete CE selection even without MODE."""
+    spy = _Spy(_payload())
+    mod = _prepare(tmp_path, monkeypatch, spy=spy)
+    monkeypatch.setenv(
+        "KUMIHO_CLAUDE_SERVER_ENDPOINT", "grpcs://ce.example.test:7443"
+    )
+    assert mod.main() == 0
+    assert spy.ce_modes == [True]
 
 
 def test_content_sha12_is_stable_across_runs(tmp_path, monkeypatch):

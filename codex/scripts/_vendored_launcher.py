@@ -5,18 +5,23 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
+import contextvars
+import ctypes
+import ipaddress
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import venv
 from pathlib import Path
 
 import bounded_proc
@@ -28,6 +33,15 @@ MARKER_FILE = ".installed-packages.txt"
 #: critical path, so it is short -- a venv that cannot answer in this long is
 #: broken, and the caller reinstalls.
 PROBE_TIMEOUT_S = 60
+STARTUP_PROBE_TIMEOUT_S = 5
+#: A hung package manager must not hold the cross-host runtime forever.  The
+#: process-tree terminator below makes this a real bound even when pip starts a
+#: build backend of its own.
+PIP_TIMEOUT_S = 1800
+# A successful full runtime probe leaves a fingerprint beside the shared venv.
+# Startup can trust it without repeating a probe that may exceed the host's
+# five-second launch budget on antivirus-scanned or network-backed profiles.
+RUNTIME_ATTESTATION_FILE = ".runtime-ready.json"
 #: Product token for the discovery User-Agent. The version half is read from
 #: the plugin manifest at startup (see ``_default_discovery_user_agent``)
 #: rather than pinned here -- a pinned copy sat at 0.16.0 through five minor
@@ -41,10 +55,9 @@ DISCOVERY_USER_AGENT_PRODUCT = "kumiho-claude"
 #: number: a wrong number is worse telemetry than an honest "unknown".
 DISCOVERY_USER_AGENT_UNKNOWN_VERSION = "unknown"
 
-# Self-hosted Community Edition (CE) defaults.  Mirrors the kumiho-gpt-connect
-# CE backend: the SDK routes to a loopback CE server when no auth token is set,
-# with KUMIHO_LOCAL_SERVER_ENDPOINT overriding the gRPC target and a local Redis
-# URL backing CE working memory (cloud gets Redis via the control-plane proxy).
+# Self-hosted Community Edition (CE) defaults.  CE is bound through an explicit
+# tokenless SDK client at KUMIHO_SERVER_ENDPOINT; a local Redis URL backs CE
+# working memory (Cloud gets Redis through the control-plane proxy).
 DEFAULT_CE_ENDPOINT = "127.0.0.1:9190"
 DEFAULT_CE_REDIS_URL = "redis://127.0.0.1:6379"
 #: Idle TTL (seconds) of the CE working-memory buffer. kumiho-memory's own
@@ -55,10 +68,143 @@ DEFAULT_CE_REDIS_URL = "redis://127.0.0.1:6379"
 DEFAULT_CE_WORKING_MEMORY_TTL = "86400"
 CE_MODE_VALUES = {"ce", "community", "self-hosted", "self_hosted", "selfhosted", "local"}
 
+# Claude Code applies project ``.claude/settings*.json`` environment entries
+# before it starts plugin MCP servers.  Those values are therefore ambient by
+# the time this launcher runs and cannot be distinguished from a shell export.
+# Never let repository-controlled Cloud routing pair with the user's shared
+# ``~/.kumiho`` bearer.  Host launches clear these names first, then the
+# settings reader below restores only the small allowlist it read directly
+# from user-global ``~/.claude/settings*.json``.
+_HOST_UNTRUSTED_CLOUD_ENV = (
+    "KUMIHO_CONTROL_PLANE_URL",
+    "KUMIHO_CONTROL_PLANE_API_URL",
+    "KUMIHO_TENANT_HINT",
+    "KUMIHO_FIREBASE_API_KEY",
+    "KUMIHO_FIREBASE_ID_TOKEN",
+    "KUMIHO_FIREBASE_PROJECT_ID",
+    "KUMIHO_USE_CONTROL_PLANE_TOKEN",
+    "KUMIHO_AUTO_CONFIGURE",
+    "KUMIHO_DISCOVERY_CACHE_FILE",
+    "KUMIHO_WORKSPACE_ROOT",
+    "KUMIHO_ENV_FILE",
+)
+_HOST_UNTRUSTED_PATH_ENV = (
+    "KUMIHO_CONFIG_DIR",
+    "CLAUDE_CONFIG_DIR",
+    "KUMIHO_CLAUDE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "HOME",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+)
+_HOST_KINDS = {"claude", "codex"}
+
+# Package managers and build backends never need host credentials. Keeping
+# these out of provisioning children prevents a dependency build hook from
+# inheriting Cloud bearer tokens or optional model-provider keys.
+_PROVISION_SECRET_ENV = frozenset({
+    "KUMIHO_AUTH_TOKEN",
+    "KUMIHO_FIREBASE_API_KEY",
+    "KUMIHO_FIREBASE_ID_TOKEN",
+    "KUMIHO_FIREBASE_PROJECT_ID",
+    "KUMIHO_USE_CONTROL_PLANE_TOKEN",
+    "KUMIHO_CONTROL_PLANE_URL",
+    "KUMIHO_CONTROL_PLANE_API_URL",
+    "KUMIHO_TENANT_HINT",
+    "KUMIHO_SERVER_ENDPOINT",
+    "KUMIHO_SERVER_ADDRESS",
+    "KUMIHO_LOCAL_SERVER_ENDPOINT",
+    "KUMIHO_CLAUDE_SERVER_ENDPOINT",
+    "KUMIHO_CLAUDE_MODE",
+    "KUMIHO_CODEX_BACKEND",
+    "KUMIHO_CODEX_CE_ENDPOINT",
+    "KUMIHO_CODEX_CE_REDIS_URL",
+    "KUMIHO_CODEX_CE_LLM_BASE_URL",
+    "KUMIHO_SERVER_AUTHORITY",
+    "KUMIHO_SSL_TARGET_OVERRIDE",
+    "KUMIHO_SERVER_CA_FILE",
+    "KUMIHO_LLM_API_KEY",
+    "KUMIHO_LLM_BASE_URL",
+    "KUMIHO_ENV_FILE",
+    "KUMIHO_DISCOVERY_CACHE_FILE",
+    "KUMIHO_AUTO_CONFIGURE",
+    "KUMIHO_REQUIRE_TLS",
+    "KUMIHO_SERVER_USE_TLS",
+    "UPSTASH_REDIS_URL",
+    "KUMIHO_UPSTASH_REDIS_URL",
+    "KUMIHO_LOCAL_REDIS_URL",
+    "KUMIHO_MEMORY_PROXY_URL",
+    "KUMIHO_MCP_HOSTED",
+    "KUMIHO_HOSTED_LOCAL_REDIS",
+    "UPSTASH_REDIS_REST_URL",
+    "UPSTASH_REDIS_REST_TOKEN",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AZURE_CLIENT_SECRET",
+    "AZURE_OPENAI_ENDPOINT",
+    "AZURE_OPENAI_API_KEY",
+    "HF_TOKEN",
+})
+_PROVISION_SECRET_SUFFIXES = (
+    "_API_KEY",
+    "_AUTH_TOKEN",
+    "_ACCESS_TOKEN",
+    "_SECRET_KEY",
+    "_TOKEN",
+)
+_PROVISION_CONTROL_ENV = frozenset({
+    "KUMIHO_CLAUDE_PROVISION_LOCK_TOKEN",
+    "KUMIHO_CLAUDE_PROVISION_SYNC",
+    "KUMIHO_CLAUDE_PACKAGE_SPEC",
+})
+
 #: CREATE_NO_WINDOW: for a child whose output we capture and that spawns nothing
 #: itself (mklink). A child that may spawn console processes of its own gets
 #: _hidden_console_kwargs() instead, so its descendants inherit a hidden console.
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+
+class _CodexPrefixStream:
+    """Render shared-launcher diagnostics as Codex without changing Claude."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, value):
+        return self._stream.write(
+            value.replace("[kumiho-claude]", "[kumiho-codex]")
+        )
+
+    def flush(self):
+        return self._stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def _configure_host_diagnostics() -> None:
+    if (
+        (os.getenv("KUMIHO_CLAUDE_HOST", "") or "").strip().lower() == "codex"
+        and sys.stderr is not None
+        and not isinstance(sys.stderr, _CodexPrefixStream)
+    ):
+        sys.stderr = _CodexPrefixStream(sys.stderr)
+
+
+def _onboard_command_label() -> str:
+    return "$kumiho-onboard" if os.getenv("KUMIHO_CLAUDE_HOST") == "codex" else "/kumiho-onboard"
 
 
 def _hidden_console_kwargs() -> dict:
@@ -125,21 +271,266 @@ def _plugin_data_dir() -> "Path | None":
     return None
 
 
-def _venv_dir() -> Path:
-    """Where the ONE venv lives.
+def _host_launch_isolated() -> bool:
+    """Whether repository-provided ambient routing must be distrusted."""
+    return (os.getenv("KUMIHO_CLAUDE_HOST", "") or "").strip().lower() in _HOST_KINDS
 
-    Under the plugin data dir when we can find it, so that hooks can spawn its
-    interpreter directly; otherwise the state dir, which is what a dev checkout
-    or a Desktop config-spawned launcher gets.
+
+def _account_home() -> Path:
+    """Return the OS account home without trusting host-injected HOME values."""
+    if not _host_launch_isolated():
+        return Path.home()
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            buffer = ctypes.create_unicode_buffer(32768)
+            # CSIDL_PROFILE is resolved by Windows for the current access token.
+            result = ctypes.windll.shell32.SHGetFolderPathW(
+                None, 0x0028, None, 0, buffer
+            )
+            home = Path(buffer.value) if result == 0 and buffer.value else None
+        else:
+            import pwd
+
+            home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except Exception:
+        home = None
+    if home is None or not home.is_absolute():
+        raise SystemExit(
+            "[kumiho-claude] Could not resolve the operating-system account home; "
+            "refusing a host-provided runtime path."
+        )
+    return home
+
+
+def _clear_host_untrusted_environment() -> None:
+    """Drop Cloud route/cache and runtime-root values injected by a project.
+
+    This deliberately runs before credentials are loaded.  Claude's trusted
+    user-global settings are read back by :func:`_hydrate_env_from_claude_settings`;
+    Codex restores no Claude setting and applies its own backend file instead.
+    Direct maintenance invocations without an explicit host retain the legacy
+    environment override behavior used by developers and tests.
     """
-    data = _plugin_data_dir()
-    return (data / "venv") if data else (_state_dir() / "venv")
+    if not _host_launch_isolated():
+        return
+    account_home = _account_home()
+    for key in (*_HOST_UNTRUSTED_CLOUD_ENV, *_HOST_UNTRUSTED_PATH_ENV):
+        os.environ.pop(key, None)
+    # Keep subsequent stdlib/SDK Path.home and user-config lookups pinned to
+    # the OS account even if the host originally inherited hostile values.
+    os.environ["HOME"] = str(account_home)
+    os.environ["USERPROFILE"] = str(account_home)
+    if os.name == "nt":
+        drive, tail = os.path.splitdrive(str(account_home))
+        os.environ["HOMEDRIVE"] = drive
+        os.environ["HOMEPATH"] = tail or "\\"
+        os.environ["APPDATA"] = str(account_home / "AppData" / "Roaming")
+        os.environ["LOCALAPPDATA"] = str(account_home / "AppData" / "Local")
+
+
+def _kumiho_home() -> Path:
+    """Cross-host Kumiho home used for the single shared runtime."""
+    override = (os.getenv("KUMIHO_CONFIG_DIR", "") or "").strip()
+    if override:
+        return Path(override) if _host_launch_isolated() else Path(override).expanduser()
+    return _account_home() / ".kumiho"
+
+
+def _venv_dir() -> Path:
+    """The one runtime shared by Claude and Codex."""
+    return _kumiho_home() / "venv"
 
 
 def _venv_python(venv_dir: Path) -> Path:
     if os.name == "nt":
         return venv_dir / "Scripts" / "python.exe"
     return venv_dir / "bin" / "python"
+
+
+def _windows_pe_executable(path: Path) -> bool:
+    """Reject text/DOS/NE files before Windows can show a modal app dialog."""
+    if os.name != "nt":
+        return True
+    try:
+        size = path.stat().st_size
+        if size < 68:
+            return False
+        with path.open("rb") as stream:
+            header = stream.read(64)
+            if len(header) != 64 or header[:2] != b"MZ":
+                return False
+            pe_offset = int.from_bytes(header[0x3C:0x40], "little")
+            if pe_offset < 64 or pe_offset > min(size - 4, 4 * 1024 * 1024):
+                return False
+            stream.seek(pe_offset)
+            return stream.read(4) == b"PE\0\0"
+    except OSError:
+        return False
+
+
+def _windows_system_executable(name: str) -> str:
+    """Resolve a Windows system binary without trusting PATH/SystemRoot."""
+    if os.name != "nt":
+        return name
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetSystemDirectoryW.argtypes = (
+            ctypes.c_wchar_p,
+            ctypes.c_uint,
+        )
+        kernel32.GetSystemDirectoryW.restype = ctypes.c_uint
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = kernel32.GetSystemDirectoryW(buffer, len(buffer))
+        if 0 < length < len(buffer):
+            return str(Path(buffer.value) / name)
+    except Exception:
+        pass
+    return str(Path(r"C:\Windows\System32") / name)
+
+
+def _windows_powershell_executable() -> str:
+    """Resolve inbox Windows PowerShell without consulting mutable PATH."""
+    system_dir = Path(_windows_system_executable("cmd.exe")).parent
+    return str(system_dir / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+
+
+def _create_windows_junction(link: Path, target: Path):
+    """Create a junction while keeping both paths out of shell source text."""
+    values = (str(link), str(target))
+    if any(any(char in value for char in '\r\n\0"') for value in values):
+        return None
+    env = _provision_subprocess_env({
+        "KUMIHO_JUNCTION_LINK": values[0],
+        "KUMIHO_JUNCTION_TARGET": values[1],
+    })
+    try:
+        return bounded_proc.run(
+            [
+                _windows_powershell_executable(),
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ErrorActionPreference='Stop'; "
+                "New-Item -ItemType Junction "
+                "-Path $env:KUMIHO_JUNCTION_LINK "
+                "-Target $env:KUMIHO_JUNCTION_TARGET "
+                "-ErrorAction Stop | Out-Null",
+            ],
+            env=env,
+            timeout=30,
+        )
+    except bounded_proc.ProcessAborted:
+        raise
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _create_directory_alias(link: Path, target: Path) -> bool:
+    """Create a directory symlink (POSIX) or junction (Windows)."""
+    try:
+        if os.name != "nt":
+            os.symlink(target, link, target_is_directory=True)
+            return True
+        result = _create_windows_junction(link, target)
+        return result is not None and result.returncode == 0 and link.is_dir()
+    except bounded_proc.ProcessAborted:
+        raise
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _ensure_plugin_data_venv_alias(venv_dir: Path) -> None:
+    """Keep Claude's fixed hook path pointed at the cross-host runtime.
+
+    Older releases put a real venv under ``CLAUDE_PLUGIN_DATA``. It cannot be
+    reused after a move because venv launchers embed absolute paths, so retain
+    it as a recoverable ``venv.pre-shared*`` backup and install an alias. A
+    locked Windows directory is left untouched and retried on the next start.
+    """
+    if (os.getenv("KUMIHO_CLAUDE_HOST", "") or "").strip().lower() == "codex":
+        return
+    _assert_provision_lock_owned()
+    data = _plugin_data_dir()
+    if data is None or not _venv_python(venv_dir).exists():
+        return
+    link = data / "venv"
+    try:
+        if os.path.lexists(link) and link.resolve() == venv_dir.resolve():
+            return
+    except OSError:
+        pass
+
+    _assert_provision_lock_owned()
+    data.mkdir(parents=True, exist_ok=True)
+    migration_token = _acquire_alias_migration_lock(data)
+    if migration_token is None:
+        print(
+            "[kumiho-claude] The previous hook runtime is busy; deferring its "
+            "shared-runtime migration.",
+            file=sys.stderr,
+        )
+        return
+    try:
+        # Another launcher may have completed the migration while this process
+        # waited for the legacy Desktop lock.
+        try:
+            if os.path.lexists(link) and link.resolve() == venv_dir.resolve():
+                return
+        except OSError:
+            pass
+        _assert_provision_lock_owned()
+        _migrate_plugin_data_venv_alias(data, link, venv_dir)
+    finally:
+        _release_alias_migration_lock(data, migration_token)
+
+
+def _migrate_plugin_data_venv_alias(
+    data: Path, link: Path, venv_dir: Path
+) -> None:
+    """Move one idle legacy venv aside and replace it with the shared alias."""
+    backup: Path | None = None
+    if os.path.lexists(link):
+        backup = data / "venv.pre-shared"
+        suffix = 1
+        while os.path.lexists(backup):
+            backup = data / f"venv.pre-shared.{suffix}"
+            suffix += 1
+        try:
+            _assert_provision_lock_owned()
+            link.rename(backup)
+            print(
+                f"[kumiho-claude] Preserved the previous hook runtime at {backup}.",
+                file=sys.stderr,
+            )
+        except OSError as exc:
+            print(
+                f"[kumiho-claude] Could not migrate the previous hook runtime "
+                f"yet ({exc}); retry after active hooks exit.",
+                file=sys.stderr,
+            )
+            return
+
+    _assert_provision_lock_owned()
+    if _create_directory_alias(link, venv_dir):
+        return
+
+    print(
+        f"[kumiho-claude] Could not link the hook runtime {link} to {venv_dir}.",
+        file=sys.stderr,
+    )
+    if backup is not None and not os.path.lexists(link):
+        try:
+            _assert_provision_lock_owned()
+            backup.rename(link)
+            print(
+                "[kumiho-claude] Restored the previous hook runtime.",
+                file=sys.stderr,
+            )
+        except OSError:
+            pass
 
 
 def _link_windows_bin(venv_dir: Path) -> None:
@@ -161,13 +552,8 @@ def _link_windows_bin(venv_dir: Path) -> None:
     bin_dir, scripts = venv_dir / "bin", venv_dir / "Scripts"
     if bin_dir.exists() or not scripts.is_dir():
         return
-    try:
-        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(bin_dir), str(scripts)],
-                           capture_output=True, text=True, timeout=30, check=False,
-                           creationflags=_NO_WINDOW)
-    except (OSError, subprocess.SubprocessError) as exc:
-        r = None
-        print("[kumiho-claude] Could not link %s (%s)" % (bin_dir, exc), file=sys.stderr)
+    _assert_provision_lock_owned()
+    r = _create_windows_junction(bin_dir, scripts)
     # Report rather than fail silently: without this junction every hook is
     # unstartable, and a hook that never fires looks like a plugin that does
     # nothing rather than one that is broken.
@@ -203,21 +589,52 @@ def _link_posix_pythonw(venv_dir: Path) -> None:
     if link.exists() or not target.exists():
         return
     try:
+        _assert_provision_lock_owned()
         os.symlink("python", link)
     except OSError:
         try:
+            _assert_provision_lock_owned()
             shutil.copy2(target, link)
         except OSError as exc:
             print("[kumiho-claude] Could not create %s (%s); hooks will not fire "
                   "until it exists" % (link, exc), file=sys.stderr)
 
 
-def _run(cmd: list[str], *, check: bool = True) -> int:
+def _provision_subprocess_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Return an environment suitable for venv/pip/build-backend children."""
+    env = os.environ.copy()
+    for key in tuple(env):
+        normalized = key.upper()
+        if normalized in _PROVISION_CONTROL_ENV:
+            continue
+        if (
+            normalized in _PROVISION_SECRET_ENV
+            or normalized.endswith(_PROVISION_SECRET_SUFFIXES)
+        ):
+            env.pop(key, None)
+    if extra:
+        env.update(extra)
+    return env
+
+
+def _run(
+    cmd: list[str], *, check: bool = True, timeout: float | None = None,
+    env: dict[str, str] | None = None,
+) -> int:
     # Redirect stdout → stderr so pip/venv output never pollutes the MCP
     # stdio channel.  Claude Desktop connects stdout directly to its
     # JSON-RPC parser, so any stray text there hangs the connection.
-    proc = subprocess.run(cmd, stdout=sys.stderr, check=check, **_hidden_console_kwargs())
-    return proc.returncode
+    result = bounded_proc.run(
+        cmd,
+        timeout=timeout,
+        env=env,
+        stdout=sys.stderr,
+        stderr=None,
+    )
+    returncode = result.returncode
+    if check and returncode:
+        raise subprocess.CalledProcessError(returncode, cmd)
+    return returncode
 
 
 #: Pre-release stages and their sort position relative to the bare release (0).
@@ -334,30 +751,73 @@ def _spec_floors(package_spec: str):
     return reqs, understood
 
 
-def _installed_versions(python_path: Path, names: list) -> dict:
-    """What the venv actually has, ``None`` for absent. ``{}`` if unknowable."""
+def _installed_versions(
+    python_path: Path, requirements: list, timeout_s: float = PROBE_TIMEOUT_S
+) -> dict:
+    """Installed versions/modules/extras, or ``{}`` when unknowable."""
     # find_spec on a DOTTED name imports the parent package, so a plain
     # find_spec('kumiho.mcp_server') raises ModuleNotFoundError on exactly the
     # empty venv this is meant to report on -- which killed the whole probe
     # rather than answering "not installed".
+    if not _windows_pe_executable(python_path):
+        return {}
     probe = (
-        "import json,sys,importlib.util\n"
-        "from importlib.metadata import version, PackageNotFoundError\n"
+        "import json,os,sys,importlib.util\n"
+        "from importlib.metadata import distribution,version,PackageNotFoundError\n"
         "def have(m):\n"
         "    try: return importlib.util.find_spec(m) is not None\n"
         "    except (ImportError, ValueError): return False\n"
-        "out={}\n"
-        "for n in json.loads(sys.argv[1]):\n"
+        "reqs=json.loads(sys.argv[1])\n"
+        "expected=os.path.normcase(os.path.realpath(sys.argv[2]))\n"
+        "prefix=os.path.normcase(os.path.realpath(sys.prefix))\n"
+        "base=os.path.normcase(os.path.realpath(sys.base_prefix))\n"
+        "out={'__python_ok__':sys.version_info >= (3,10) and prefix == expected and prefix != base}\n"
+        "for n,_extras in reqs:\n"
         "    try: out[n]=version(n)\n"
         "    except PackageNotFoundError: out[n]=None\n"
         "out['__modules__']=all(have(m)\n"
         "                       for m in ('kumiho.mcp_server','kumiho_memory'))\n"
+        "try:\n"
+        "    try:\n"
+        "        from packaging.markers import default_environment\n"
+        "        from packaging.requirements import Requirement\n"
+        "    except ImportError:\n"
+        "        from pip._vendor.packaging.markers import default_environment\n"
+        "        from pip._vendor.packaging.requirements import Requirement\n"
+        "    extras_ok=True\n"
+        "    for n,extras in reqs:\n"
+        "        dist=distribution(n)\n"
+        "        for extra in extras:\n"
+        "            env=default_environment(); env['extra']=extra\n"
+        "            for raw in (dist.requires or []):\n"
+        "                dep=Requirement(raw)\n"
+        "                if dep.marker is not None and dep.marker.evaluate(env):\n"
+        "                    try: dep_version=version(dep.name)\n"
+        "                    except PackageNotFoundError: extras_ok=False; continue\n"
+        "                    if dep.specifier and not dep.specifier.contains(dep_version, prereleases=True):\n"
+        "                        extras_ok=False\n"
+        "    out['__extras__']=extras_ok\n"
+        "except Exception:\n"
+        "    out['__extras__']=not any(extras for _n,extras in reqs)\n"
         "print(json.dumps(out))\n"
     )
+    normalized = [
+        [entry[0], sorted(entry[1])]
+        if isinstance(entry, (tuple, list)) and len(entry) >= 2
+        else [entry, []]
+        for entry in requirements
+    ]
     try:
         r = bounded_proc.run(
-            [str(python_path), "-c", probe, json.dumps(names)],
-            timeout=PROBE_TIMEOUT_S,
+            [
+                str(python_path),
+                "-c",
+                probe,
+                json.dumps(normalized),
+                str(python_path.parent.parent.resolve()),
+            ],
+            timeout=timeout_s,
+            env=_provision_subprocess_env(),
         )
     except (subprocess.TimeoutExpired, OSError):
         return {}
@@ -369,7 +829,12 @@ def _installed_versions(python_path: Path, names: list) -> dict:
         return {}
 
 
-def _needs_install(python_path: Path, marker_path: Path, package_spec: str) -> bool:
+def _needs_install(
+    python_path: Path,
+    marker_path: Path,
+    package_spec: str,
+    probe_timeout_s: float = PROBE_TIMEOUT_S,
+) -> bool:
     """Is the venv below what ``package_spec`` requires?
 
     Compares INSTALLED VERSIONS, not marker text. The old ``marker !=
@@ -399,6 +864,7 @@ def _needs_install(python_path: Path, marker_path: Path, package_spec: str) -> b
     if not understood or not reqs:
         return True  # a constraint we cannot evaluate -> reinstall, never assume
 
+    marker_matches = False
     if marker_path.exists():
         try:
             previous, prev_ok = _spec_floors(
@@ -408,12 +874,25 @@ def _needs_install(python_path: Path, marker_path: Path, package_spec: str) -> b
         identity = {(n, e) for n, e, _f, _c in reqs}
         if not prev_ok or {(n, e) for n, e, _f, _c in previous} != identity:
             return True
+        marker_matches = True
 
-    installed = _installed_versions(python_path, [r[0] for r in reqs])
+    installed = _installed_versions(
+        python_path,
+        [(name, extras) for name, extras, _floor, _ceiling in reqs],
+        timeout_s=probe_timeout_s,
+    )
     if not installed:
         return True  # cannot establish satisfaction -> reinstall, as before
+    if not installed.get("__python_ok__"):
+        return True
     if not installed.get("__modules__"):
         return True
+    # Verify the dependencies selected by requested extras on every probe.
+    # The marker records WHICH extras were requested; it cannot prove their
+    # dependencies still exist after an interrupted Desktop/pip update.
+    if any(extras for _name, extras, _f, _c in reqs):
+        if not installed.get("__extras__"):
+            return True
 
     for name, _extras, floor, ceiling in reqs:
         have = installed.get(name)
@@ -430,14 +909,43 @@ def _needs_install(python_path: Path, marker_path: Path, package_spec: str) -> b
 
 
 def _install_dependencies(python_path: Path, package_spec: str) -> None:
-    _run([str(python_path), "-m", "pip", "install", "--upgrade", "pip"])
+    provision_env = _provision_subprocess_env()
+    if _run(
+        [str(python_path), "-m", "pip", "--version"],
+        check=False,
+        timeout=PROBE_TIMEOUT_S,
+        env=provision_env,
+    ):
+        _run(
+            [str(python_path), "-m", "ensurepip", "--upgrade"],
+            timeout=PIP_TIMEOUT_S,
+            env=provision_env,
+        )
+    _run(
+        [str(python_path), "-m", "pip", "install", "--upgrade", "pip"],
+        timeout=PIP_TIMEOUT_S,
+        env=provision_env,
+    )
     packages = shlex.split(package_spec) if package_spec else shlex.split(DEFAULT_PACKAGE_SPEC)
-    _run([str(python_path), "-m", "pip", "install", "--upgrade", *packages])
+    _run(
+        [str(python_path), "-m", "pip", "install", "--upgrade", *packages],
+        timeout=PIP_TIMEOUT_S,
+        env=provision_env,
+    )
 
 
 #: Set by the detached provisioner and by the wizard/self-test, which are not on
 #: a startup clock and must actually do the work rather than delegate it again.
 _SYNC_PROVISION_ENV = "KUMIHO_CLAUDE_PROVISION_SYNC"
+_PROVISION_LOCK_TOKEN_ENV = "KUMIHO_CLAUDE_PROVISION_LOCK_TOKEN"
+
+# Bound to the lock-owning thread for the duration of provisioning. Long
+# subprocesses observe the same loss through bounded_proc.abort_scope; pure
+# filesystem steps call the guard directly so they cannot keep mutating the
+# shared runtime after another owner has replaced any member of the lock set.
+_ACTIVE_PROVISION_LOCK_GUARD = contextvars.ContextVar(
+    "kumiho_active_provision_lock_guard", default=None
+)
 
 #: A cold provision was measured at 205-320 s and is slower on a poor link, so
 #: the staleness window is well above that. Past it we assume the holder died
@@ -449,12 +957,737 @@ def _provision_log_path() -> Path:
     return _state_dir() / "provision.log"
 
 
+def _marker_path() -> Path:
+    """Extras/install contract beside the shared venv it describes."""
+    return _venv_dir().parent / MARKER_FILE
+
+
+def _runtime_attestation_path() -> Path:
+    return _venv_dir().parent / RUNTIME_ATTESTATION_FILE
+
+
+def _site_packages_dirs(venv_dir: Path) -> list[Path]:
+    if os.name == "nt":
+        return [venv_dir / "Lib" / "site-packages"]
+    return sorted((venv_dir / "lib").glob("python*/site-packages"))
+
+
+def _venv_layout_version(venv_dir: Path, python_path: Path) -> str | None:
+    """Prove the attested executable still belongs to a Python 3.10+ venv."""
+    expected = _venv_python(venv_dir)
+    if os.path.normcase(str(expected.absolute())) != os.path.normcase(
+        str(python_path.absolute())
+    ):
+        return None
+    config = venv_dir / "pyvenv.cfg"
+    try:
+        text = config.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    match = re.search(r"(?mi)^\s*version\s*=\s*(\d+)\.(\d+)(?:\.\d+)?\s*$", text)
+    if not match or (int(match.group(1)), int(match.group(2))) < (3, 10):
+        return None
+    return match.group(0).partition("=")[2].strip()
+
+
+def _runtime_fingerprint(
+    venv_dir: Path, python_path: Path, marker_path: Path, package_spec: str
+) -> dict | None:
+    """Cheap mutation fingerprint for a runtime that passed a full probe."""
+    if not _windows_pe_executable(python_path):
+        return None
+    python_version = _venv_layout_version(venv_dir, python_path)
+    if python_version is None:
+        return None
+    requirements, understood = _spec_floors(package_spec)
+    if not understood or not requirements:
+        return None
+    try:
+        marker_text = marker_path.read_text(encoding="utf-8").strip()
+        python_stat = python_path.stat()
+        config_stat = (venv_dir / "pyvenv.cfg").stat()
+        sites = []
+        for site in _site_packages_dirs(venv_dir):
+            stat = site.stat()
+            sites.append([str(site.resolve()), stat.st_mtime_ns])
+        if marker_text != package_spec or not sites:
+            return None
+        return {
+            "schema": 2,
+            "package_spec": package_spec,
+            "python": str(python_path.resolve()),
+            "python_size": python_stat.st_size,
+            "python_mtime_ns": python_stat.st_mtime_ns,
+            "python_version": python_version,
+            "pyvenv_size": config_stat.st_size,
+            "pyvenv_mtime_ns": config_stat.st_mtime_ns,
+            "marker_mtime_ns": marker_path.stat().st_mtime_ns,
+            "site_packages": sites,
+        }
+    except OSError:
+        return None
+
+
+def _write_runtime_attestation(
+    venv_dir: Path, python_path: Path, marker_path: Path, package_spec: str
+) -> None:
+    fingerprint = _runtime_fingerprint(
+        venv_dir, python_path, marker_path, package_spec
+    )
+    if fingerprint is None:
+        return
+    target = _runtime_attestation_path()
+    _assert_provision_lock_owned()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(
+        f".{target.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    )
+    try:
+        _assert_provision_lock_owned()
+        fd = os.open(temp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            payload = (json.dumps(fingerprint, sort_keys=True) + "\n").encode("utf-8")
+            if os.write(fd, payload) != len(payload):
+                raise OSError("short runtime-attestation write")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        _assert_provision_lock_owned()
+        os.replace(temp, target)
+    finally:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _runtime_attestation_matches(
+    venv_dir: Path, python_path: Path, marker_path: Path, package_spec: str
+) -> bool:
+    try:
+        recorded = json.loads(
+            _runtime_attestation_path().read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return False
+    current = _runtime_fingerprint(
+        venv_dir, python_path, marker_path, package_spec
+    )
+    return current is not None and recorded == current
+
+
+def _write_install_marker(marker_path: Path, package_spec: str) -> None:
+    """Atomically record the package/extras contract for the shared venv."""
+    _assert_provision_lock_owned()
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    temp = marker_path.with_name(
+        f".{marker_path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    )
+    try:
+        _assert_provision_lock_owned()
+        fd = os.open(temp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            payload = package_spec.encode("utf-8")
+            if os.write(fd, payload) != len(payload):
+                raise OSError("short install-marker write")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        _assert_provision_lock_owned()
+        os.replace(temp, marker_path)
+    finally:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _write_json_atomic(target: Path, body: dict) -> None:
+    """Replace a user-owned JSON config without exposing a torn partial file."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(
+        f".{target.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    )
+    try:
+        payload = (json.dumps(body, indent=2) + "\n").encode("utf-8")
+        fd = os.open(temp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            if os.write(fd, payload) != len(payload):
+                raise OSError("short JSON config write")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(temp, target)
+    finally:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _provision_lock_path() -> Path:
-    # Beside the venv it guards, not beside the state dir. Two launchers can
-    # resolve different state dirs (KUMIHO_CLAUDE_HOME) while sharing one venv
-    # under the plugin data dir -- a lock in the state dir would not have been
-    # mutual at all.
+    # Beside the shared ~/.kumiho/venv it guards, not beside a host's state dir.
+    # Claude, Codex, and Desktop must all observe the same reservation.
     return _venv_dir().parent / "provision.lock"
+
+
+def _desktop_compat_lock_candidates() -> list[Path]:
+    """All host-owned legacy lock names this plugin is allowed to touch."""
+    data_dirs: list[Path] = []
+    active = _plugin_data_dir()
+    if active is not None:
+        data_dirs.append(active)
+    home = _account_home()
+    data_dirs.extend(
+        [
+            home / ".claude" / "plugins" / "data"
+            / "kumiho-memory-kumiho-plugins",
+            home / ".codex" / "plugins" / "data"
+            / "kumiho-memory-kumiho-plugins",
+            _state_dir(),
+        ]
+    )
+    canonical = os.path.normcase(str(_provision_lock_path().absolute()))
+    locks: list[Path] = []
+    seen: set[str] = set()
+    for data in data_dirs:
+        lock = (data / "provision.lock").absolute()
+        key = os.path.normcase(str(lock))
+        if key != canonical and key not in seen:
+            seen.add(key)
+            locks.append(lock)
+    return locks
+
+
+def _desktop_compat_lock_paths() -> list[Path]:
+    """Legacy locks currently guarding the shared venv through an alias.
+
+    Kumiho Desktop versions that predate the shared-runtime layout preserve
+    the lexical Claude/Codex alias path when choosing where to place their
+    lock. Hold those locks alongside the canonical one whenever the alias
+    resolves to ``~/.kumiho/venv`` so Desktop and both plugins remain mutually
+    exclusive even during a rolling upgrade.
+    """
+    shared = _venv_dir()
+    try:
+        shared_resolved = shared.resolve()
+    except OSError:
+        return []
+    locks: list[Path] = []
+    for lock in _desktop_compat_lock_candidates():
+        alias = lock.parent / "venv"
+        try:
+            if not os.path.lexists(alias) or alias.resolve() != shared_resolved:
+                continue
+        except OSError:
+            continue
+        locks.append(lock)
+    return locks
+
+
+def _compat_locks_from_record(record: dict) -> list[Path] | None:
+    """Validate and restore the frozen lock bundle from a canonical record."""
+    raw = record.get("compat_locks")
+    if raw is None:
+        # Rolling-upgrade compatibility for a lock written by an older plugin.
+        return _desktop_compat_lock_paths()
+    if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+        return None
+    allowed = {
+        os.path.normcase(str(path.absolute())): path
+        for path in _desktop_compat_lock_candidates()
+    }
+    result: list[Path] = []
+    seen: set[str] = set()
+    for item in raw:
+        key = os.path.normcase(str(Path(item).expanduser().absolute()))
+        if key not in allowed or key in seen:
+            return None
+        seen.add(key)
+        result.append(allowed[key])
+    return result
+
+
+def _read_lock_at(lock: Path) -> dict:
+    try:
+        raw = lock.read_text(encoding="utf-8").strip()
+        if raw.isdigit():
+            return {"pid": int(raw), "desktop_legacy": True}
+        body = json.loads(raw)
+        return body if isinstance(body, dict) else {}
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+
+
+def _read_provision_lock() -> dict:
+    return _read_lock_at(_provision_lock_path())
+
+
+def _windows_process_api():
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (
+        ctypes.c_ulong,
+        ctypes.c_int,
+        ctypes.c_ulong,
+    )
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.GetExitCodeProcess.argtypes = (
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_ulong),
+    )
+    kernel32.GetExitCodeProcess.restype = ctypes.c_int
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    kernel32.CloseHandle.restype = ctypes.c_int
+    return kernel32
+
+
+def _process_start_marker(pid: int) -> str | None:
+    """Stable birth marker used to distinguish a live owner from PID reuse."""
+    if os.name == "nt":
+        class FileTime(ctypes.Structure):
+            _fields_ = (("low", ctypes.c_ulong), ("high", ctypes.c_ulong))
+
+        try:
+            kernel32 = _windows_process_api()
+            kernel32.GetProcessTimes.argtypes = (
+                ctypes.c_void_p,
+                ctypes.POINTER(FileTime),
+                ctypes.POINTER(FileTime),
+                ctypes.POINTER(FileTime),
+                ctypes.POINTER(FileTime),
+            )
+            kernel32.GetProcessTimes.restype = ctypes.c_int
+            handle = kernel32.OpenProcess(0x1000, False, pid)
+            if not handle:
+                return None
+            try:
+                created, exited, kernel, user = (
+                    FileTime(), FileTime(), FileTime(), FileTime()
+                )
+                if not kernel32.GetProcessTimes(
+                    handle,
+                    ctypes.byref(created),
+                    ctypes.byref(exited),
+                    ctypes.byref(kernel),
+                    ctypes.byref(user),
+                ):
+                    return None
+                value = (created.high << 32) | created.low
+                return f"win:{value}"
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return None
+
+    stat_path = Path("/proc") / str(pid) / "stat"
+    try:
+        raw = stat_path.read_text(encoding="utf-8")
+        # The command name is parenthesized and may contain spaces. Fields
+        # after the final ')' start at stat field 3; starttime is field 22.
+        fields = raw[raw.rfind(")") + 2 :].split()
+        if len(fields) > 19:
+            return f"proc:{fields[19]}"
+    except (OSError, ValueError):
+        pass
+    ps_path = next(
+        (candidate for candidate in ("/bin/ps", "/usr/bin/ps")
+         if Path(candidate).is_file()),
+        None,
+    )
+    if ps_path is None:
+        return None
+    try:
+        result = subprocess.run(
+            [ps_path, "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=2,
+            check=False,
+            env=_provision_subprocess_env(),
+            **_hidden_console_kwargs(),
+        )
+        marker = result.stdout.strip() if result.returncode == 0 else ""
+        return f"ps:{marker}" if marker else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _process_is_alive(pid: object, expected_start: object = None) -> bool:
+    """Conservatively determine whether the exact recorded owner still exists."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    alive = pid == os.getpid()
+    if not alive and os.name == "nt":
+        # os.kill(pid, 0) is not a portable liveness probe on Windows. Query
+        # the process handle without requesting termination rights instead.
+        try:
+            kernel32 = _windows_process_api()
+            handle = kernel32.OpenProcess(0x1000, False, pid)
+            if not handle:
+                return ctypes.get_last_error() == 5  # access denied => alive
+            try:
+                exit_code = ctypes.c_ulong()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return True  # uncertainty must not permit concurrent pip
+                alive = exit_code.value == 259  # STILL_ACTIVE
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return True  # fail closed: preserve the lock
+    elif not alive:
+        try:
+            os.kill(pid, 0)
+            alive = True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            alive = True
+        except OSError:
+            return True
+    if alive and isinstance(expected_start, str) and expected_start:
+        actual_start = _process_start_marker(pid)
+        if actual_start is not None and actual_start != expected_start:
+            return False
+    return alive
+
+
+def _lock_record_bytes(
+    token: str, *, adopted: bool, compat_locks: list[Path] | None = None
+) -> bytes:
+    record = {
+        "pid": os.getpid(),
+        "process_start": _process_start_marker(os.getpid()),
+        "token": token,
+        "created_at": time.time(),
+        "adopted": adopted,
+    }
+    if compat_locks is not None:
+        record["compat_locks"] = [str(path.absolute()) for path in compat_locks]
+    return json.dumps(record).encode("utf-8")
+
+
+def _remove_abandoned_lock(lock: Path) -> bool:
+    """Remove a dead-owner lock, or an unparseable lock after the stale bound."""
+    try:
+        observed = lock.stat()
+        record = _read_lock_at(lock)
+        pid = record.get("pid")
+        known_owner = isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+        age = time.time() - observed.st_mtime
+        expected_start = record.get("process_start")
+        # Legacy Desktop/OpenClaw locks may contain only a numeric PID. Age is
+        # never authority to steal a lock from a live process: a slow pip can
+        # legitimately exceed the stale window. Structured records additionally
+        # use process_start to reject PID reuse.
+        if known_owner and _process_is_alive(pid, expected_start):
+            return False
+        if not known_owner and age <= PROVISION_LOCK_STALE_S:
+            return False
+        current = lock.stat()
+        if (
+            not os.path.samestat(observed, current)
+            or current.st_mtime_ns != observed.st_mtime_ns
+            or current.st_size != observed.st_size
+            or _read_lock_at(lock) != record
+        ):
+            return False
+        lock.unlink()
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
+def _acquire_alias_migration_lock(data: Path) -> str | None:
+    """Reserve a legacy per-plugin venv before renaming it into a backup."""
+    lock = (data / "provision.lock").absolute()
+    token = secrets.token_hex(16)
+    for _attempt in range(2):
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            if _remove_abandoned_lock(lock):
+                continue
+            return None
+        except OSError:
+            return None
+        write_failed = False
+        try:
+            record = _lock_record_bytes(
+                token, adopted=True, compat_locks=[]
+            )
+            if os.write(fd, record) != len(record):
+                raise OSError("short alias-migration-lock write")
+            os.fsync(fd)
+        except OSError:
+            write_failed = True
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                write_failed = True
+        if write_failed:
+            try:
+                if _read_lock_at(lock).get("token") == token:
+                    lock.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+        else:
+            return token
+    return None
+
+
+def _release_alias_migration_lock(data: Path, token: str) -> None:
+    lock = (data / "provision.lock").absolute()
+    try:
+        observed = lock.stat()
+        record = _read_lock_at(lock)
+        current = lock.stat()
+        if (
+            record.get("token") == token
+            and record.get("pid") == os.getpid()
+            and current.st_mtime_ns == observed.st_mtime_ns
+            and current.st_size == observed.st_size
+        ):
+            lock.unlink(missing_ok=True)
+    except (FileNotFoundError, OSError):
+        pass
+
+
+def _compat_lock_in_progress() -> bool:
+    for lock in _desktop_compat_lock_paths():
+        try:
+            if lock.exists() and not _remove_abandoned_lock(lock):
+                return True
+        except OSError:
+            return True
+    return False
+
+
+def _acquire_desktop_compat_locks(token: str, targets: list[Path]) -> bool:
+    acquired: list[Path] = []
+    record = _lock_record_bytes(
+        token, adopted=False, compat_locks=targets
+    )
+    success = False
+    try:
+        for lock in targets:
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            for _attempt in range(2):
+                try:
+                    fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                except FileExistsError:
+                    if _remove_abandoned_lock(lock):
+                        continue
+                    return False
+                try:
+                    if os.write(fd, record) != len(record):
+                        raise OSError("short compatibility-lock write")
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                acquired.append(lock)
+                break
+            else:
+                return False
+        success = True
+        return True
+    except OSError:
+        return False
+    finally:
+        if not success:
+            for lock in acquired:
+                try:
+                    if _read_lock_at(lock).get("token") == token:
+                        lock.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+
+def _adopt_desktop_compat_locks(token: str, targets: list[Path]) -> bool:
+    record = _lock_record_bytes(
+        token, adopted=True, compat_locks=targets
+    )
+    for lock in targets:
+        temp: Path | None = None
+        try:
+            observed = lock.stat()
+            if _read_lock_at(lock).get("token") != token:
+                return False
+            temp = lock.with_name(f".{lock.name}.{token}.tmp")
+            fd = os.open(temp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            try:
+                if os.write(fd, record) != len(record):
+                    raise OSError("short compatibility-lock adoption write")
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            current = lock.stat()
+            if (
+                current.st_mtime_ns != observed.st_mtime_ns
+                or current.st_size != observed.st_size
+                or _read_lock_at(lock).get("token") != token
+            ):
+                return False
+            os.replace(temp, lock)
+        except (FileExistsError, FileNotFoundError, OSError):
+            return False
+        finally:
+            try:
+                if temp is not None:
+                    temp.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return True
+
+
+def _refresh_provision_lock(token: str) -> bool:
+    """Heartbeat only the complete lock bundle owned by this process/token.
+
+    Compatibility locks are the only mutex older Desktop builds observe.  Do
+    not make the canonical lock look fresh until every compatibility lock has
+    been ownership-checked and refreshed; otherwise losing one alias could let
+    an old writer enter the shared venv while this provisioner still runs pip.
+    """
+    lock = _provision_lock_path()
+
+    def stable_owned(path: Path):
+        observed = path.stat()
+        record = _read_lock_at(path)
+        current = path.stat()
+        if (
+            record.get("token") != token
+            or record.get("pid") != os.getpid()
+            or not os.path.samestat(observed, current)
+            or current.st_mtime_ns != observed.st_mtime_ns
+            or current.st_size != observed.st_size
+            or _read_lock_at(path) != record
+        ):
+            return None
+        return observed, record
+
+    def refresh_owned(path: Path, observed, record: dict) -> bool:
+        current = path.stat()
+        if (
+            not os.path.samestat(observed, current)
+            or current.st_mtime_ns != observed.st_mtime_ns
+            or current.st_size != observed.st_size
+            or _read_lock_at(path) != record
+        ):
+            return False
+        os.utime(path, None)
+        refreshed = path.stat()
+        after = _read_lock_at(path)
+        return (
+            os.path.samestat(observed, refreshed)
+            and after.get("token") == token
+            and after.get("pid") == os.getpid()
+        )
+
+    try:
+        canonical = stable_owned(lock)
+        if canonical is None:
+            return False
+        _canonical_observed, record = canonical
+        compat_locks = _compat_locks_from_record(record)
+        if compat_locks is None:
+            return False
+
+        compat_snapshots = []
+        for compat in compat_locks:
+            snapshot = stable_owned(compat)
+            if snapshot is None:
+                return False
+            compat_snapshots.append((compat, *snapshot))
+
+        # Refresh aliases first. The canonical mtime is the public "bundle is
+        # live" signal and therefore commits only after all legacy mutexes do.
+        for compat, observed, compat_record in compat_snapshots:
+            if not refresh_owned(compat, observed, compat_record):
+                return False
+
+        # Re-check the complete alias set immediately before the canonical
+        # commit. A replacement after an earlier touch must fail closed.
+        if any(stable_owned(compat) is None for compat in compat_locks):
+            return False
+        canonical = stable_owned(lock)
+        if canonical is None:
+            return False
+        return refresh_owned(lock, *canonical)
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def _assert_provision_lock_owned() -> None:
+    """Synchronously fail before a shared-runtime mutation after lock loss.
+
+    Helpers are also exercised independently by tests and compatibility callers;
+    outside a heartbeat context there is no active provisioner to guard.
+    """
+    guard = _ACTIVE_PROVISION_LOCK_GUARD.get()
+    if guard is not None:
+        guard()
+
+
+@contextlib.contextmanager
+def _provision_lock_heartbeat(token: str):
+    """Keep a live long-running installer from ever looking stale."""
+    stop = threading.Event()
+    lost = threading.Event()
+    refresh_mutex = threading.Lock()
+
+    def refresh() -> bool:
+        # The heartbeat and the owner thread can both reach this code. Without
+        # serialization their own utime calls invalidate each other's stable
+        # snapshots and manufacture a false lock-loss event.
+        with refresh_mutex:
+            return _refresh_provision_lock(token)
+
+    def assert_owned() -> None:
+        if lost.is_set() or not refresh():
+            lost.set()
+            raise bounded_proc.ProcessAborted(["shared-runtime-provisioning"])
+
+    def heartbeat() -> None:
+        while not stop.wait(15):
+            if not refresh():
+                lost.set()
+                return
+
+    if not refresh():
+        raise RuntimeError("lost the shared-runtime provisioning lock")
+    worker = threading.Thread(
+        target=heartbeat,
+        name="kumiho-provision-lock-heartbeat",
+        daemon=True,
+    )
+    worker.start()
+    failed = False
+    guard_token = _ACTIVE_PROVISION_LOCK_GUARD.set(assert_owned)
+    try:
+        with bounded_proc.abort_scope(lost):
+            yield
+    except bounded_proc.ProcessAborted as exc:
+        failed = True
+        raise RuntimeError("lost the shared-runtime provisioning lock") from exc
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        _ACTIVE_PROVISION_LOCK_GUARD.reset(guard_token)
+        stop.set()
+        worker.join(timeout=2)
+        if lost.is_set() and not failed:
+            raise RuntimeError("lost the shared-runtime provisioning lock")
+
+
+def _remove_stale_provision_lock() -> bool:
+    """Remove one dead-owner lock without deleting a newer replacement."""
+    return _remove_abandoned_lock(_provision_lock_path())
 
 
 def _provision_in_progress() -> bool:
@@ -469,21 +1702,166 @@ def _provision_in_progress() -> bool:
     """
     lock = _provision_lock_path()
     try:
-        if not lock.exists():
-            return False
-        if (time.time() - lock.stat().st_mtime) > PROVISION_LOCK_STALE_S:
-            lock.unlink(missing_ok=True)   # holder is gone; take it over
-            return False
-        return True
+        if lock.exists() and not _remove_stale_provision_lock():
+            return True
+        return _compat_lock_in_progress()
     except OSError:
-        return False  # cannot tell -> do not block provisioning
+        return True  # uncertainty must never allow two writers into one venv
+
+
+def _acquire_provision_lock(reservation_token: str | None = None) -> str | None:
+    """Atomically acquire, or adopt, the single provisioning reservation."""
+    lock = _provision_lock_path()
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    token = reservation_token or secrets.token_hex(16)
+    compat_locks = _desktop_compat_lock_paths()
+    for _attempt in range(2):
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            current = _read_provision_lock()
+            if reservation_token and current.get("token") == reservation_token:
+                frozen = _compat_locks_from_record(current)
+                if frozen is None:
+                    return None
+                # Adopt every compatibility lock first. The canonical record
+                # is the handoff commit/ACK point observed by the parent, so
+                # adopted=True there guarantees the whole frozen bundle was
+                # already transferred to this child.
+                return (
+                    reservation_token
+                    if (
+                        _adopt_desktop_compat_locks(reservation_token, frozen)
+                        and _adopt_provision_lock(reservation_token, frozen)
+                    )
+                    else None
+                )
+            if _remove_stale_provision_lock():
+                continue
+            return None
+        except OSError:
+            return None
+        owned = None
+        write_failed = False
+        try:
+            try:
+                owned = os.fstat(fd)
+            except OSError:
+                # The O_EXCL create just succeeded. A path stat gives cleanup
+                # an identity guard while the still-open handle prevents a
+                # Windows leak if fstat itself is the failing operation.
+                try:
+                    owned = lock.stat()
+                except OSError:
+                    pass
+                raise
+            else:
+                record = _lock_record_bytes(
+                    token, adopted=False, compat_locks=compat_locks
+                )
+                if os.write(fd, record) != len(record):
+                    raise OSError("short provisioning-lock write")
+                os.fsync(fd)
+        except OSError:
+            write_failed = True
+        finally:
+            os.close(fd)
+        if write_failed:
+            try:
+                if owned is None or os.path.samestat(owned, lock.stat()):
+                    lock.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+        if not _acquire_desktop_compat_locks(token, compat_locks):
+            try:
+                if _read_provision_lock().get("token") == token:
+                    lock.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+        return token
+    return None
+
+
+def _adopt_provision_lock(token: str, compat_locks: list[Path]) -> bool:
+    """Transfer a parent's reservation to the detached child atomically."""
+    lock = _provision_lock_path()
+    temp: Path | None = None
+    try:
+        observed = lock.stat()
+        if _read_provision_lock().get("token") != token:
+            return False
+        temp = lock.with_name(f".{lock.name}.{token}.tmp")
+        fd = os.open(temp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            record = _lock_record_bytes(
+                token, adopted=True, compat_locks=compat_locks
+            )
+            if os.write(fd, record) != len(record):
+                raise OSError("short provisioning-lock adoption write")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        current = lock.stat()
+        if (
+            current.st_mtime_ns != observed.st_mtime_ns
+            or current.st_size != observed.st_size
+            or _read_provision_lock().get("token") != token
+        ):
+            return False
+        os.replace(temp, lock)
+        return True
+    except (FileExistsError, FileNotFoundError, OSError):
+        return False
+    finally:
+        try:
+            if temp is not None:
+                temp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _release_provision_lock(token: str) -> None:
+    lock = _provision_lock_path()
+    compat_locks: list[Path] = []
+    try:
+        observed = lock.stat()
+        record = _read_provision_lock()
+        frozen = _compat_locks_from_record(record)
+        if frozen is not None:
+            compat_locks = frozen
+        current = lock.stat()
+        if (
+            record.get("token") == token
+            and record.get("pid") == os.getpid()
+            and current.st_mtime_ns == observed.st_mtime_ns
+            and current.st_size == observed.st_size
+        ):
+            lock.unlink(missing_ok=True)
+    except (FileNotFoundError, OSError):
+        pass
+    for compat in compat_locks:
+        try:
+            observed = compat.stat()
+            record = _read_lock_at(compat)
+            current = compat.stat()
+            if (
+                record.get("token") == token
+                and record.get("pid") == os.getpid()
+                and current.st_mtime_ns == observed.st_mtime_ns
+                and current.st_size == observed.st_size
+            ):
+                compat.unlink(missing_ok=True)
+        except (FileNotFoundError, OSError):
+            pass
 
 
 def _provisioning_is_synchronous() -> bool:
     return bool((os.getenv(_SYNC_PROVISION_ENV, "") or "").strip())
 
 
-def _spawn_detached_provisioning() -> None:
+def _spawn_detached_provisioning(lock_token: str) -> bool:
     """Build the venv in a process that outlives this one.
 
     A cold provision was measured at 205-320 s; the host's MCP startup budget is
@@ -509,7 +1887,12 @@ def _spawn_detached_provisioning() -> None:
         "stdin": subprocess.DEVNULL,
         "stdout": sink,
         "stderr": subprocess.STDOUT if sink is not subprocess.DEVNULL else subprocess.DEVNULL,
-        "env": {**os.environ, _SYNC_PROVISION_ENV: "1"},
+        "env": _provision_subprocess_env(
+            {
+                _SYNC_PROVISION_ENV: "1",
+                _PROVISION_LOCK_TOKEN_ENV: lock_token,
+            }
+        ),
     }
     if os.name == "nt":
         # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP -- survives our exit.
@@ -517,12 +1900,50 @@ def _spawn_detached_provisioning() -> None:
     else:
         kwargs["start_new_session"] = True
     try:
-        subprocess.Popen(
+        child = subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), "--provision"], **kwargs
         )
+        # Do not leave the parent's reservation behind if Python dies before
+        # importing this module and adopting it. The child rewrites the lock
+        # with its own pid before any venv or pip mutation begins.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            record = _read_provision_lock()
+            if (
+                record.get("token") == lock_token
+                and record.get("pid") == child.pid
+                and record.get("adopted") is True
+            ):
+                return True
+            if child.poll() is not None:
+                print(
+                    "[kumiho-claude] Background provisioning exited before "
+                    "adopting its lock.",
+                    file=sys.stderr,
+                )
+                return False
+            time.sleep(0.05)
+        try:
+            child.terminate()
+            child.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                child.kill()
+            except OSError:
+                pass
+        print(
+            "[kumiho-claude] Background provisioning did not acknowledge "
+            "its lock in time.",
+            file=sys.stderr,
+        )
+        return False
     except OSError as exc:
         print("[kumiho-claude] Could not start background provisioning: %s" % exc,
               file=sys.stderr)
+        return False
+    finally:
+        if sink is not subprocess.DEVNULL:
+            sink.close()
 
 
 def _ensure_runtime() -> Path:
@@ -532,62 +1953,244 @@ def _ensure_runtime() -> Path:
     state_dir.mkdir(parents=True, exist_ok=True)
 
     venv_dir = _venv_dir()
-    marker_path = state_dir / MARKER_FILE
+    marker_path = _marker_path()
     python_path = _venv_python(venv_dir)
 
-    if not python_path.exists() and not _provisioning_is_synchronous():
-        if _provision_in_progress():
+    # A detached child has only five seconds to acknowledge its parent's
+    # reservation. Adopt it and start the heartbeat before probing an existing
+    # (possibly partial or outdated) Desktop venv: that probe may legitimately
+    # take longer than the handshake window.
+    inherited = (os.getenv(_PROVISION_LOCK_TOKEN_ENV, "") or "").strip() or None
+    if inherited:
+        lock_token = _acquire_provision_lock(inherited)
+        if lock_token is None:
             raise SystemExit(
-                "[kumiho-claude] First-run provisioning is already running in "
+                "[kumiho-claude] Background provisioning lost its reservation. "
+                "Retry from the host or run --provision."
+            )
+        try:
+            with _provision_lock_heartbeat(lock_token):
+                return _provision(
+                    venv_dir, python_path, marker_path, package_spec
+                )
+        finally:
+            _release_provision_lock(lock_token)
+
+    synchronous = _provisioning_is_synchronous()
+    if _provision_in_progress():
+        raise SystemExit(
+            "[kumiho-claude] Another process is provisioning this runtime. "
+            "Reconnect the server, or retry once it finishes."
+        )
+
+    attested_ready = python_path.exists() and _runtime_attestation_matches(
+        venv_dir, python_path, marker_path, package_spec
+    )
+    runtime_ready = python_path.exists() and (
+        attested_ready
+        or not _needs_install(
+            python_path,
+            marker_path,
+            package_spec,
+            probe_timeout_s=(
+                PROBE_TIMEOUT_S if synchronous else STARTUP_PROBE_TIMEOUT_S
+            ),
+        )
+    )
+    if runtime_ready:
+        # Alias migration changes which legacy Desktop lock guards this same
+        # physical venv. Hold the canonical reservation across the final
+        # readiness check and that migration so the lock-set transition cannot
+        # race another host beginning pip against the shared runtime.
+        maintenance_token = _acquire_provision_lock()
+        if maintenance_token is None:
+            raise SystemExit(
+                "[kumiho-claude] Another process began shared-runtime "
+                "maintenance. Reconnect the server once it finishes."
+            )
+        try:
+            with _provision_lock_heartbeat(maintenance_token):
+                locked_attested = python_path.exists() and (
+                    _runtime_attestation_matches(
+                        venv_dir, python_path, marker_path, package_spec
+                    )
+                )
+                locked_ready = python_path.exists() and (
+                    locked_attested
+                    or not _needs_install(
+                        python_path,
+                        marker_path,
+                        package_spec,
+                        probe_timeout_s=(
+                            PROBE_TIMEOUT_S
+                            if synchronous
+                            else STARTUP_PROBE_TIMEOUT_S
+                        ),
+                    )
+                )
+                if not locked_ready:
+                    raise SystemExit(
+                        "[kumiho-claude] The shared runtime changed while it "
+                        "was being checked. Reconnect to provision it safely."
+                    )
+                _ensure_hook_interpreter(venv_dir)
+                # A successful locked probe safely adopts a compatible
+                # Desktop-created venv without running pip.
+                if not locked_attested:
+                    _write_install_marker(marker_path, package_spec)
+                    _write_runtime_attestation(
+                        venv_dir, python_path, marker_path, package_spec
+                    )
+                # Alias migration creates the legacy mutex path that older
+                # Desktop builds observe. Once its short migration lock is
+                # released, such a build may enter without seeing the already-
+                # frozen canonical bundle, so this must be the final mutation.
+                _ensure_plugin_data_venv_alias(venv_dir)
+        finally:
+            _release_provision_lock(maintenance_token)
+        return python_path
+
+    if not synchronous:
+        missing_python = not python_path.exists()
+        reservation = _acquire_provision_lock()
+        if reservation is None:
+            raise SystemExit(
+                "[kumiho-claude] Runtime provisioning is already running in "
                 "another process. Reconnect the server, or start a new session, "
                 "once it finishes."
             )
-        _spawn_detached_provisioning()
+        if not _spawn_detached_provisioning(reservation):
+            _release_provision_lock(reservation)
+            raise SystemExit(
+                "[kumiho-claude] Could not start background provisioning. "
+                "Retry from a terminal with --provision."
+            )
         raise SystemExit(
-            "[kumiho-claude] First run: the Python environment is not built yet.\n"
-            "[kumiho-claude] Provisioning started in the background (~150 MB, a few "
+            "[kumiho-claude] Runtime install/update: the Python environment %s.\n"
+            "[kumiho-claude] Provisioning started in the background (~150 MB at most, a few "
             "minutes). This server is exiting now ON PURPOSE -- building it here "
             "would take far longer than the host's MCP startup timeout, so the host "
             "would kill it half-installed and nothing would ever finish.\n"
             "[kumiho-claude] Reconnect the server, or start a new session, once it "
             "completes. Progress and any error are logged to %s.\n"
-            "[kumiho-claude] Run /kumiho-onboard AFTER it finishes to set "
+            "[kumiho-claude] Run %s AFTER it finishes to set "
             "credentials -- starting it now would run a second pip against the "
-            "same environment." % _provision_log_path()
+            "same environment."
+            % (
+                "is not built yet" if missing_python else "needs an install/update",
+                _provision_log_path(),
+                _onboard_command_label(),
+            )
         )
 
-    if python_path.exists() and not _needs_install(python_path, marker_path, package_spec):
-        return python_path  # nothing to do; never touch the lock on the warm path
-
-    # From here on we WILL write to the venv, so take the lock first.
-    if _provision_in_progress():
+    # From here on we WILL write to the venv, so atomically take the lock. A
+    # synchronous wizard/self-test takes its own reservation.
+    lock_token = _acquire_provision_lock()
+    if lock_token is None:
         raise SystemExit(
             "[kumiho-claude] Another process is provisioning this environment. "
             "Retry once it finishes (or delete %s if it is stale)."
             % _provision_lock_path()
         )
-    lock = _provision_lock_path()
     try:
-        lock.write_text(str(os.getpid()), encoding="utf-8")
-    except OSError:
-        pass  # advisory only -- never block provisioning on the lock file itself
-
-    try:
-        return _provision(venv_dir, python_path, marker_path, package_spec)
+        with _provision_lock_heartbeat(lock_token):
+            return _provision(venv_dir, python_path, marker_path, package_spec)
     finally:
-        try:
-            lock.unlink(missing_ok=True)
-        except OSError:
-            pass
+        _release_provision_lock(lock_token)
+
+
+def _python_interpreter_works(python_path: Path) -> bool:
+    if not python_path.is_file() or not _windows_pe_executable(python_path):
+        return False
+    try:
+        # Keep isolation but let site.py process pyvenv.cfg. With ``-S``,
+        # sys.prefix stays at base_prefix and every healthy venv looks broken.
+        result = bounded_proc.run(
+            [
+                str(python_path),
+                "-I",
+                "-c",
+                "import os,sys; "
+                "expected=os.path.normcase(os.path.realpath(sys.argv[1])); "
+                "prefix=os.path.normcase(os.path.realpath(sys.prefix)); "
+                "valid=(sys.version_info >= (3,10) and prefix == expected "
+                "and prefix != os.path.normcase(os.path.realpath(sys.base_prefix))); "
+                "print('kumiho-venv-ok' if valid else 'kumiho-venv-invalid'); "
+                "raise SystemExit(0 if valid else 3)",
+                str(python_path.parent.parent.resolve()),
+            ],
+            timeout=10,
+            env=_provision_subprocess_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "kumiho-venv-ok"
+
+
+def _base_interpreter_for_venv_creation(venv_dir: Path) -> Path | None:
+    """Return the current runtime's external base before a bad venv is moved."""
+    if sys.version_info < (3, 10):
+        return None
+    raw = getattr(sys, "_base_executable", None) or sys.executable
+    try:
+        candidate = Path(raw).resolve()
+        root = venv_dir.resolve()
+        candidate.relative_to(root)
+        return None
+    except ValueError:
+        pass
+    except OSError:
+        return None
+    return candidate if candidate.is_file() and _windows_pe_executable(candidate) else None
 
 
 def _provision(venv_dir: Path, python_path: Path, marker_path: Path,
                package_spec: str) -> Path:
     """Build the venv and install the spec. Caller holds the provisioning lock."""
+    needs_install = _needs_install(python_path, marker_path, package_spec)
+    runtime_works = python_path.exists() and _python_interpreter_works(python_path)
+    if needs_install and venv_dir.exists() and not runtime_works:
+        creation_python = _base_interpreter_for_venv_creation(venv_dir)
+        if creation_python is None:
+            raise RuntimeError(
+                "Python 3.10+ is required to rebuild the shared Kumiho runtime; "
+                f"run {_onboard_command_label()} with a supported interpreter"
+            )
+        backup = venv_dir.with_name(
+            f"{venv_dir.name}.broken-{os.getpid()}-{secrets.token_hex(4)}"
+        )
+        try:
+            _assert_provision_lock_owned()
+            venv_dir.rename(backup)
+        except OSError as exc:
+            raise RuntimeError(
+                f"the existing shared runtime is not executable and could not "
+                f"be preserved for repair: {type(exc).__name__}"
+            ) from None
+        print(
+            f"[kumiho-claude] Preserved an unusable shared runtime at {backup}.",
+            file=sys.stderr,
+        )
+
     if not python_path.exists():
+        creation_python = _base_interpreter_for_venv_creation(venv_dir)
+        if creation_python is None:
+            raise RuntimeError(
+                "Python 3.10+ is required to create the shared Kumiho runtime; "
+                f"run {_onboard_command_label()} with a supported interpreter"
+            )
         print(f"[kumiho-claude] Creating virtualenv: {venv_dir}", file=sys.stderr)
         try:
-            venv.create(venv_dir, with_pip=True)
+            _assert_provision_lock_owned()
+            _run(
+                [str(creation_python), "-m", "venv", str(venv_dir)],
+                timeout=PIP_TIMEOUT_S,
+                env=_provision_subprocess_env(),
+            )
+        except bounded_proc.ProcessAborted:
+            # Ownership loss means another process may already own and mutate
+            # this path. Never remove what could now be the new owner's tree.
+            raise
         except BaseException as exc:
             # Debian/Ubuntu ship python3 without the venv module's bundled pip
             # (it lives in the separate python3-venv package). Unguarded, this
@@ -595,6 +2198,7 @@ def _provision(venv_dir: Path, python_path: Path, marker_path: Path,
             # later launch skipped creation, found no pip, and failed forever.
             # Remove the partial tree so the next launch is a clean retry, and
             # name the package instead of dying with a bare traceback.
+            _assert_provision_lock_owned()
             shutil.rmtree(venv_dir, ignore_errors=True)
             print(
                 "[kumiho-claude] Could not create the virtualenv at %s: %s\n"
@@ -606,16 +2210,21 @@ def _provision(venv_dir: Path, python_path: Path, marker_path: Path,
             )
             raise
 
+    if not _python_interpreter_works(python_path):
+        raise RuntimeError(
+            "the shared runtime is not a valid Python 3.10+ virtual environment"
+        )
+
     # Unconditionally, not only on the creation branch: a venv provisioned by an
     # older version has no junction, and nothing else would ever add one.
     _ensure_hook_interpreter(venv_dir)
 
-    if _needs_install(python_path, marker_path, package_spec):
+    if needs_install:
         print("[kumiho-claude] Installing dependencies (first run downloads "
               "~150 MB and takes several minutes)...", file=sys.stderr)
         try:
             _install_dependencies(python_path, package_spec)
-        except subprocess.CalledProcessError as exc:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             # The single most likely install failure -- no network, a floor not
             # yet on PyPI, a proxy -- used to surface as a raw traceback, which
             # the host shows only as "server failed to start".
@@ -625,11 +2234,31 @@ def _provision(venv_dir: Path, python_path: Path, marker_path: Path,
                 "PyPI, or a package version that is not published yet.\n"
                 "[kumiho-claude] Retry, or pin a different set with "
                 "KUMIHO_CLAUDE_PACKAGE_SPEC."
-                % (package_spec, exc.returncode),
+                % (package_spec, getattr(exc, "returncode", "timeout")),
                 file=sys.stderr,
             )
             raise
-        marker_path.write_text(package_spec, encoding="utf-8")
+
+        verification_marker = marker_path.with_name(
+            f".{marker_path.name}.verify-{os.getpid()}-{secrets.token_hex(4)}"
+        )
+        if _needs_install(
+            python_path,
+            verification_marker,
+            package_spec,
+            probe_timeout_s=PROBE_TIMEOUT_S,
+        ):
+            raise RuntimeError(
+                "the installed shared runtime did not satisfy the requested "
+                "Kumiho package contract"
+            )
+    # Both an install and a full no-install probe establish this exact
+    # contract. Persist that result so a healthy but slow shared runtime does
+    # not enter an endless five-second background-handoff loop.
+    _write_install_marker(marker_path, package_spec)
+    _write_runtime_attestation(venv_dir, python_path, marker_path, package_spec)
+
+    _ensure_plugin_data_venv_alias(venv_dir)
 
     return python_path
 
@@ -690,7 +2319,7 @@ def _cached_kumiho_auth_path() -> Path:
     config_dir = (os.getenv("KUMIHO_CONFIG_DIR", "") or "").strip()
     if config_dir:
         return Path(config_dir).expanduser() / "kumiho_authentication.json"
-    return Path.home() / ".kumiho" / "kumiho_authentication.json"
+    return _account_home() / ".kumiho" / "kumiho_authentication.json"
 
 
 def _read_cached_kumiho_credentials() -> dict | None:
@@ -713,7 +2342,7 @@ def _load_cached_kumiho_token() -> str:
         return ""
 
     now = int(time.time())
-    # Session tokens (from `kumiho-cli login`) have expiry checks.
+    # Session tokens (from `kumiho-auth login`) have expiry checks.
     # Dashboard API tokens are long-lived; expiry check is optional.
     candidates = (
         ("control_plane_token", "cp_expires_at"),
@@ -753,7 +2382,11 @@ def _discovery_token_candidates() -> list[str]:
     body = _read_cached_kumiho_credentials()
     if isinstance(body, dict):
         now = int(time.time())
-        for token_key, expiry_key in (("control_plane_token", "cp_expires_at"), ("id_token", "expires_at")):
+        for token_key, expiry_key in (
+            ("control_plane_token", "cp_expires_at"),
+            ("id_token", "expires_at"),
+            ("api_token", "api_token_expires_at"),
+        ):
             raw = body.get(token_key)
             if not isinstance(raw, str):
                 continue
@@ -857,6 +2490,15 @@ def _read_dotenv_file(dotenv_path: Path) -> None:
             key, _, value = line.partition("=")
             key = key.strip()
             value = value.strip()
+            if _host_launch_isolated() and key in (
+                *_HOST_UNTRUSTED_CLOUD_ENV,
+                *_HOST_UNTRUSTED_PATH_ENV,
+            ):
+                # Host-launched Cloud routing and the executable runtime root
+                # have provenance requirements. They are restored only from
+                # user-global Claude settings below, never from ambient or a
+                # checkout-local dotenv file.
+                continue
             if len(value) >= 2 and (
                 (value[0] == '"' and value[-1] == '"')
                 or (value[0] == "'" and value[-1] == "'")
@@ -884,7 +2526,7 @@ def _hydrate_env_from_dotenv() -> None:
             return  # stop after first found at plugin root
 
     # 2. ~/.kumiho/.env.local fallback
-    kumiho_env = Path.home() / ".kumiho" / ".env.local"
+    kumiho_env = _account_home() / ".kumiho" / ".env.local"
     if kumiho_env.exists():
         _read_dotenv_file(kumiho_env)
 
@@ -919,17 +2561,20 @@ def _hydrate_env_from_plugin_mcp() -> None:
         "KUMIHO_CLAUDE_MODE",
         "KUMIHO_CLAUDE_SERVER_ENDPOINT",
     ):
+        if _host_launch_isolated() and key in _HOST_UNTRUSTED_CLOUD_ENV:
+            continue
         raw = env.get(key)
         if isinstance(raw, str):
             _set_env_if_absent(key, raw, f"{mcp_path}")
 
 
 def _candidate_settings_paths() -> list[Path]:
+    """Return project-to-user Claude settings in historical priority order."""
     candidates: list[Path] = []
     seen: set[str] = set()
 
     def add(path: Path) -> None:
-        key = str(path).lower()
+        key = os.path.normcase(os.path.abspath(path))
         if key in seen:
             return
         seen.add(key)
@@ -941,10 +2586,19 @@ def _candidate_settings_paths() -> list[Path]:
         add(claude_dir / "settings.local.json")
         add(claude_dir / "settings.json")
 
-    home_claude = Path.home() / ".claude"
+    home_claude = _account_home() / ".claude"
     add(home_claude / "settings.local.json")
     add(home_claude / "settings.json")
     return candidates
+
+
+def _is_user_global_claude_setting(path: Path) -> bool:
+    home_claude = _account_home() / ".claude"
+    trusted = {
+        os.path.normcase(os.path.abspath(home_claude / "settings.local.json")),
+        os.path.normcase(os.path.abspath(home_claude / "settings.json")),
+    }
+    return os.path.normcase(os.path.abspath(path)) in trusted
 
 
 def _hydrate_env_from_claude_settings() -> None:
@@ -963,30 +2617,62 @@ def _hydrate_env_from_claude_settings() -> None:
         if not isinstance(env, dict):
             continue
         found_any = True
-        loaded_any = False
-        for key in (
+        # Preserve Claude Code's existing project settings support for tokens
+        # and CE selection. A repository-controlled Cloud route is different:
+        # pairing it with the shared ~/.kumiho bearer could disclose that
+        # credential merely by opening a repository. Custom Cloud routes and
+        # tenant hints therefore remain user-global or explicit-env only.
+        keys = [
             "KUMIHO_AUTH_TOKEN",
-            "KUMIHO_CONTROL_PLANE_URL",
-            "KUMIHO_TENANT_HINT",
             "KUMIHO_CLAUDE_MODE",
             "KUMIHO_CLAUDE_SERVER_ENDPOINT",
-        ):
+        ]
+        if _is_user_global_claude_setting(settings_path):
+            keys.extend((
+                "KUMIHO_CONTROL_PLANE_URL",
+                "KUMIHO_TENANT_HINT",
+                "KUMIHO_CONFIG_DIR",
+            ))
+        for key in keys:
             raw = env.get(key)
             if isinstance(raw, str):
-                if _set_env_if_absent(key, raw, f"{settings_path}"):
-                    loaded_any = True
-        if loaded_any:
-            return
+                if key == "KUMIHO_CONFIG_DIR":
+                    candidate = Path(raw.strip()).expanduser()
+                    if (
+                        not raw.strip()
+                        or _looks_like_placeholder(raw)
+                        or any(char in raw for char in "\r\n\0")
+                        or not candidate.is_absolute()
+                    ):
+                        continue
+                    raw = str(candidate)
+                _set_env_if_absent(key, raw, f"{settings_path}")
     if not found_any:
         print(
             f"[kumiho-claude] Searched {len(candidates)} settings paths; "
             "none contained a usable env block. "
-            "Use /kumiho-onboard or set KUMIHO_AUTH_TOKEN in ~/.kumiho/kumiho_authentication.json.",
+            "Use %s or set KUMIHO_AUTH_TOKEN in ~/.kumiho/kumiho_authentication.json."
+            % _onboard_command_label(),
             file=sys.stderr,
         )
 
 
 def _hydrate_env_from_local_config() -> None:
+    # Host processes inherit project settings before this code runs. Remove
+    # untrusted Cloud routes and runtime roots before loading a bearer or
+    # resolving an executable; trusted Claude values are restored by directly
+    # reading user-global settings below. Codex never reads Claude settings.
+    _clear_host_untrusted_environment()
+    # Codex has its own host-specific backend config. Reading Claude project,
+    # settings, or plugin files here could redirect Codex discovery (and its
+    # bearer token) to a Claude-only control plane. Claude keeps the original
+    # hydration path unchanged.
+    if os.getenv("KUMIHO_CLAUDE_HOST") == "codex":
+        # Codex Cloud has a host-isolated credential directory beneath the
+        # shared Kumiho root. Do not even load Claude/custom-control-plane
+        # credentials into this process; the adapter handles Codex auth later.
+        _apply_codex_backend_override()
+        return
     _hydrate_env_from_dotenv()
     _hydrate_env_from_claude_settings()
     _hydrate_env_from_plugin_mcp()
@@ -998,6 +2684,61 @@ def _hydrate_env_from_local_config() -> None:
             "[kumiho-claude] Loaded KUMIHO_AUTH_TOKEN from local Kumiho credential cache.",
             file=sys.stderr,
         )
+    _apply_codex_backend_override()
+
+
+def _apply_codex_backend_override() -> None:
+    """Make Codex's host-specific backend choice authoritative after hydration."""
+    if os.getenv("KUMIHO_CLAUDE_HOST") != "codex":
+        return
+    # Codex Cloud is intentionally pinned to the official control plane.
+    # Tenant routing comes from authenticated discovery, never Claude config.
+    os.environ.pop("KUMIHO_CONTROL_PLANE_URL", None)
+    os.environ.pop("KUMIHO_CONTROL_PLANE_API_URL", None)
+    os.environ.pop("KUMIHO_TENANT_HINT", None)
+    os.environ.pop("KUMIHO_FIREBASE_API_KEY", None)
+    os.environ.pop("KUMIHO_FIREBASE_ID_TOKEN", None)
+    os.environ.pop("KUMIHO_FIREBASE_PROJECT_ID", None)
+    os.environ.pop("KUMIHO_USE_CONTROL_PLANE_TOKEN", None)
+    os.environ.pop("KUMIHO_WORKSPACE_ROOT", None)
+    os.environ.pop("KUMIHO_ENV_FILE", None)
+    os.environ["KUMIHO_AUTH_TOKEN"] = ""
+    backend = (os.getenv("KUMIHO_CODEX_BACKEND", "") or "").strip().lower()
+    if backend == "cloud":
+        for key in (
+            "KUMIHO_CLAUDE_MODE",
+            "KUMIHO_CLAUDE_SERVER_ENDPOINT",
+            "KUMIHO_LOCAL_SERVER_ENDPOINT",
+            "KUMIHO_SERVER_ENDPOINT",
+            "KUMIHO_SERVER_ADDRESS",
+            "UPSTASH_REDIS_URL",
+            "KUMIHO_UPSTASH_REDIS_URL",
+            "KUMIHO_MEMORY_PROXY_URL",
+            "KUMIHO_MCP_HOSTED",
+            "KUMIHO_HOSTED_LOCAL_REDIS",
+            "KUMIHO_LOCAL_REDIS_URL",
+            "UPSTASH_REDIS_REST_URL",
+            "UPSTASH_REDIS_REST_TOKEN",
+            "KUMIHO_LLM_BASE_URL",
+        ):
+            os.environ.pop(key, None)
+        return
+    if backend != "ce":
+        return
+    endpoint = (os.getenv("KUMIHO_CODEX_CE_ENDPOINT", "") or "").strip()
+    if not endpoint:
+        return
+    os.environ["KUMIHO_CLAUDE_MODE"] = "ce"
+    os.environ["KUMIHO_CLAUDE_SERVER_ENDPOINT"] = endpoint
+    os.environ["KUMIHO_AUTH_TOKEN"] = ""
+    redis_url = (os.getenv("KUMIHO_CODEX_CE_REDIS_URL", "") or "").strip()
+    os.environ["UPSTASH_REDIS_URL"] = _resolve_ce_redis_url(
+        redis_url or DEFAULT_CE_REDIS_URL
+    )
+    llm_base_url = (os.getenv("KUMIHO_CODEX_CE_LLM_BASE_URL", "") or "").strip()
+    os.environ.pop("KUMIHO_LLM_BASE_URL", None)
+    if llm_base_url:
+        os.environ["KUMIHO_LLM_BASE_URL"] = llm_base_url
 
 
 def _claude_desktop_config_paths() -> list[Path]:
@@ -1028,13 +2769,13 @@ def _claude_desktop_config_paths() -> list[Path]:
             paths.append(Path(appdata) / "Claude" / "claude_desktop_config.json")
     else:
         paths.append(
-            Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+            _account_home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
         )
         xdg_config = os.getenv("XDG_CONFIG_HOME", "")
         if xdg_config:
             paths.append(Path(xdg_config) / "Claude" / "claude_desktop_config.json")
         else:
-            paths.append(Path.home() / ".config" / "Claude" / "claude_desktop_config.json")
+            paths.append(_account_home() / ".config" / "Claude" / "claude_desktop_config.json")
     return paths
 
 
@@ -1074,7 +2815,7 @@ def _try_sync_token_to_config(config_path: Path, token: str) -> bool:
 
     env["KUMIHO_AUTH_TOKEN"] = token
     try:
-        config_path.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
+        _write_json_atomic(config_path, body)
         print(
             f"[kumiho-claude] Synced KUMIHO_AUTH_TOKEN into {config_path.name}.",
             file=sys.stderr,
@@ -1166,6 +2907,7 @@ def _bootstrap_desktop_server_entries() -> None:
         "args": [str(script_path)],
         "env": {
             "CLAUDE_PLUGIN_ROOT": str(plugin_root),
+            "KUMIHO_CLAUDE_HOST": "claude",
         },
     }
     # Include the resolved token if one is available so Claude Desktop picks
@@ -1194,27 +2936,87 @@ def _bootstrap_desktop_server_entries() -> None:
             servers = b.get("mcpServers")
             if not isinstance(servers, dict):
                 return False
-            for name in ("kumiho-memory", "kumiho"):
-                entry = servers.get(name)
-                if not isinstance(entry, dict):
-                    continue
-                args = entry.get("args") or []
-                if not args or Path(args[0]) != script_path:
-                    continue        # absent, or pinned to another version
-                cmd = entry.get("command")
-                if not cmd or not Path(cmd).exists():
-                    continue        # interpreter went away with an old venv
-                return True
-            return False
+            entry = servers.get("kumiho-memory")
+            if not isinstance(entry, dict):
+                return False
+            args = entry.get("args") or []
+            if not args or Path(args[0]) != script_path:
+                return False        # absent, or pinned to another version
+            cmd = entry.get("command")
+            if not cmd or not Path(cmd).exists():
+                return False        # interpreter went away with an old venv
+            entry_env = entry.get("env")
+            if not isinstance(entry_env, dict) or entry_env.get(
+                "KUMIHO_CLAUDE_HOST"
+            ) != "claude":
+                return False        # add provenance hardening to legacy entries
+            try:
+                return Path(cmd).resolve() == Path(command).resolve()
+            except OSError:
+                return False
 
+        def _is_managed_legacy_entry(entry: object) -> bool:
+            if not isinstance(entry, dict):
+                return False
+            args = entry.get("args") or []
+            if not args or not isinstance(args[0], str):
+                return False
+            raw = args[0]
+            try:
+                if Path(raw).resolve() == script_path.resolve():
+                    return True
+            except OSError:
+                pass
+            normalized = raw.replace("\\", "/").lower()
+            return (
+                normalized.endswith("/scripts/run_kumiho_mcp.py")
+                and (
+                    "kumiho-memory" in normalized
+                    or "kumiho-plugins" in normalized
+                )
+            )
+
+        servers = body.get("mcpServers")
+        legacy = servers.get("kumiho") if isinstance(servers, dict) else None
+        managed_legacy = _is_managed_legacy_entry(legacy)
         if _has_valid_entry(body):
-            continue  # Valid entry — skip.
+            if managed_legacy:
+                # One physical server under two names starts two MCP processes.
+                # Remove only an entry positively identified as this plugin;
+                # an unrelated user-owned server named "kumiho" is preserved.
+                servers.pop("kumiho", None)
+                try:
+                    _write_json_atomic(desktop_path, body)
+                except OSError:
+                    pass
+            continue  # Valid canonical entry — no other repair needed.
 
-        # Not configured — bootstrap the entry.
-        body.setdefault("mcpServers", {})["kumiho-memory"] = server_entry
+        # Not configured — bootstrap or repair it without discarding backend
+        # selection, Redis/LLM routing, or unrelated host-owned fields.
+        servers = body.get("mcpServers")
+        if not isinstance(servers, dict):
+            servers = {}
+            body["mcpServers"] = servers
+        previous = servers.get("kumiho-memory")
+        if not isinstance(previous, dict):
+            previous = legacy if managed_legacy else {}
+        repaired = dict(previous)
+        repaired["command"] = command
+        repaired["args"] = [str(script_path)]
+        previous_env = previous.get("env")
+        repaired_env = dict(previous_env) if isinstance(previous_env, dict) else {}
+        repaired_env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
+        repaired_env["KUMIHO_CLAUDE_HOST"] = "claude"
+        if _ce_mode_enabled():
+            repaired_env.pop("KUMIHO_AUTH_TOKEN", None)
+        elif token:
+            repaired_env["KUMIHO_AUTH_TOKEN"] = token
+        repaired["env"] = repaired_env
+        servers["kumiho-memory"] = repaired
+        if managed_legacy:
+            servers.pop("kumiho", None)
         try:
-            desktop_path.parent.mkdir(parents=True, exist_ok=True)
-            desktop_path.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
+            _write_json_atomic(desktop_path, body)
             print(
                 f"[kumiho-claude] Bootstrapped kumiho-memory server entry in {desktop_path.name}.",
                 file=sys.stderr,
@@ -1259,7 +3061,36 @@ def _load_control_plane_url() -> str:
     raw = (os.getenv("KUMIHO_CONTROL_PLANE_URL", "") or "").strip()
     if _looks_like_placeholder(raw):
         raw = ""
-    return raw or "https://control.kumiho.cloud"
+    value = raw or "https://control.kumiho.cloud"
+    if any(char in value for char in "\r\n\0"):
+        raise RuntimeError("Control-plane URL contains invalid characters.")
+    parsed = urllib.parse.urlsplit(value)
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise RuntimeError("Control-plane URL is not a supported HTTP(S) URL.")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise RuntimeError("Control-plane URL has an invalid port.") from exc
+    if parsed.scheme.lower() == "http":
+        host = parsed.hostname.lower()
+        loopback = host == "localhost"
+        if not loopback:
+            try:
+                loopback = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                loopback = False
+        if not loopback:
+            raise RuntimeError(
+                "A non-loopback control plane must use HTTPS."
+            )
+    return value.rstrip("/")
 
 
 def _plugin_manifest_version() -> "str | None":
@@ -1301,27 +3132,94 @@ def _load_discovery_user_agent() -> str:
 
 def _normalize_server_target(raw_target: str) -> str | None:
     target = raw_target.strip()
-    if not target:
+    if not target or any(char in target for char in "\r\n\0"):
         return None
 
-    if "://" in target:
-        parsed = urllib.parse.urlparse(target)
-        if not parsed.hostname:
-            return None
-        scheme = parsed.scheme.lower()
+    has_scheme = "://" in target
+    parsed = urllib.parse.urlsplit(target if has_scheme else f"//{target}")
+    scheme = parsed.scheme.lower() if has_scheme else ""
+    if scheme and scheme not in {"http", "https", "grpc", "grpcs"}:
+        return None
+    if (
+        not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    try:
         port = parsed.port
-        if port is None:
-            if scheme in {"https", "grpcs"}:
-                port = 443
-            elif scheme in {"http", "grpc"}:
-                port = 80
-            else:
-                port = 443
-        return f"{parsed.hostname}:{port}"
+    except ValueError:
+        return None
+    if port is None:
+        if not scheme:
+            return None
+        port = 443 if scheme in {"https", "grpcs"} else 80
+    host = parsed.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    authority = f"{host}:{port}"
+    # Preserve TLS-bearing schemes. The SDK uses them to choose a secure gRPC
+    # channel; reducing grpcs://host:7443 to host:7443 silently downgrades it.
+    return f"{scheme}://{authority}" if scheme else authority
 
-    if "/" in target:
-        target = target.split("/", 1)[0]
-    return target or None
+
+def _ce_server_target_is_safe(target: str) -> bool:
+    has_scheme = "://" in target
+    parsed = urllib.parse.urlsplit(target if has_scheme else f"//{target}")
+    scheme = parsed.scheme.lower() if has_scheme else ""
+    if scheme in {"https", "grpcs"}:
+        return True
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _ce_redis_url_is_safe(value: str) -> bool:
+    """Allow plaintext Redis only on the local machine."""
+    if any(char in value for char in "\r\n\0"):
+        return False
+    parsed = urllib.parse.urlsplit(value)
+    if (
+        parsed.scheme.lower() not in {"redis", "rediss"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        return False
+    try:
+        parsed.port
+    except ValueError:
+        return False
+    if parsed.scheme.lower() == "rediss":
+        return True
+    host = parsed.hostname.rstrip(".").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _resolve_ce_redis_url(raw: str | None = None) -> str:
+    value = (raw if raw is not None else os.getenv("UPSTASH_REDIS_URL", "") or "").strip()
+    if not value or _looks_like_placeholder(value):
+        value = DEFAULT_CE_REDIS_URL
+    if not _ce_redis_url_is_safe(value):
+        raise SystemExit(
+            "[kumiho-claude] Refusing an unsafe CE Redis URL; plaintext "
+            "redis:// is allowed only on loopback, otherwise use rediss://."
+        )
+    return value
 
 
 def _ce_mode_enabled() -> bool:
@@ -1346,10 +3244,15 @@ def _resolve_ce_endpoint() -> str | None:
     if raw and not _looks_like_placeholder(raw):
         normalized = _normalize_server_target(raw)
         if normalized:
+            if not _ce_server_target_is_safe(normalized):
+                raise SystemExit(
+                    "[kumiho-claude] Refusing a plaintext remote CE endpoint; "
+                    "use https:// or grpcs://."
+                )
             return normalized
         print(
-            f"[kumiho-claude] Could not parse KUMIHO_CLAUDE_SERVER_ENDPOINT={raw!r}; "
-            f"falling back to default CE endpoint {DEFAULT_CE_ENDPOINT}.",
+            "[kumiho-claude] Could not parse the configured CE endpoint; "
+            f"falling back to {DEFAULT_CE_ENDPOINT} without logging its value.",
             file=sys.stderr,
         )
     return DEFAULT_CE_ENDPOINT
@@ -1358,19 +3261,38 @@ def _resolve_ce_endpoint() -> str | None:
 def _bootstrap_ce_endpoint(endpoint: str) -> None:
     """Point the SDK at a self-hosted CE server instead of cloud discovery.
 
-    CE selection at the SDK level is: no auth token -> tokenless loopback CE
-    probe, with ``KUMIHO_LOCAL_SERVER_ENDPOINT`` overriding the CE gRPC target
-    (mirrors the kumiho-gpt-connect CE backend).  We clear any inherited cloud
-    endpoint and token so routing cannot flip back to control-plane discovery,
-    and supply a local Redis URL for CE working memory.
+    CE is launched through the plugin's explicit-client adapter, rather than
+    the SDK's loopback-only auto-detection. This supports both local and remote
+    CE while preserving grpc(s)/http(s) transport semantics.
     """
-    os.environ.pop("KUMIHO_SERVER_ENDPOINT", None)
     os.environ.pop("KUMIHO_SERVER_ADDRESS", None)
-    os.environ["KUMIHO_LOCAL_SERVER_ENDPOINT"] = endpoint
+    os.environ.pop("KUMIHO_LOCAL_SERVER_ENDPOINT", None)
+    for key in (
+        "KUMIHO_UPSTASH_REDIS_URL",
+        "KUMIHO_MEMORY_PROXY_URL",
+        "KUMIHO_MCP_HOSTED",
+        "KUMIHO_HOSTED_LOCAL_REDIS",
+        "KUMIHO_LOCAL_REDIS_URL",
+        "UPSTASH_REDIS_REST_URL",
+        "UPSTASH_REDIS_REST_TOKEN",
+        "KUMIHO_SERVER_USE_TLS",
+        "KUMIHO_SERVER_AUTHORITY",
+        "KUMIHO_SSL_TARGET_OVERRIDE",
+        "KUMIHO_SERVER_CA_FILE",
+        "KUMIHO_REQUIRE_TLS",
+    ):
+        os.environ.pop(key, None)
+    os.environ["KUMIHO_SERVER_ENDPOINT"] = endpoint
+    scheme = endpoint.partition("://")[0].lower() if "://" in endpoint else ""
+    if scheme in {"grpcs", "https"}:
+        os.environ["KUMIHO_SERVER_USE_TLS"] = "true"
+        os.environ["KUMIHO_REQUIRE_TLS"] = "1"
+    else:
+        os.environ["KUMIHO_SERVER_USE_TLS"] = "false"
     # A token would flip the SDK back to control-plane discovery; CE runs
     # tokenless and enforces its own auth at the server.
     os.environ["KUMIHO_AUTH_TOKEN"] = ""
-    os.environ.setdefault("UPSTASH_REDIS_URL", DEFAULT_CE_REDIS_URL)
+    os.environ["UPSTASH_REDIS_URL"] = _resolve_ce_redis_url()
     # Empty counts as unset: on Desktop the ${VAR:-} placeholder resolves to "".
     if not (os.environ.get("KUMIHO_WORKING_MEMORY_TTL", "") or "").strip():
         os.environ["KUMIHO_WORKING_MEMORY_TTL"] = DEFAULT_CE_WORKING_MEMORY_TTL
@@ -1394,9 +3316,13 @@ def _bootstrap_server_endpoint() -> None:
             "resolving endpoint via control-plane discovery.",
             file=sys.stderr,
         )
-    # Always clear any inherited endpoint so startup cannot lock onto stale routing.
+    # Always clear inherited endpoint/transport decisions so Cloud discovery
+    # cannot be downgraded after it returns a TLS target.
     os.environ.pop("KUMIHO_SERVER_ENDPOINT", None)
     os.environ.pop("KUMIHO_SERVER_ADDRESS", None)
+    os.environ.pop("KUMIHO_LOCAL_SERVER_ENDPOINT", None)
+    os.environ.pop("KUMIHO_SERVER_USE_TLS", None)
+    os.environ["KUMIHO_REQUIRE_TLS"] = "1"
 
     token_candidates = _discovery_token_candidates()
     if not token_candidates:
@@ -1409,6 +3335,7 @@ def _bootstrap_server_endpoint() -> None:
         # localhost:8080.  The .invalid TLD is guaranteed to never
         # resolve (RFC 6761), producing a clear "not connected" error.
         os.environ["KUMIHO_SERVER_ENDPOINT"] = "needs-auth.kumiho.invalid:443"
+        os.environ["KUMIHO_SERVER_USE_TLS"] = "true"
         return
 
     control_plane_url = _load_control_plane_url()
@@ -1440,14 +3367,23 @@ def _bootstrap_server_endpoint() -> None:
                 body_text = response.read().decode("utf-8")
             break
         except urllib.error.HTTPError as exc:
-            detail = ""
-            try:
-                detail = exc.read().decode("utf-8")
-            except Exception:
+            if os.getenv("KUMIHO_CLAUDE_HOST") == "codex":
+                request_id = ""
+                try:
+                    request_id = exc.headers.get("x-request-id", "").strip()
+                except Exception:
+                    request_id = ""
+                request_id = re.sub(r"[^A-Za-z0-9._:-]", "?", request_id)[:80]
+                detail = f" request_id={request_id}" if request_id else ""
+            else:
                 detail = ""
-            detail = detail.strip().replace("\n", " ")
-            if detail:
-                detail = f" {detail[:160]}"
+                try:
+                    detail = exc.read().decode("utf-8")
+                except Exception:
+                    detail = ""
+                detail = detail.strip().replace("\n", " ")
+                if detail:
+                    detail = f" {detail[:160]}"
             print(
                 f"[kumiho-claude] Discovery candidate #{index} failed ({exc.code}).{detail}",
                 file=sys.stderr,
@@ -1486,9 +3422,26 @@ def _bootstrap_server_endpoint() -> None:
     resolved_target = _normalize_server_target(raw_target)
     if not resolved_target:
         raise RuntimeError("Control-plane discovery response missing gRPC target.")
+    parsed_target = urllib.parse.urlsplit(
+        resolved_target if "://" in resolved_target else f"//{resolved_target}"
+    )
+    try:
+        resolved_port = parsed_target.port
+    except ValueError:
+        resolved_port = None
+    resolved_scheme = parsed_target.scheme.lower()
+    if resolved_scheme in {"http", "grpc"} or (
+        not resolved_scheme and resolved_port != 443
+    ):
+        raise RuntimeError("Control-plane discovery returned a non-TLS gRPC target.")
 
     os.environ["KUMIHO_SERVER_ENDPOINT"] = resolved_target
     os.environ.pop("KUMIHO_SERVER_ADDRESS", None)
+    # The current SDK consults this override after parsing the endpoint scheme.
+    # Pin it true as well as REQUIRE_TLS so a stale false value can never turn
+    # an authenticated Cloud channel into plaintext.
+    os.environ["KUMIHO_SERVER_USE_TLS"] = "true"
+    os.environ["KUMIHO_REQUIRE_TLS"] = "1"
     print(
         f"[kumiho-claude] Resolved KUMIHO_SERVER_ENDPOINT={resolved_target} via discovery bootstrap.",
         file=sys.stderr,
@@ -1603,6 +3556,11 @@ def _publish_reflex_config() -> None:
 
     Best-effort: a failure here costs a knob, never a session.
     """
+    # Codex has no Claude hooks and shares neither their control surface nor
+    # their lifecycle. A Codex MCP start must not overwrite the snapshot that
+    # concurrently running Claude hooks consume from the shared state dir.
+    if os.getenv("KUMIHO_CLAUDE_HOST") == "codex":
+        return
     try:
         values = {}
         for key in _REFLEX_CONFIG_KEYS:
@@ -1619,11 +3577,61 @@ def _publish_reflex_config() -> None:
         pass
 
 
+def _llm_base_url_is_safe(value: str) -> bool:
+    """Allow plaintext model traffic only to the local machine."""
+    if any(char in value for char in "\r\n\0"):
+        return False
+    parsed = urllib.parse.urlsplit(value)
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        return False
+    try:
+        parsed.port
+    except ValueError:
+        return False
+    if parsed.scheme.lower() == "https":
+        return True
+    host = parsed.hostname.rstrip(".").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _configure_llm_fallback() -> None:
     if os.getenv("KUMIHO_CLAUDE_DISABLE_LLM_FALLBACK", "").strip().lower() in {"1", "true", "yes"}:
         return
 
     key_vars = ("KUMIHO_LLM_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+    base_url = (os.getenv("KUMIHO_LLM_BASE_URL", "") or "").strip()
+    if (
+        base_url
+        and not _looks_like_placeholder(base_url)
+        and not _llm_base_url_is_safe(base_url)
+    ):
+        # Never pair a real ambient provider key with a plaintext remote model
+        # endpoint. Keep core memory tools available by pinning enrichment to
+        # the same local dead-port fallback used by keyless mode.
+        for key in key_vars:
+            os.environ.pop(key, None)
+        os.environ["KUMIHO_LLM_PROVIDER"] = "openai"
+        os.environ["OPENAI_API_KEY"] = "kumiho-claude-fallback"
+        os.environ["KUMIHO_LLM_BASE_URL"] = "http://127.0.0.1:9/v1"
+        print(
+            "[kumiho-claude] Ignored an unsafe LLM base URL: remote model "
+            "endpoints must use HTTPS. Optional LLM enrichment is disabled; "
+            "core memory tools remain available.",
+            file=sys.stderr,
+        )
+        return
     if any(os.getenv(var, "").strip() for var in key_vars):
         return
 
@@ -1631,7 +3639,6 @@ def _configure_llm_fallback() -> None:
     # CE deployment's own model endpoint) means a real model is reachable even
     # without an API key.  Honor it instead of pinning the dead-port fallback;
     # OpenAI-compatible local servers accept any non-empty key.
-    base_url = (os.getenv("KUMIHO_LLM_BASE_URL", "") or "").strip()
     if base_url and not _looks_like_placeholder(base_url):
         os.environ.setdefault("KUMIHO_LLM_PROVIDER", "openai")
         os.environ.setdefault("OPENAI_API_KEY", "kumiho-local-llm")
@@ -1679,6 +3686,7 @@ def _configure_llm_fallback() -> None:
 
 
 def main() -> int:
+    _configure_host_diagnostics()
     parser = argparse.ArgumentParser(description="Run Kumiho MCP with auto-bootstrap.")
     parser.add_argument(
         "--self-test",
@@ -1701,17 +3709,19 @@ def main() -> int:
     )
     args, passthrough = parser.parse_known_args()
 
-    # Before anything that can take time (env hydration, discovery, auth): the
-    # hooks name <venv>/bin/pythonw, which on POSIX exists only once this link
-    # does, and SessionStart fires in parallel with this server's start. Cheap
-    # and idempotent; a venv that does not exist yet is _ensure_runtime's job.
-    try:
-        _early_venv = _venv_dir()
-        if _early_venv.exists():
-            _ensure_hook_interpreter(_early_venv)
-    except Exception as exc:  # noqa: BLE001 -- never fail the server for this
-        print("[kumiho-claude] Hook interpreter check skipped: %s" % exc,
-              file=sys.stderr)
+    # Detached provisioning must transfer the parent's reservation within the
+    # five-second handshake in _spawn_detached_provisioning.  In particular,
+    # do not repair a Windows bin junction or re-read host config first: both
+    # can be slow, and the parent already sanitized/hydrated the inherited
+    # environment before it spawned this child.
+    inherited_reservation = (
+        os.getenv(_PROVISION_LOCK_TOKEN_ENV, "") or ""
+    ).strip()
+    if args.provision and inherited_reservation:
+        os.environ[_SYNC_PROVISION_ENV] = "1"
+        _ensure_runtime()
+        print("[kumiho-claude] Provisioning complete.", file=sys.stderr)
+        return 0
 
     # Both flags mean "do the work here"; neither is on a startup clock, so
     # neither may hand provisioning off to yet another detached child.
@@ -1736,6 +3746,12 @@ def main() -> int:
 
     _sanitize_placeholder_env_vars()
     _hydrate_env_from_local_config()
+    # Validate/adopt/provision the shared runtime before auth or discovery.
+    # _ensure_runtime holds the canonical ~/.kumiho/provision.lock while it
+    # repairs the hook interpreter and migrates Claude's compatibility alias,
+    # so hooks never see a half-mutated venv and another host cannot start pip
+    # during the lock-set transition.
+    python_path = _ensure_runtime()
     _normalize_host_session_id()
     # The Desktop server-entry self-heal is auth-independent (its token embed is
     # already guarded), so it runs in both modes — otherwise a CE user's stale
@@ -1750,19 +3766,29 @@ def main() -> int:
             _sync_token_to_desktop_config()
         _validate_auth_token()
         _warn_auth()
-    try:
-        _bootstrap_server_endpoint()
-    except RuntimeError as exc:
-        # Prevent SDK from falling back to localhost:8080.
-        os.environ["KUMIHO_SERVER_ENDPOINT"] = "needs-auth.kumiho.invalid:443"
-        print(
-            "[kumiho-claude] Discovery bootstrap failed. "
-            "Run /kumiho-onboard to set up authentication. "
-            f"Error: {exc}",
-            file=sys.stderr,
-        )
+    codex_cloud = (
+        os.getenv("KUMIHO_CLAUDE_HOST") == "codex" and not _ce_mode_enabled()
+    )
+    if codex_cloud:
+        # The Codex-only adapter below pins the official control plane and a
+        # dedicated discovery cache before it imports the SDK.  Do not perform
+        # the Claude bootstrap first: besides doing the request twice, that
+        # would make host routing depend on ambient discovery state again.
+        os.environ.pop("KUMIHO_SERVER_ENDPOINT", None)
+        os.environ.pop("KUMIHO_SERVER_ADDRESS", None)
+    else:
+        try:
+            _bootstrap_server_endpoint()
+        except RuntimeError as exc:
+            # Prevent SDK from falling back to localhost:8080.
+            os.environ["KUMIHO_SERVER_ENDPOINT"] = "needs-auth.kumiho.invalid:443"
+            print(
+                "[kumiho-claude] Discovery bootstrap failed. "
+                f"Run {_onboard_command_label()} to set up authentication. "
+                f"Error: {exc}",
+                file=sys.stderr,
+            )
     _configure_llm_fallback()
-    python_path = _ensure_runtime()
 
     if args.self_test:
         check_code = (
@@ -1772,9 +3798,29 @@ def main() -> int:
             "print('ok' if not missing else 'missing:' + ','.join(missing));"
             "sys.exit(0 if not missing else 1)"
         )
-        return _run([str(python_path), "-c", check_code], check=False)
+        return _run(
+            [str(python_path), "-c", check_code],
+            check=False,
+            timeout=PROBE_TIMEOUT_S,
+            env=_provision_subprocess_env(),
+        )
 
-    cmd = [str(python_path), "-m", "kumiho.mcp_server", *passthrough]
+    if _ce_mode_enabled():
+        ce_runner = Path(__file__).resolve().with_name("run_kumiho_ce.py")
+        if not ce_runner.is_file():
+            raise SystemExit(
+                f"[kumiho-claude] CE runtime adapter is missing: {ce_runner}"
+            )
+        cmd = [str(python_path), str(ce_runner), *passthrough]
+    elif codex_cloud:
+        cloud_runner = Path(__file__).resolve().with_name("run_kumiho_cloud.py")
+        if not cloud_runner.is_file():
+            raise SystemExit(
+                f"[kumiho-codex] Cloud runtime adapter is missing: {cloud_runner}"
+            )
+        cmd = [str(python_path), str(cloud_runner), *passthrough]
+    else:
+        cmd = [str(python_path), "-m", "kumiho.mcp_server", *passthrough]
     # On Windows os.execv spawns a new process and immediately exits the
     # current one.  Claude Desktop monitors the original PID; when it exits
     # the transport is closed ~85 ms later even though the child is still
@@ -1782,7 +3828,7 @@ def main() -> int:
     # Desktop never detects a premature exit.  stdin/stdout/stderr are
     # inherited by the child automatically (no redirection needed).
     if os.name == "nt":
-        proc = subprocess.run(cmd)
+        proc = subprocess.run(cmd, **_hidden_console_kwargs())
         return proc.returncode
     # On POSIX, true exec replaces the process image in-place (same PID).
     os.execv(str(python_path), cmd)

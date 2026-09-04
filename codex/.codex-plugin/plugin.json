@@ -1,6 +1,6 @@
 {
   "name": "kumiho-memory",
-  "version": "0.20.5",
+  "version": "0.20.6",
   "description": "Persistent graph-native memory for Codex — recalls context across sessions, stores decisions and preferences, and mines commits into a git-anchored decision graph (Decision Memory). Cloud (API token) or self-hosted CE.",
   "author": {
     "name": "Kumiho Inc.",
@@ -18,6 +18,23 @@
     "decision-memory",
     "codex"
   ],
+  "interface": {
+    "displayName": "Kumiho Memory",
+    "shortDescription": "Persistent graph memory for Codex",
+    "longDescription": "Onboard Kumiho Cloud or self-hosted CE, recall context across sessions, preserve decisions and preferences, and explain why code changed with graph-native memory.",
+    "developerName": "Kumiho Inc.",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://docs.kumiho.io/python/mcp.html",
+    "defaultPrompt": [
+      "Set up Kumiho Memory for this Codex installation.",
+      "Recall what we previously decided about this project.",
+      "Remember this decision and its rationale for next time."
+    ]
+  },
   "skills": "./skills/",
   "mcpServers": "./.mcp.json"
 }

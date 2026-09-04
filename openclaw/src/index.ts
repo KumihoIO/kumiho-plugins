@@ -261,6 +261,7 @@ async function getAuthToken(): Promise<string> {
 }
 
 import { KumihoClient, KumihoApiError, ceChildEnv, createTransport, McpTransport, type Transport } from "./client.js";
+import { normalizeCeEndpoint } from "./ce-endpoint.js";
 import { McpBridgeError, type McpToolDefinition } from "./mcp-bridge.js";
 import { PIIRedactor } from "./privacy.js";
 import { ArtifactManager } from "./artifacts.js";
@@ -354,25 +355,6 @@ function ceOptInRequested(raw: KumihoPluginConfig): boolean {
   );
 }
 
-/** Normalize "http://host:port/path" or "host:port" to "host:port" for gRPC. */
-function normalizeCeEndpoint(raw: string | undefined): string {
-  const target = (raw ?? "").trim();
-  if (!target) return "";
-  if (target.includes("://")) {
-    try {
-      const url = new URL(target);
-      if (!url.hostname) return "";
-      const port =
-        url.port ||
-        (url.protocol === "http:" || url.protocol === "grpc:" ? "80" : "443");
-      return `${url.hostname}:${port}`;
-    } catch {
-      return "";
-    }
-  }
-  return target.split("/")[0];
-}
-
 function resolveConfig(
   raw: KumihoPluginConfig,
   inheritedHostLlm?: InheritedLlmConfig | null,
@@ -427,13 +409,15 @@ function resolveConfig(
   // export it, and a leftover shell export must not silently reroute a
   // cloud-backed OpenClaw away from the user's cloud memory.
   const ceRequested = ceOptInRequested(raw);
+  const ceEnabled = mode === "local" && ceRequested;
+  const requestedCeEndpoint =
+    (raw.ce?.endpoint ?? "").trim() ||
+    (process.env.KUMIHO_OPENCLAW_SERVER_ENDPOINT ?? "").trim() ||
+    (process.env.KUMIHO_LOCAL_SERVER_ENDPOINT ?? "").trim() ||
+    CE_DEFAULT_ENDPOINT;
   const ce = {
-    enabled: mode === "local" && ceRequested,
-    endpoint:
-      normalizeCeEndpoint(raw.ce?.endpoint) ||
-      normalizeCeEndpoint(process.env.KUMIHO_OPENCLAW_SERVER_ENDPOINT) ||
-      normalizeCeEndpoint(process.env.KUMIHO_LOCAL_SERVER_ENDPOINT) ||
-      CE_DEFAULT_ENDPOINT,
+    enabled: ceEnabled,
+    endpoint: ceEnabled ? normalizeCeEndpoint(requestedCeEndpoint) : CE_DEFAULT_ENDPOINT,
     redisUrl:
       (raw.ce?.redisUrl ?? "").trim() ||
       (process.env.UPSTASH_REDIS_URL ?? "").trim() ||

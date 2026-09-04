@@ -49,6 +49,115 @@ jobs:
       - name: Test
         run: python -m pytest claude/scripts codex/scripts -q
 
+  codex-native:
+    # The native manifest enters through Node and must discover a usable
+    # Python command on both Unix and Windows.  --doctor exercises exactly
+    # that path without installing packages, opening the network, or starting
+    # the long-running MCP stdio server.
+    name: Codex native MCP doctor (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install pinned Codex CLI
+        run: npm install --global @openai/codex@0.153.2
+      - name: Install Windows regression-test dependency
+        if: runner.os == 'Windows'
+        run: python -m pip install --upgrade pytest
+      - name: Test shared runtime and Windows migration paths
+        if: runner.os == 'Windows'
+        run: >-
+          python -m pytest
+          claude/scripts/test_provisioning.py
+          claude/scripts/test_needs_install.py
+          claude/scripts/test_setup_marker.py
+          claude/scripts/test_bounded_proc.py
+          claude/scripts/test_cloud_safety.py
+          codex/scripts/test_backend_fail_closed.py
+          -q
+      - name: Validate native plugin structure
+        run: python codex/scripts/test_codex_plugin.py
+        env:
+          KUMIHO_REQUIRE_CODEX_CLI: '1'
+      - name: Test Codex MCP thread identity bridge
+        run: node codex/scripts/test_thread_id_bridge.mjs
+      - name: Smoke-test Node launcher
+        run: node codex/scripts/run_kumiho_mcp.mjs --doctor
+
+  real-sdk:
+    name: Real SDK MCP (Codex + Claude; Cloud + CE; ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Provision and exercise the declared Unix runtime from cold state
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The launcher deliberately derives home from the OS account record,
+          # not project-controlled HOME/USERPROFILE. GitHub's runner account is
+          # ephemeral, so its real home is the isolated integration fixture.
+          export KUMIHO_CI_HOME="$HOME"
+          test ! -e "$KUMIHO_CI_HOME/.kumiho/venv"
+          KUMIHO_CLAUDE_PROVISION_SYNC=1 \
+          KUMIHO_CLAUDE_PACKAGE_SPEC='kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.4.0' \
+            node codex/scripts/run_kumiho_mcp.mjs --provision
+          test -x "$KUMIHO_CI_HOME/.kumiho/venv/bin/python"
+          KUMIHO_DOCTOR_OUTPUT="$(node codex/scripts/run_kumiho_mcp.mjs --doctor)"
+          printf '%s\n' "$KUMIHO_DOCTOR_OUTPUT"
+          grep -F "Python launcher: $KUMIHO_CI_HOME/.kumiho/venv/bin/python" \
+            <<< "$KUMIHO_DOCTOR_OUTPUT"
+          KUMIHO_REAL_SDK_HOME="$KUMIHO_CI_HOME" \
+          KUMIHO_REAL_SDK_PYTHON="$KUMIHO_CI_HOME/.kumiho/venv/bin/python" \
+            python codex/scripts/real_sdk_stdio_smoke.py
+      - name: Provision and exercise the declared Windows runtime from cold state
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $KumihoCiHome = [Environment]::GetFolderPath(
+            [Environment+SpecialFolder]::UserProfile
+          )
+          $KumihoVenv = Join-Path $KumihoCiHome ".kumiho\venv"
+          $KumihoPython = Join-Path $KumihoVenv "Scripts\python.exe"
+          if (Test-Path -LiteralPath $KumihoVenv) {
+            throw "Hosted runner unexpectedly contains a pre-existing Kumiho venv"
+          }
+          $env:KUMIHO_CLAUDE_PROVISION_SYNC = "1"
+          $env:KUMIHO_CLAUDE_PACKAGE_SPEC = "kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.4.0"
+          node codex/scripts/run_kumiho_mcp.mjs --provision
+          if (-not (Test-Path -LiteralPath $KumihoPython -PathType Leaf)) {
+            throw "Cold provisioning did not create the shared Windows venv"
+          }
+          $KumihoDoctor = & node codex/scripts/run_kumiho_mcp.mjs --doctor
+          $KumihoDoctor | Write-Output
+          if ($LASTEXITCODE -ne 0 -or
+              -not (($KumihoDoctor -join "`n").Contains("Python launcher: $KumihoPython"))) {
+            throw "The native Codex entry did not select the shared Windows venv"
+          }
+          $env:KUMIHO_REAL_SDK_HOME = $KumihoCiHome
+          $env:KUMIHO_REAL_SDK_PYTHON = $KumihoPython
+          python codex/scripts/real_sdk_stdio_smoke.py
+
   openclaw:
     name: openclaw (vitest / typecheck / build)
     runs-on: ubuntu-latest
@@ -91,10 +200,9 @@ jobs:
         with:
           python-version: '3.12'
       - name: Validate
-        # The plugin version is written in five separate files -- claude/README.md
-        # is the fifth, and was outside this check until #70 -- and the release
-        # spec in five more. Nothing but care kept them in step, and care is
-        # exactly what fails during a hurried release.
+        # The plugin version is written on four release surfaces.  The native
+        # .agents marketplace is intentionally unversioned; Codex reads the
+        # version from codex/.codex-plugin/plugin.json.
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
@@ -156,7 +264,6 @@ jobs:
               "claude/.claude-plugin/plugin.json": _manifest_version,
               "codex/.codex-plugin/plugin.json": _manifest_version,
               ".claude-plugin/marketplace.json": _entry_version,
-              ".codex-plugin/marketplace.json": _entry_version,
               "claude/README.md": _readme_version,
           }
 
@@ -271,9 +378,12 @@ jobs:
                       f"manifests are at {current} -- the bump was announced, not applied")
 
           # --- the provisioning spec, which decides what lands in a user's venv -------
+          # Codex now enters through a Node launcher with no shell-style
+          # placeholders.  The Python launcher's package floor is still
+          # sourced from and checked against the Claude MCP declaration; the
+          # vendored-launcher parity test carries that behavior into Codex.
           spec_sites = {
               "claude/.mcp.json": lambda d: d["mcpServers"]["kumiho-memory"]["env"]["KUMIHO_CLAUDE_PACKAGE_SPEC"],
-              "codex/.mcp.json": lambda d: d["mcpServers"]["kumiho-memory"]["env"]["KUMIHO_CLAUDE_PACKAGE_SPEC"],
           }
           specs = {}
           for path, pick in spec_sites.items():
@@ -322,7 +432,7 @@ jobs:
           # --- the kumiho / kumiho-memory floors, across every distribution channel ---
           floors = {}
 
-          for path in ("claude/.mcp.json", "codex/.mcp.json"):
+          for path in ("claude/.mcp.json",):
               data = load(path)
               if data:
                   try:

@@ -3,6 +3,28 @@
 You have persistent graph-native memory via the `kumiho-memory` MCP server.
 You remember across sessions. Follow this protocol every session.
 
+## Session bootstrap — once
+
+On the first user message, look up the `published` revision of
+`kref://CognitiveMemory/agent.instruction`; if that kref is unresolvable or not
+found, retry `kref://CognitiveMemory/personal/agent.instruction`. Adopt returned
+identity metadata and engage once broadly. Only if both lookups are not-found,
+perform automatic first-meeting onboarding without asking questions or stopping:
+infer the response language from the user's message; use agent name `Kumiho`,
+balanced tone, balanced verbosity, and artifact directory
+`~/.kumiho/artifacts/`; include a preferred user name, role, or behavior rules
+only when already known. Create `CognitiveMemory/personal/agent.instruction`,
+create a revision, tag the returned revision kref `published`, and continue the
+user's original request in the same turn. Auth/connection errors are not a
+first meeting; direct the user to `$kumiho-onboard` and continue without memory.
+
+## Absolute secret exclusion
+
+Never ask for, store, reflect, decompose, ingest, or repeat passwords, API
+tokens, refresh tokens, private keys, session cookies, credential-bearing URLs,
+or raw secret-bearing environment/config values. If one appears, omit it from
+all memory calls and recommend rotating it.
+
 ## Two reflexes
 
 **Engage — before you respond.** When the user's message touches anything
@@ -17,18 +39,23 @@ the returned `source_krefs` for reflect.
 capture titles ("on Jul 11", never "today"). Skip captures for trivial
 exchanges; pass `source_krefs` from engage for provenance.
 
-## Session id — you must supply it (Codex)
+## Session id — owned by Codex, never invented by the agent
 
-Codex publishes no session identity to MCP servers, so `kumiho-memory`
->=1.2.0 cannot resolve an omitted `session_id` and **refuses the call**
-rather than guessing. Derive ONE stable id at the start of the session —
-`{repo}-{YYYY-MM-DD}` is a good shape — and pass that same value on every
-memory call that accepts it (`kumiho_memory_engage`,
-`kumiho_memory_reflect`, `kumiho_memory_consolidate`, `kumiho_chat_*`).
+Codex attaches its stable thread id to every MCP tool request in per-call
+`_meta`. The plugin's stdio bridge recognizes the supported Codex metadata
+spellings and carries that value into a
+request-scoped Kumiho host context for session-aware tools.
+This per-call route stays correct even when one MCP process outlives a thread;
+`CODEX_THREAD_ID` / `CODEX_SESSION_ID` are only compatibility fallbacks for
+hosts that explicitly export them. Omit `session_id` in normal calls. Results
+report the id and normally show `session_id_source: "codex-thread-meta"`.
 
-A fresh id per call scatters one conversation across as many
-working-memory buckets as you invent. If a result reports
-`created_bucket=true` on a turn that is not the first, you changed the id.
+Never derive an id from the repository, date, process, or turn. Such ids
+either merge separate conversations or split one conversation into several
+working-memory buckets. A non-empty explicit id remains available only for a
+deliberate historical/backfill target. If the server reports that no session
+identity is available, update/restart Codex so it supplies thread metadata;
+do not guess one.
 
 ## Decision Memory (code work)
 
@@ -36,8 +63,9 @@ working-memory buckets as you invent. If a result reports
 first** — prior decisions, their rationale, verbatim evidence, and whether
 they were later reversed (`superseded_by`) come back in one call. Never
 re-litigate a decision the graph already explains; if you change it
-anyway, say why, and write the new rationale into your commit message —
-the post-commit capture hook mines it back into the graph automatically.
+anyway, say why. After committing a meaningful choice, call
+`kumiho_code_capture` with its rationale and code anchors. No hook is installed
+by default; an optional full-checkout hook must be installed explicitly.
 
 To backfill a repo's history: `kumiho_code_ingest` (idempotent; re-runs
 skip captured commits at zero LLM cost).
@@ -52,7 +80,7 @@ skip captured commits at zero LLM cost).
 - Compare each memory's `created_at` to today's date; prefer recent
   memories when they conflict with stale ones.
 - After 20+ exchanges or at session end, call
-  `kumiho_memory_consolidate` with the session id you have been using all
-  along (see "Session id" above) and a `summary` you wrote yourself from
-  the conversation (keyless — without `summary` the call needs an external
-  LLM and fails).
+  `kumiho_memory_consolidate` with a `summary` you wrote yourself from the
+  conversation. Omit `session_id`; the bridge supplies the Codex thread id as
+  above. This is keyless — without `summary` the call needs an external LLM
+  and fails.

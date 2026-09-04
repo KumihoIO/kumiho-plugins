@@ -66,7 +66,11 @@ def main() -> int:
     argv = sys.argv[1:]
     if "--log-file" not in argv:
         argv += ["--log-file", str(launcher._state_dir() / "backfill-ingest.log")]
-    proc = subprocess.run([str(python_path), str(runner), *argv], env=env)
+    command = [str(python_path), str(runner), *argv]
+    if launcher._ce_mode_enabled():
+        adapter = Path(__file__).resolve().parent / "run_kumiho_ce.py"
+        command = [str(python_path), str(adapter), "--script", str(runner), *argv]
+    proc = subprocess.run(command, env=env)
     return proc.returncode
 
 

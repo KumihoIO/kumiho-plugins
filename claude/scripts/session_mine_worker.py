@@ -130,9 +130,19 @@ def main() -> int:
         env = dict(os.environ)
         env["KUMIHO_MEMORY_CODE"] = "1"
         log(f"session mine start: session={session_id} repo={repo_dir}")
+        command = [
+            str(python_path), "-m", "kumiho_memory", "code-mine-session",
+            session_id, "--transcript", transcript, "--repo", repo_dir,
+        ]
+        if launcher._ce_mode_enabled():
+            adapter = Path(__file__).resolve().parent / "run_kumiho_ce.py"
+            command = [
+                str(python_path), str(adapter), "--module", "kumiho_memory",
+                "code-mine-session", session_id, "--transcript", transcript,
+                "--repo", repo_dir,
+            ]
         proc = bounded_proc.run(
-            [str(python_path), "-m", "kumiho_memory", "code-mine-session",
-             session_id, "--transcript", transcript, "--repo", repo_dir],
+            command,
             env=env, timeout=MINE_TIMEOUT_S,
         )
         tail = (proc.stdout or "").strip().splitlines()[-14:]

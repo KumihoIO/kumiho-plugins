@@ -3,17 +3,22 @@
 This plugin uses one local MCP server:
 
 - `kumiho-memory` (stdio)
-  - command: `python ${CLAUDE_PLUGIN_ROOT}/scripts/run_kumiho_mcp.py`
-  - bootstrap: creates a venv and installs `kumiho[mcp]` + `kumiho-memory[all]`
+  - command: `${CLAUDE_PLUGIN_DATA}/venv/bin/python ${CLAUDE_PLUGIN_ROOT}/scripts/run_kumiho_mcp.py`
+  - bootstrap: reuses or creates `~/.kumiho/venv` and installs
+    `kumiho[mcp]` + `kumiho-memory[all]` only when needed
 
-## Required environment
+## Cloud authentication
 
-- `KUMIHO_AUTH_TOKEN` (JWT bearer token for authenticated memory/graph calls)
+- `KUMIHO_AUTH_TOKEN` (Cloud-mode JWT bearer token for authenticated
+  memory/graph calls; CE does not use it)
   - set this in `.env.local` at the plugin root, or in `.claude/settings.local.json` (Claude Code only)
-  - if omitted, MCP tools still load but authenticated operations will fail
+  - if omitted in Cloud mode, MCP tools still load but authenticated operations
+    fail until onboarding completes
   - raw JWT or `Bearer <jwt>` are both accepted
-- in Claude Code, the launcher also auto-loads `KUMIHO_*` values from nearby `.claude/settings*.json`
-  when not already present in env
+- in Claude Code, the launcher auto-loads token and CE selection values from
+  nearby `.claude/settings*.json` when not already present in env; custom Cloud
+  routes and tenant hints are accepted only from user-global settings or the
+  process environment
 - in Claude Cowork, use `.env.local` or the credential cache (`~/.kumiho/kumiho_authentication.json`) for authentication
 - if no env token is present, launcher falls back to
   `~/.kumiho/kumiho_authentication.json` token cache
@@ -22,7 +27,8 @@ This plugin uses one local MCP server:
 
 - `KUMIHO_CONTROL_PLANE_URL` (default: `https://control.kumiho.cloud`)
 - `KUMIHO_MCP_LOG_LEVEL` (default: `INFO`)
-- `KUMIHO_CLAUDE_HOME` (override runtime directory)
+- `KUMIHO_CLAUDE_HOME` (override host state/log directory; packages remain in
+  `~/.kumiho/venv` unless `KUMIHO_CONFIG_DIR` changes the Kumiho home)
 - `KUMIHO_CLAUDE_PACKAGE_SPEC` (override package install spec)
 - `KUMIHO_CLAUDE_DISABLE_LLM_FALLBACK` (disable local no-key LLM fallback mode)
 - `KUMIHO_CLAUDE_DISCOVERY_USER_AGENT` (override discovery HTTP User-Agent)
@@ -37,14 +43,19 @@ Opt-in mode that targets a local `kumiho-server` CE instead of cloud discovery.
 Cloud behavior is unchanged unless one of these is set:
 
 - `KUMIHO_CLAUDE_MODE` = `ce` (or `community` / `self-hosted` / `local`) — enable CE mode
-- `KUMIHO_CLAUDE_SERVER_ENDPOINT` (default `127.0.0.1:9190`) — CE gRPC endpoint; setting it also enables CE mode
-- `UPSTASH_REDIS_URL` (default `redis://127.0.0.1:6379`) — CE working-memory Redis
+- `KUMIHO_CLAUDE_SERVER_ENDPOINT` (default `127.0.0.1:9190`) — CE gRPC
+  endpoint; setting it also enables CE mode. Plaintext/bare endpoints are
+  loopback-only; remote endpoints require `grpcs://` or `https://`
+- `UPSTASH_REDIS_URL` (default `redis://127.0.0.1:6379`) — CE working-memory
+  Redis; plaintext `redis://` is loopback-only, otherwise use `rediss://`
 - `KUMIHO_WORKING_MEMORY_TTL` (default `86400` in CE mode, `3600` otherwise) — idle TTL of the working-memory buffer, re-armed on every read and write
-- `KUMIHO_LLM_BASE_URL` — OpenAI-compatible LLM endpoint for summarization (replaces the dead-port fallback)
+- `KUMIHO_LLM_BASE_URL` — OpenAI-compatible LLM endpoint for summarization
+  (replaces the dead-port fallback); HTTP is loopback-only and remote
+  endpoints must use HTTPS
 
 In CE mode the launcher skips control-plane discovery and cloud auth (no
 `KUMIHO_AUTH_TOKEN` / `kumiho-auth login` needed; any inherited token is cleared),
-points the SDK at the CE endpoint via `KUMIHO_LOCAL_SERVER_ENDPOINT`, and logs
+binds an explicit tokenless SDK client to `KUMIHO_SERVER_ENDPOINT`, and logs
 the selected mode and resolved endpoint on startup. The CE server enforces its
 own auth.
 

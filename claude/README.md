@@ -3,12 +3,14 @@
 Persistent graph-native memory plugin for Claude. Runs a local Kumiho MCP
 server with `kumiho-memory` so Claude **remembers you across sessions**.
 
-Version: **0.20.5** | Requires: `kumiho>=0.12.2`, `kumiho-memory>=1.4.0`
-(installed automatically into an isolated venv — nothing to `pip install`)
+Version: **0.20.6** | Requires: `kumiho>=0.12.2`, `kumiho-memory>=1.4.0`
+(reused or installed automatically in `~/.kumiho/venv` — nothing to `pip install`)
 
-Also consumable by **OpenAI Codex** — Codex reads this repo's marketplace
-manifest directly (verified on codex-cli 0.134.0); see
-[`codex/README.md`](../codex/README.md) for the Codex-tailored plugin.
+**OpenAI Codex** uses the parallel native package under `../codex`,
+selected by the repo's `.agents/plugins/marketplace.json`. This Claude
+package keeps independent commands, hooks, and backend settings while sharing
+Kumiho Desktop's package runtime; see
+[`codex/README.md`](../codex/README.md).
 
 ## Quick install
 
@@ -25,8 +27,21 @@ Then pick a backend — **Cloud** (managed, API token) or **self-hosted CE**
 
 ```bash
 /kumiho-onboard                 # interactive: asks Cloud vs CE, then wires everything
-/kumiho-onboard <API-TOKEN>     # Cloud, non-interactive (kumiho.io › Dashboard › API Keys)
 /kumiho-onboard ce              # self-hosted CE (defaults to 127.0.0.1:9190)
+```
+
+Run onboarding once before expecting the MCP server on a fresh install. It
+adopts Kumiho Desktop's existing `~/.kumiho/venv` when present (no reinstall),
+creates Claude's persistent compatibility alias, and asks you to open a new
+session. Existing onboarded installations keep using that same alias.
+The bare `python` spelling in manual POSIX examples below is shorthand; on
+Windows use `/kumiho-onboard` so the OS-account venv or a native PE launcher is
+resolved by absolute path instead of a Windows App Execution Alias.
+
+For non-interactive Cloud setup, keep the token out of chat and shell history:
+
+```bash
+python ./claude/scripts/setup.py --token-stdin --yes
 ```
 
 See [Choosing a backend](#choosing-a-backend-cloud-vs-ce) for the CE
@@ -63,7 +78,12 @@ neo4j / redis / embedding details.
 
 ## Cross-Agent Compatibility
 
-The Kumiho plugins share the same Neo4j + Redis backend, `CognitiveMemory` graph, and skill-ingestion pipeline. Memories stored by one agent are recallable by any other. Cross-agent parity exists at the data model and discoverable-skill layer; host-side automation still differs by platform.
+When Kumiho plugins are configured for the same backend and Cloud tenant (or
+the same CE deployment), they share the `CognitiveMemory` graph and
+skill-ingestion pipeline, so memories stored by one agent are recallable by
+another. Hosts configured for different backends or tenants remain isolated.
+Cross-agent parity exists at the data model and discoverable-skill layer;
+host-side automation still differs by platform.
 
 | Capability        | Claude Code                                 | OpenClaw                                      |
 | ----------------- | ------------------------------------------- | --------------------------------------------- |
@@ -119,14 +139,14 @@ claude --plugin-dir ./claude
 |---|---|---|
 | Auth | API token (`eyJ…` JWT) | none — the CE server enforces its own |
 | Backend store | managed Neo4j + Redis | **you run** Neo4j + Redis (+ an embedding/LLM) |
-| Setup | `/kumiho-onboard <TOKEN>` | stand up `kumiho-server-community`, then `/kumiho-onboard ce` |
+| Setup | `/kumiho-onboard cloud`, then use the masked local-terminal prompt | stand up `kumiho-server-community`, then `/kumiho-onboard ce` |
 | Data | summaries in Kumiho Cloud; raw transcripts stay local | everything on your machine/VPC |
 
 **Cloud** — the token is all you need; everything else is managed:
 
 ```bash
-/kumiho-onboard <API-TOKEN>
-# or:  python ./claude/scripts/setup.py --token <API-TOKEN> --yes
+/kumiho-onboard cloud
+# local terminal: python ./claude/scripts/setup.py --token-stdin --yes
 ```
 
 **CE** — the graph store (Neo4j) and the embedding model live **inside the
@@ -150,6 +170,12 @@ python ./claude/scripts/setup.py --ce --yes \
 | `--ce-redis-url` | working-memory Redis | `redis://127.0.0.1:6379` |
 | `--ce-llm-base-url` | OpenAI-compatible LLM for the LLM-backed paths: summarizer-written consolidation, Dream State (`/dream-state`), LLM edge discovery (Ollama, llama.cpp, vLLM, …) | fail-fast (reflect and keyless consolidation, i.e. `kumiho_memory_consolidate` with `summary`, need none) |
 
+Plain `http://` LLM URLs are accepted only for loopback hosts such as
+`127.0.0.1` or `localhost`. Use `https://` for a model endpoint on another
+machine so memory/code payloads and provider keys are never sent in clear.
+Plain `redis://` is likewise loopback-only; a Redis service on another machine
+must use `rediss://` so working-memory contents are encrypted in transit.
+
 No API token is involved in CE mode. Full CE environment details are in
 [Self-hosted (Community Edition)](#self-hosted-community-edition) below.
 
@@ -171,7 +197,12 @@ The plugin registers these hooks; all run automatically:
 | `SessionEnd` | `save-session-artifact.py`, `code-capture-hook.py` | Saves the conversation as a local Markdown artifact; drains queued commit captures |
 | `PermissionRequest` | `auto-approve-memory.py` | Auto-approves Kumiho memory MCP tool calls (`kumiho_*`) |
 
-Every hook runs under `${CLAUDE_PLUGIN_DATA}/venv/bin/pythonw`: on Windows that is the venv's console-less `pythonw.exe` (through the `bin` junction), so a hook never flashes a console window, even under Desktop where `claude.exe` has no console of its own; on POSIX the launcher symlinks `bin/pythonw` to `bin/python`. Background workers spawn their children with a hidden console for the same reason.
+Every hook runs under `${CLAUDE_PLUGIN_DATA}/venv/bin/pythonw`, a compatibility
+link to the shared `~/.kumiho/venv` used by Kumiho Desktop, Claude, and Codex.
+On Windows its `bin` junction exposes the console-less `pythonw.exe`; on POSIX
+the launcher links `bin/pythonw` to `bin/python`. Background workers hide their
+child consoles for the same reason. On upgrade, an old per-plugin venv is kept
+as `venv.pre-shared*` before the compatibility link is installed.
 
 ## Slash commands
 
@@ -211,14 +242,16 @@ never re-litigate a decision the graph already explains.
 
 ## Runtime model
 
-The bootstrap script (`scripts/run_kumiho_mcp.py`) creates an isolated
-virtualenv, installs the required Python packages, resolves the Kumiho
+The bootstrap script (`scripts/run_kumiho_mcp.py`) reuses or creates the shared
+`~/.kumiho/venv`, installs required Python packages only when its current
+versions do not satisfy the plugin, resolves the Kumiho
 gRPC endpoint via control-plane discovery, and launches the MCP server.
 
 - **Runtime home:**
   - Windows: `%LOCALAPPDATA%\kumiho-claude`
   - macOS/Linux: `$XDG_CACHE_HOME/kumiho-claude` or `~/.cache/kumiho-claude`
-- **Override runtime state home:** `KUMIHO_CLAUDE_HOME` (state only; the venv follows the plugin data directory)
+- **Shared package runtime:** `~/.kumiho/venv` (also used by Kumiho Desktop and Codex)
+- **Override runtime state home:** `KUMIHO_CLAUDE_HOME` (logs, markers, reflex state only)
 - **Override package spec:** `KUMIHO_CLAUDE_PACKAGE_SPEC`
 
 Default package spec:
@@ -262,11 +295,13 @@ In CE mode the launcher:
   `kumiho-auth login` and no `KUMIHO_AUTH_TOKEN` are required (any inherited
   token is cleared so it cannot flip routing back to cloud). The CE server
   enforces its own auth.
-- Routes the SDK to the CE gRPC endpoint via `KUMIHO_LOCAL_SERVER_ENDPOINT`
-  (default `127.0.0.1:9190`), so it does **not** fall back to `127.0.0.1:8080`.
+- Builds an explicit tokenless CE client for the configured endpoint (default
+  `127.0.0.1:9190`) without the SDK's loopback-only auto-discovery. Remote TLS
+  endpoints such as `grpcs://ce.example.com:7443` retain their secure scheme.
 - Provides a local working-memory Redis URL (`UPSTASH_REDIS_URL`, default
   `redis://127.0.0.1:6379`) — cloud gets this via the control-plane proxy; CE
-  does not.
+  does not. Plain `redis://` is loopback-only; remote Redis requires
+  `rediss://`.
 - Logs the selected mode and resolved endpoint on startup so
   "why is my memory empty / not connecting" is answerable at a glance.
 
@@ -308,12 +343,12 @@ python ./claude/scripts/setup.py
 
 The token is stored under the `api_token` key in
 `~/.kumiho/kumiho_authentication.json`. It does **not** overwrite session
-tokens from `kumiho-cli login`.
+tokens from `kumiho-auth login`.
 
 ### Method B — CLI login (email + password)
 
 ```bash
-kumiho-cli login
+kumiho-auth login
 ```
 
 This creates `~/.kumiho/kumiho_authentication.json` with `id_token` and
@@ -329,7 +364,9 @@ KUMIHO_AUTH_TOKEN=YOUR_KUMIHO_BEARER_JWT
 KUMIHO_CONTROL_PLANE_URL=https://control.kumiho.cloud
 ```
 
-In Claude Code, you can also set it in `.claude/settings.local.json`:
+In Claude Code, put custom Cloud routing only in the user-global
+`~/.claude/settings.local.json` (project-local settings may still provide the
+token or select CE):
 
 ```json
 {
@@ -353,6 +390,15 @@ The launcher resolves authentication from these sources (first match wins):
 Both raw JWT and `"Bearer <jwt>"` formats are accepted.
 The plugin starts without a token so tools remain visible, but authenticated
 memory/graph operations require a valid token.
+
+Project-local Claude settings continue to supply `KUMIHO_AUTH_TOKEN`,
+`KUMIHO_CLAUDE_MODE`, and `KUMIHO_CLAUDE_SERVER_ENDPOINT`. For safety, a
+custom `KUMIHO_CONTROL_PLANE_URL` or `KUMIHO_TENANT_HINT` is honored only from
+user-global `~/.claude/settings*.json`. Host-launched MCP/setup processes also
+ignore an ambient `KUMIHO_CONFIG_DIR`; its user-global value must be absolute.
+This avoids pairing a repository-controlled Cloud route with the shared
+credential cache or executing a repository-selected virtualenv. Direct
+maintenance runs outside Claude/Codex continue to honor environment overrides.
 
 ### LLM provider for summarization
 
@@ -396,10 +442,11 @@ YAML frontmatter (session_id, date, topics, summary) and structured
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `KUMIHO_CONTROL_PLANE_URL` | `https://control.kumiho.cloud` | Control plane URL |
-| `KUMIHO_TENANT_HINT` | *(auto)* | Tenant slug or UUID for multi-tenant setups |
+| `KUMIHO_CONTROL_PLANE_URL` | `https://control.kumiho.cloud` | Control plane URL; custom values for host launches must be in user-global `~/.claude/settings*.json` |
+| `KUMIHO_TENANT_HINT` | *(auto)* | Tenant slug or UUID for multi-tenant setups; user-global settings only for host launches |
 | `KUMIHO_MCP_LOG_LEVEL` | `INFO` | MCP server log level |
-| `KUMIHO_CLAUDE_HOME` | *(platform default)* | Override the runtime state directory (logs, markers, reflex state). Since 0.18.2 the **venv** lives under the plugin data directory instead, so hooks can name its interpreter — this variable no longer moves it. |
+| `KUMIHO_CLAUDE_HOME` | *(platform default)* | Override the runtime state directory (logs, markers, reflex state); it does not move the shared venv. |
+| `KUMIHO_CONFIG_DIR` | `~/.kumiho` | Override Kumiho's shared config/credential/runtime root, including `venv`. For a Claude host launch this must be an absolute path in user-global `~/.claude/settings*.json`; direct maintenance runs may use the environment. Use the same value for Desktop, Claude, and Codex. |
 | `KUMIHO_CLAUDE_PACKAGE_SPEC` | *(see above)* | Override pip install spec |
 | `KUMIHO_REFLEX_CONSOLIDATE_FLOOR` | `20` | Completed turns after which the UserPromptSubmit hook asks the agent to consolidate the session (keyless: the agent or a subagent writes the summary). `0` disables the nudge. |
 | `KUMIHO_WORKING_MEMORY_TTL` | `3600` (CE mode: `86400`) | Idle TTL in seconds of the Redis session buffer (working memory). kumiho-memory re-arms it on every write **and** read, so a live session keeps its buffer; a pause longer than this loses it and the next reflect reports `created_bucket: true`. |
@@ -412,10 +459,10 @@ YAML frontmatter (session_id, date, topics, summary) and structured
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `KUMIHO_CLAUDE_MODE` | *(unset)* | Set to `ce` (or `community` / `self-hosted` / `local`) to target a self-hosted CE server instead of cloud discovery |
-| `KUMIHO_CLAUDE_SERVER_ENDPOINT` | `127.0.0.1:9190` | CE gRPC endpoint; setting it also enables CE mode |
-| `UPSTASH_REDIS_URL` | `redis://127.0.0.1:6379` | CE working-memory Redis URL (CE only) |
+| `KUMIHO_CLAUDE_SERVER_ENDPOINT` | `127.0.0.1:9190` | CE gRPC endpoint; setting it also enables CE mode. `grpc://`/`http://` and bare `host:port` are loopback-only; remote endpoints require `grpcs://` or `https://`. |
+| `UPSTASH_REDIS_URL` | `redis://127.0.0.1:6379` | CE working-memory Redis URL; `redis://` is loopback-only, otherwise use `rediss://` (CE only) |
 | `KUMIHO_WORKING_MEMORY_TTL` | `86400` | Working-memory idle TTL in CE mode. A local Redis holds a day of buffer for nothing, and the package's one-hour default lost the buffer whenever a turn or a pause ran past an hour |
-| `KUMIHO_LLM_BASE_URL` | *(unset)* | OpenAI-compatible LLM endpoint for the LLM-backed paths: summarizer-written consolidation (calls without `summary`), Dream State (`/dream-state`) and LLM edge discovery; reflect and keyless consolidation need none. When set, replaces the fail-fast dead-port fallback |
+| `KUMIHO_LLM_BASE_URL` | *(unset)* | OpenAI-compatible LLM endpoint for the LLM-backed paths: summarizer-written consolidation (calls without `summary`), Dream State (`/dream-state`) and LLM edge discovery; reflect and keyless consolidation need none. When set, replaces the fail-fast dead-port fallback. HTTP is loopback-only; remote endpoints require HTTPS. |
 
 `KUMIHO_SERVER_ENDPOINT` and `KUMIHO_SERVER_ADDRESS` are intentionally
 ignored by the launcher to enforce control-plane discovery routing in cloud

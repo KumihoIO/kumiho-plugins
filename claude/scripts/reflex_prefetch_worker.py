@@ -165,11 +165,11 @@ def _venv_ready(launcher) -> Path | None:
     mid-session, which is minutes of CPU for a prefetch nobody is waiting on.
     A missing runtime is a skip: onboarding provisions it, not this worker.
     """
-    # Ask the launcher where the venv is rather than rebuilding the path here:
-    # it moved under the plugin data dir so exec-form hooks could name it, and
-    # a stale copy of that expression silently disabled this worker entirely.
+    # Ask the launcher for the authoritative shared path rather than rebuilding
+    # it here. Claude's plugin-data hook path is only a compatibility alias; a
+    # stale copy of the old expression silently disabled this worker entirely.
     python_path = launcher._venv_python(launcher._venv_dir())
-    if not python_path.exists() or not (rs.state_dir() / MARKER_FILE).exists():
+    if not python_path.exists() or not launcher._marker_path().exists():
         return None
     return python_path
 
@@ -177,8 +177,8 @@ def _venv_ready(launcher) -> Path | None:
 def _resolve_endpoint(launcher) -> str:
     """Endpoint with a 15-minute cache; CE always goes through the launcher."""
     if launcher._ce_mode_enabled():
-        launcher._bootstrap_server_endpoint()  # local, no discovery round trip
-        return (os.getenv("KUMIHO_LOCAL_SERVER_ENDPOINT", "") or "").strip()
+        launcher._bootstrap_server_endpoint()  # explicit CE, no discovery round trip
+        return (os.getenv("KUMIHO_SERVER_ENDPOINT", "") or "").strip()
 
     cached = rs.read_json(_endpoint_path(), None)
     if isinstance(cached, dict):
@@ -465,7 +465,7 @@ def _format_recalled(memories: list, max_chars: int) -> tuple:
 
 # ------------------------------------------------------------------- engage
 
-def _call_engage(python_path, args: dict) -> tuple:
+def _call_engage(python_path, args: dict, *, ce_mode: bool = False) -> tuple:
     """One subprocess, args on stdin.  Returns ``(payload, error)``.
 
     ``PYTHONIOENCODING=utf-8`` is not optional: the default piped encoding on a
@@ -474,9 +474,13 @@ def _call_engage(python_path, args: dict) -> tuple:
     """
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
+    command = [str(python_path), "-c", _ENGAGE_SNIPPET]
+    if ce_mode:
+        adapter = Path(__file__).resolve().parent / "run_kumiho_ce.py"
+        command = [str(python_path), str(adapter), "--code", _ENGAGE_SNIPPET]
     try:
         proc = subprocess.run(
-            [str(python_path), "-c", _ENGAGE_SNIPPET],
+            command,
             input=json.dumps(args, ensure_ascii=True),
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             env=env, timeout=ENGAGE_TIMEOUT_S, creationflags=_NO_WINDOW,
@@ -515,7 +519,8 @@ def _prefetch(session_id: str, cwd_arg: str) -> int:
     # Same environment pipeline as the MCP server, minus provisioning.
     launcher._sanitize_placeholder_env_vars()
     launcher._hydrate_env_from_local_config()
-    if not launcher._ce_mode_enabled():
+    ce_mode = launcher._ce_mode_enabled()
+    if not ce_mode:
         launcher._validate_auth_token()
     launcher._configure_llm_fallback()
     # NOTE: no keyless bail here, unlike code_ingest_worker.  Commit mining
@@ -582,9 +587,11 @@ def _prefetch(session_id: str, cwd_arg: str) -> int:
 
     limit = _env_int("KUMIHO_REFLEX_LIMIT", DEFAULT_LIMIT)
     rs.log("prefetch start: session=%s limit=%d qlen=%d" % (session_id, limit, len(query)))
-    data, error = _call_engage(python_path, {
-        "query": query, "limit": limit, "recall_mode": "summarized",
-    })
+    data, error = _call_engage(
+        python_path,
+        {"query": query, "limit": limit, "recall_mode": "summarized"},
+        ce_mode=ce_mode,
+    )
     if data is None:
         # Any failure invalidates the cached endpoint: a moved region or a dead
         # cache entry must not keep failing for the rest of its 15-minute TTL.
