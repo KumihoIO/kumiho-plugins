@@ -15,22 +15,21 @@ Input (JSON on stdin from Claude Code hook system):
       "reason": "..."
     }
 
-Output directory resolution:
-    * Automatic Claude hook: absolute local KUMIHO_ARTIFACT_DIR from exact
-      user-global Claude settings, otherwise OS-account ~/.kumiho/artifacts/.
-    * Direct maintenance: legacy environment, preferences cache, then
-      ~/.kumiho/artifacts/.
+Output directory resolution order:
+    1. KUMIHO_ARTIFACT_DIR environment variable
+    2. Agent instruction metadata (artifact_dir from graph — read from
+       a local cache file if available)
+    3. Default: ~/.kumiho/artifacts/
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import state_home  # noqa: E402
 
 def _read_hook_input() -> dict:
     """Read the JSON payload from stdin.
@@ -53,8 +52,23 @@ def _read_hook_input() -> dict:
 
 
 def _artifact_dir() -> Path:
-    """Resolve artifact storage through the shared hook trust boundary."""
-    return state_home.artifact_dir()
+    """Resolve the artifact output directory."""
+    from_env = (os.getenv("KUMIHO_ARTIFACT_DIR", "") or "").strip()
+    if from_env:
+        return Path(from_env).expanduser()
+
+    # Check for a local preferences cache written by the plugin
+    prefs_path = Path.home() / ".kumiho" / "agent_preferences.json"
+    if prefs_path.exists():
+        try:
+            prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+            artifact_dir = prefs.get("artifact_dir", "").strip()
+            if artifact_dir:
+                return Path(artifact_dir).expanduser()
+        except Exception:
+            pass
+
+    return Path.home() / ".kumiho" / "artifacts"
 
 
 def _parse_transcript(transcript_path: str) -> list[dict]:

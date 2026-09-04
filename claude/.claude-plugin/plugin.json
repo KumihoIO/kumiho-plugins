@@ -1,6 +1,6 @@
 {
   "name": "kumiho-memory",
-  "version": "0.21.0",
+  "version": "0.20.5",
   "description": "Persistent graph-native memory for Claude — recalls context across sessions, stores decisions and preferences, bootstraps identity at session start, and mines commits + conversations into a git-anchored decision graph (Decision Memory).",
   "author": {
     "name": "Kumiho Inc.",

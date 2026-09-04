@@ -30,9 +30,6 @@ def _run_hook(payload: dict, home: Path, env_extra: dict | None = None):
     env = {k: v for k, v in os.environ.items()
            if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
     env["KUMIHO_CLAUDE_HOME"] = str(home)
-    # Ledger tests must never launch the real detached prefetch worker.  Its
-    # spawn contract is covered separately with an in-process Popen spy.
-    env["KUMIHO_REFLEX_PREFETCH"] = "0"
     env.update(env_extra or {})
     r = subprocess.run(
         [sys.executable, str(SCRIPTS / "reflex-observe.py")],
@@ -164,8 +161,7 @@ def test_env_gate_disables_everything(tmp_path):
 
 def test_survives_garbage_and_empty_stdin(tmp_path):
     env = {**os.environ, "PYTHONIOENCODING": "utf-8",
-           "KUMIHO_CLAUDE_HOME": str(tmp_path),
-           "KUMIHO_REFLEX_PREFETCH": "0"}
+           "KUMIHO_CLAUDE_HOME": str(tmp_path)}
     for payload in ("", "not json {{{", "[]", "null"):
         r = subprocess.run([sys.executable, str(SCRIPTS / "reflex-observe.py")],
                            input=payload, capture_output=True, text=True,

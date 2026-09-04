@@ -9,10 +9,6 @@
  * so all higher-level code (tools, hooks) works identically in both modes.
  */
 
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath, URL } from "node:url";
-
 import type {
   ChatMessage,
   CreativeCaptureParams,
@@ -29,7 +25,6 @@ import type {
   DreamStateStats,
 } from "./types.js";
 import { McpBridge, type McpToolDefinition } from "./mcp-bridge.js";
-import { isRemoteCeEndpoint } from "./ce-endpoint.js";
 
 function coerceString(value: unknown): string {
   if (typeof value === "string") return value;
@@ -155,72 +150,13 @@ export function isUnknownToolError(err: unknown): boolean {
  * Shared by the McpTransport constructor and the runtime re-assert after
  * user-supplied local.env is applied.
  */
-const REMOTE_CE_MCP_BOOTSTRAP = fileURLToPath(
-  new URL("../scripts/run-remote-ce-mcp.py", import.meta.url),
-);
-
 export function ceChildEnv(ce: { endpoint: string; redisUrl: string }): Record<string, string> {
-  const isolatedConfigDir = join(homedir(), ".kumiho", "openclaw-ce");
-  const remote = isRemoteCeEndpoint(ce.endpoint);
   return {
-    // An empty KUMIHO_AUTH_TOKEN is not sufficient: the Python SDK falls back
-    // to ~/.kumiho/kumiho_authentication.json and prefers that Cloud token over
-    // local CE discovery. Point it at a host/backend-specific empty directory
-    // so a previous Claude/OpenClaw Cloud login can never reroute CE.
-    KUMIHO_CONFIG_DIR: isolatedConfigDir,
-    KUMIHO_LOCAL_SERVER_ENDPOINT: remote ? "" : ce.endpoint,
-    KUMIHO_OPENCLAW_REMOTE_CE_ENDPOINT: remote ? ce.endpoint : "",
+    KUMIHO_LOCAL_SERVER_ENDPOINT: ce.endpoint,
     KUMIHO_AUTH_TOKEN: "",
-    KUMIHO_API_TOKEN: "",
-    KUMIHO_API_KEY: "",
-    KUMIHO_TOKEN: "",
-    KUMIHO_SERVER_ENDPOINT: remote ? ce.endpoint : "",
+    KUMIHO_SERVER_ENDPOINT: "",
     KUMIHO_SERVER_ADDRESS: "",
-    KUMIHO_ENDPOINT: "",
-    KUMIHO_BFF_ENDPOINT: "",
     UPSTASH_REDIS_URL: ce.redisUrl,
-
-    // McpBridge merges process.env into every child. Empty values below are
-    // intentional overrides: they close every Cloud/discovery/proxy route both
-    // at construction time and after user-supplied local.env is applied.
-    KUMIHO_AUTO_CONFIGURE: "",
-    KUMIHO_DISABLE_AUTO_DISCOVERY: "true",
-    KUMIHO_FORCE_DISCOVERY_REFRESH: "",
-    KUMIHO_CONTROL_PLANE_URL: "http://127.0.0.1:1",
-    KUMIHO_CONTROL_PLANE_API_URL: "http://127.0.0.1:1",
-    KUMIHO_DISCOVERY_CACHE_FILE: join(isolatedConfigDir, "discovery-cache.json"),
-    KUMIHO_DISCOVERY_TIMEOUT_SECONDS: "10",
-    KUMIHO_LOCAL_DISCOVERY_TIMEOUT_SECONDS: "0.5",
-    KUMIHO_AUTH_TOKEN_GRACE_SECONDS: "300",
-    KUMIHO_TENANT_HINT: "",
-    KUMIHO_FIREBASE_API_KEY: "",
-    KUMIHO_FIREBASE_ID_TOKEN: "",
-    KUMIHO_FIREBASE_PROJECT_ID: "",
-    KUMIHO_USE_CONTROL_PLANE_TOKEN: "",
-    KUMIHO_WORKSPACE_ROOT: "",
-    KUMIHO_ENV_FILE: "",
-    KUMIHO_CLAUDE_MODE: "",
-    KUMIHO_CLAUDE_SERVER_ENDPOINT: "",
-    KUMIHO_CODEX_BACKEND: "",
-    KUMIHO_CODEX_CE_ENDPOINT: "",
-    KUMIHO_CODEX_CE_REDIS_URL: "",
-    KUMIHO_CODEX_CE_LLM_BASE_URL: "",
-    KUMIHO_UPSTASH_REDIS_URL: "",
-    KUMIHO_LOCAL_REDIS_URL: "",
-    KUMIHO_MEMORY_PROXY_URL: "",
-    KUMIHO_MCP_HOSTED: "",
-    KUMIHO_MCP_DEV_MODE: "",
-    KUMIHO_HOSTED_LOCAL_REDIS: "",
-    KUMIHO_HOSTED_LLM: "",
-    KUMIHO_NO_INTERACTIVE_LOGIN: "1",
-    KUMIHO_LOCAL_SERVER_PORT: "",
-    UPSTASH_REDIS_REST_URL: "",
-    UPSTASH_REDIS_REST_TOKEN: "",
-    KUMIHO_SERVER_USE_TLS: remote ? "true" : "",
-    KUMIHO_SERVER_AUTHORITY: "",
-    KUMIHO_SSL_TARGET_OVERRIDE: "",
-    KUMIHO_SERVER_CA_FILE: "",
-    KUMIHO_REQUIRE_TLS: remote ? "true" : "",
   };
 }
 
@@ -332,17 +268,9 @@ export class McpTransport implements Transport {
     config: ResolvedConfig,
     logger?: { info: (m: string) => void; warn: (m: string) => void; error: (m: string) => void },
   ) {
-    const remoteCe = config.ce.enabled && isRemoteCeEndpoint(config.ce.endpoint);
-    if (remoteCe && config.local.command !== "kumiho-mcp") {
-      logger?.warn(
-        "Kumiho remote CE uses the bundled tokenless Python bootstrap; " +
-          `ignoring configured local.command ${config.local.command}`,
-      );
-    }
     this.bridge = new McpBridge({
       pythonPath: config.local.pythonPath,
       command: config.local.command,
-      pythonBootstrapScript: remoteCe ? REMOTE_CE_MCP_BOOTSTRAP : undefined,
       args: config.local.args,
       env: config.local.env,
       cwd: config.local.cwd,

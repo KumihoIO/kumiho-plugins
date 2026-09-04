@@ -10,8 +10,8 @@
   "plugins": [
     {
       "name": "kumiho-memory",
-      "source": "./claude",
-      "description": "Persistent graph-native memory for Claude Code — recalls context across sessions, stores decisions and preferences, and mines commits + conversations into a git-anchored decision graph (Decision Memory). Cloud (API token) or self-hosted CE.",
+      "source": "./codex",
+      "description": "Persistent graph-native memory for Codex — recalls context across sessions, stores decisions and preferences, and mines commits into a git-anchored decision graph (Decision Memory). Cloud (API token) or self-hosted CE.",
       "version": "0.20.5",
       "author": {
         "name": "Kumiho Inc.",
@@ -26,7 +26,7 @@
         "mcp",
         "decision-memory",
         "cognitive-memory",
-        "claude"
+        "codex"
       ]
     }
   ]

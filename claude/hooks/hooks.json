@@ -10,7 +10,6 @@
             "timeout": 5,
             "statusMessage": "Bootstrapping Kumiho memory...",
             "args": [
-              "-I",
               "${CLAUDE_PLUGIN_ROOT}/scripts/session-bootstrap.py"
             ]
           }
@@ -27,7 +26,6 @@
             "timeout": 5,
             "statusMessage": "kumiho",
             "args": [
-              "-I",
               "${CLAUDE_PLUGIN_ROOT}/scripts/code-capture-hook.py"
             ]
           }
@@ -43,7 +41,6 @@
             "async": true,
             "statusMessage": "kumiho",
             "args": [
-              "-I",
               "${CLAUDE_PLUGIN_ROOT}/scripts/reflex-observe.py"
             ]
           }
@@ -59,7 +56,6 @@
             "timeout": 10,
             "statusMessage": "Saving session artifact...",
             "args": [
-              "-I",
               "${CLAUDE_PLUGIN_ROOT}/scripts/save-session-artifact.py"
             ]
           },
@@ -69,7 +65,6 @@
             "timeout": 5,
             "statusMessage": "Capturing code decisions...",
             "args": [
-              "-I",
               "${CLAUDE_PLUGIN_ROOT}/scripts/code-capture-hook.py"
             ]
           }
@@ -86,7 +81,6 @@
             "timeout": 5,
             "statusMessage": "kumiho",
             "args": [
-              "-I",
               "${CLAUDE_PLUGIN_ROOT}/scripts/auto-approve-memory.py"
             ]
           }
@@ -103,7 +97,6 @@
             "async": true,
             "statusMessage": "kumiho",
             "args": [
-              "-I",
               "${CLAUDE_PLUGIN_ROOT}/scripts/reflex-observe.py"
             ]
           }
@@ -119,7 +112,6 @@
             "timeout": 5,
             "statusMessage": "kumiho",
             "args": [
-              "-I",
               "${CLAUDE_PLUGIN_ROOT}/scripts/memory-reflex.py"
             ]
           }
@@ -135,7 +127,6 @@
             "timeout": 5,
             "statusMessage": "kumiho",
             "args": [
-              "-I",
               "${CLAUDE_PLUGIN_ROOT}/scripts/memory-reflex.py",
               "--subagent"
             ]
