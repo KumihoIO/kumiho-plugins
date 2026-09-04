@@ -219,6 +219,7 @@ def test_live_writer_blocks_probe_of_existing_runtime(state, monkeypatch):
     venv_python.write_text("", encoding="utf-8")
     token = L._acquire_provision_lock()
     assert token
+    monkeypatch.setattr(L, "_acquire_provision_lock_with_wait", lambda: None)
     monkeypatch.setattr(
         L, "_needs_install", lambda *_a, **_kw: pytest.fail("mutable venv probed")
     )
@@ -226,7 +227,7 @@ def test_live_writer_blocks_probe_of_existing_runtime(state, monkeypatch):
     try:
         with pytest.raises(SystemExit) as exc:
             L._ensure_runtime()
-        assert "Another process is provisioning" in str(exc.value)
+        assert "Another process began shared-runtime maintenance" in str(exc.value)
     finally:
         L._release_provision_lock(token)
 

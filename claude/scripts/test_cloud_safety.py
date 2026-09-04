@@ -70,9 +70,9 @@ def test_claude_manifest_bootstraps_from_persisted_python_or_system_python():
         (Path(__file__).parents[1] / ".mcp.json").read_text(encoding="utf-8")
     )
     server = manifest["mcpServers"]["kumiho-memory"]
-    assert server["command"] == "${KUMIHO_PYTHON:-python}"
+    assert server["command"] == "python"
     assert server["args"][:1] == ["-I"]
-    assert "CLAUDE_PLUGIN_DATA" not in server["command"]
+    assert "KUMIHO_PYTHON" not in server["command"]
 
 
 def test_plugin_local_env_example_does_not_own_cloud_auth_or_routing():

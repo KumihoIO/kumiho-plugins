@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "kumiho-memory": {
-      "command": "${KUMIHO_PYTHON:-python}",
+      "command": "python",
       "args": [
         "-I",
         "${CLAUDE_PLUGIN_ROOT}/scripts/run_kumiho_mcp.py"

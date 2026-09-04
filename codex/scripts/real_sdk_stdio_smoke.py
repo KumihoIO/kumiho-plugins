@@ -199,7 +199,7 @@ def _run_host_backend(
         declared = json.loads((plugin_root / ".mcp.json").read_text(encoding="utf-8"))
         manifest_command = declared["mcpServers"]["kumiho-memory"]["command"]
         manifest_args = declared["mcpServers"]["kumiho-memory"]["args"]
-        if manifest_command != "${CLAUDE_PLUGIN_DATA}/venv/bin/python":
+        if manifest_command != "python":
             raise RuntimeError(f"unexpected Claude MCP command: {manifest_command!r}")
         if manifest_args[:1] != ["-I"]:
             raise RuntimeError(f"Claude MCP launch is not isolated: {manifest_args!r}")

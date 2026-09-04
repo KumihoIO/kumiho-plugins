@@ -225,6 +225,7 @@ _HOST_TRUSTED_PROVISION_TRANSPORT_ENV = frozenset({
     "SSL_CERT_FILE", "SSL_CERT_DIR", "GRPC_PROXY",
     "NO_GRPC_PROXY", "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
 })
+_TRUSTED_SETTINGS_TRANSPORT_ENV: dict[str, str] = {}
 
 _READY_LOCK_WAIT_S = 5.0
 _READY_LOCK_BACKOFF_S = 0.05
@@ -881,7 +882,10 @@ def _provision_subprocess_env(extra: dict[str, str] | None = None) -> dict[str, 
         # Proxy and CA settings are useful to pip, but only when they came
         # from the OS user's persistent environment. Rehydrate that exact
         # source after removing host/project-injected values.
-        trusted_transport = _trusted_persisted_user_environment()
+        trusted_transport = {
+            **_TRUSTED_SETTINGS_TRANSPORT_ENV,
+            **_trusted_persisted_user_environment(),
+        }
         for key in _HOST_TRUSTED_PROVISION_TRANSPORT_ENV:
             value = trusted_transport.get(key)
             if value:
@@ -2273,24 +2277,32 @@ def _ensure_runtime() -> Path:
             _release_provision_lock(lock_token)
 
     synchronous = _provisioning_is_synchronous()
-    if _provision_in_progress():
+    provisioning_locked = _provision_in_progress()
+    if provisioning_locked and not python_path.exists():
         raise SystemExit(
             "[kumiho-claude] Another process is provisioning this runtime. "
             "Reconnect the server, or retry once it finishes."
         )
 
-    attested_ready = python_path.exists() and _runtime_attestation_matches(
-        venv_dir, python_path, marker_path, package_spec
+    attested_ready = (
+        not provisioning_locked
+        and python_path.exists()
+        and _runtime_attestation_matches(venv_dir, python_path, marker_path, package_spec)
     )
-    runtime_ready = python_path.exists() and (
-        attested_ready
-        or not _needs_install(
-            python_path,
-            marker_path,
-            package_spec,
-            probe_timeout_s=(
-                PROBE_TIMEOUT_S if synchronous else STARTUP_PROBE_TIMEOUT_S
-            ),
+    # If a writer already owns the lock, do not inspect a mutable venv. The
+    # ready-path lock acquisition below waits briefly, then performs the
+    # definitive probe after ownership is transferred.
+    runtime_ready = python_path.exists() if provisioning_locked else (
+        python_path.exists() and (
+            attested_ready
+            or not _needs_install(
+                python_path,
+                marker_path,
+                package_spec,
+                probe_timeout_s=(
+                    PROBE_TIMEOUT_S if synchronous else STARTUP_PROBE_TIMEOUT_S
+                ),
+            )
         )
     )
     if runtime_ready:
@@ -3036,6 +3048,8 @@ def _hydrate_env_from_claude_settings() -> None:
                     if key in trusted_global_keys_loaded:
                         continue
                     os.environ[key] = value
+                    if key in _HOST_TRUSTED_PROVISION_TRANSPORT_ENV:
+                        _TRUSTED_SETTINGS_TRANSPORT_ENV[key] = value
                     trusted_global_keys_loaded.add(key)
                     print(
                         f"[kumiho-claude] Loaded {key} from {settings_path}.",
