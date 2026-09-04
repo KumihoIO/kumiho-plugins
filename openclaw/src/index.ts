@@ -21,7 +21,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { execFile } from "node:child_process";
-import { URL } from "node:url";
 
 // ---------------------------------------------------------------------------
 // Preferences loader — reads ~/.kumiho/preferences.json written by kumiho-setup

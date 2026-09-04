@@ -204,8 +204,11 @@ def test_setup_quarantines_a_broken_shared_runtime_and_rebuilds_it(
     old_runtime = wizard.VENV_DIR
     marker = old_runtime / "preserve-me.txt"
     marker.write_text("old runtime", encoding="utf-8")
+    interpreter_checks = iter((False, True))
     monkeypatch.setattr(
-        wizard.LAUNCHER, "_python_interpreter_works", lambda _path: False
+        wizard.LAUNCHER,
+        "_python_interpreter_works",
+        lambda _path: next(interpreter_checks),
     )
     runs = _Runs()
     monkeypatch.setattr(wizard.bounded_proc, "run", runs)

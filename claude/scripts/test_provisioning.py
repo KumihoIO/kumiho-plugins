@@ -244,6 +244,7 @@ def test_detached_child_rechecks_and_skips_pip_when_race_is_already_satisfied(
     assert token
     monkeypatch.setenv(L._PROVISION_LOCK_TOKEN_ENV, token)
     monkeypatch.setattr(L, "_needs_install", lambda *_a, **_kw: False)
+    monkeypatch.setattr(L, "_python_interpreter_works", lambda *_a: True)
     monkeypatch.setattr(L, "_ensure_hook_interpreter", lambda *_a: None)
     monkeypatch.setattr(L, "_ensure_plugin_data_venv_alias", lambda *_a: None)
     monkeypatch.setattr(
@@ -672,7 +673,7 @@ def test_existing_runtime_without_python_is_preserved_before_rebuild(
     venv_python = L._venv_python(venv_dir)
     probes = iter((True, False))
     monkeypatch.setattr(L, "_needs_install", lambda *_a, **_kw: next(probes))
-    monkeypatch.setattr(L, "_python_interpreter_works", lambda _path: False)
+    monkeypatch.setattr(L, "_python_interpreter_works", lambda _path: True)
     monkeypatch.setattr(L, "_ensure_hook_interpreter", lambda *_a: None)
     monkeypatch.setattr(L, "_install_dependencies", lambda *_a: None)
     monkeypatch.setattr(L, "_write_install_marker", lambda *_a: None)
@@ -995,7 +996,7 @@ def test_junction_paths_are_data_not_cmd_source(monkeypatch, tmp_path):
         captured["env"] = kwargs["env"]
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(L.subprocess, "run", fake_run)
+    monkeypatch.setattr(L.bounded_proc, "run", fake_run)
     monkeypatch.setattr(
         L, "_windows_powershell_executable", lambda: "system/powershell.exe"
     )

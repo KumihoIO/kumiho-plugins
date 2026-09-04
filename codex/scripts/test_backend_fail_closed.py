@@ -31,6 +31,7 @@ def _clear_backend_environment(monkeypatch, shim) -> None:
         *shim.CE_ROUTING_ENV,
         *shim.CLOUD_ROUTING_ENV,
         "KUMIHO_AUTH_TOKEN",
+        "KUMIHO_CLAUDE_HOST",
     }
     for key in keys:
         monkeypatch.delenv(key, raising=False)

@@ -487,7 +487,7 @@ def test_onboarding_skill_and_secret_contract():
     assert not re.search(
         r"add_argument\(\s*[\"']--token[\"']", helper
     ), "Codex onboarding must never accept a credential in argv"
-    assert "bounded_proc.run(command" in helper, (
+    assert re.search(r"bounded_proc\.run\(\s*command\s*,", helper), (
         "onboarding children need a process-tree-bounded timeout"
     )
     assert 'str(CLOUD_RUNNER), "--auth-check"' in helper

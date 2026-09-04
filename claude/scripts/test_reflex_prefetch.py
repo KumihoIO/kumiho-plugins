@@ -373,9 +373,9 @@ def test_korean_survives_the_real_subprocess_pipe(tmp_path, monkeypatch):
     original = mod._call_engage
     calls = []
 
-    def through_a_real_pipe(python_path, args):
+    def through_a_real_pipe(python_path, args, *, ce_mode=False):
         calls.append(args)
-        return original(sys.executable, args)
+        return original(sys.executable, args, ce_mode=ce_mode)
 
     # Echo the query back inside a memory, so the round trip covers both
     # directions: query in on stdin, Korean memory text out on stdout.

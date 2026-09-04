@@ -247,6 +247,10 @@ declare const process: {
   platform: string;
 };
 
+declare interface ImportMeta {
+  readonly url: string;
+}
+
 declare class Buffer {
   static alloc(size: number): Buffer;
   static from(data: number[]): Buffer;
