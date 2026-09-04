@@ -855,7 +855,7 @@ def test_the_desktop_entry_names_the_venv_that_is_actually_provisioned(state, mo
 def test_desktop_entry_on_legacy_venv_is_rewritten_to_shared_runtime(state, monkeypatch):
     installed = (
         state / "plugins" / "cache" / "kumiho-plugins" / "kumiho-memory"
-        / "0.20.6" / "scripts" / "run_kumiho_mcp.py"
+        / "0.21.0" / "scripts" / "run_kumiho_mcp.py"
     )
     installed.parent.mkdir(parents=True)
     installed.write_text("", encoding="utf-8")
@@ -912,7 +912,7 @@ def test_managed_legacy_desktop_server_name_is_migrated_without_duplication(
 ):
     installed = (
         state / "plugins" / "cache" / "kumiho-plugins" / "kumiho-memory"
-        / "0.20.6" / "scripts" / "run_kumiho_mcp.py"
+        / "0.21.0" / "scripts" / "run_kumiho_mcp.py"
     )
     installed.parent.mkdir(parents=True)
     installed.write_text("", encoding="utf-8")

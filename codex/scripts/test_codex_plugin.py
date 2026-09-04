@@ -1345,7 +1345,7 @@ def test_codex_cloud_adapter_pins_official_discovery_and_env_tokens():
                 "KUMIHO_CONTROL_PLANE_URL": "https://untrusted.example.test",
                 "KUMIHO_CONTROL_PLANE_API_URL": "https://untrusted.example.test",
                 "KUMIHO_DISCOVERY_CACHE_FILE": str(Path(temp) / "claude-cache.json"),
-                "KUMIHO_CLAUDE_DISCOVERY_USER_AGENT": "kumiho-codex/0.20.6",
+                "KUMIHO_CLAUDE_DISCOVERY_USER_AGENT": "kumiho-codex/0.21.0",
                 "KUMIHO_TENANT_HINT": "claude-tenant",
                 "KUMIHO_SERVER_ENDPOINT": "untrusted.example.test:443",
                 "KUMIHO_CLAUDE_MODE": "ce",
@@ -1463,7 +1463,7 @@ def test_codex_cloud_adapter_pins_official_discovery_and_env_tokens():
                 "force_refresh": True,
             }
             assert calls["configured"][-1] is cloud_client
-            assert calls["http_headers"]["User-Agent"] == "kumiho-codex/0.20.6"
+            assert calls["http_headers"]["User-Agent"] == "kumiho-codex/0.21.0"
             assert fake_kumiho.auto_configure_from_discovery() is cloud_client
 
             # A future SDK may stop exporting its private discovery module.
@@ -1725,8 +1725,13 @@ def test_isolated_codex_plugin_add_and_mcp_get():
             "scripts/codex_thread_context.py",
             "scripts/thread_id_bridge.mjs",
         ):
-            assert (installed_root / relative).is_file(), (
+            installed_file = installed_root / relative
+            source_file = _PLUGIN / relative
+            assert installed_file.is_file(), (
                 f"native Codex snapshot omitted {relative}"
+            )
+            assert installed_file.read_bytes() == source_file.read_bytes(), (
+                f"native Codex snapshot changed {relative} during install"
             )
         installed_root = installed_root.resolve()
         registered = _run_checked(

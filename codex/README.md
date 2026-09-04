@@ -195,7 +195,7 @@ codex mcp get kumiho-memory
 
 Check that:
 
-- `kumiho-memory@kumiho-plugins` is version `0.20.6` or newer and
+- `kumiho-memory@kumiho-plugins` is version `0.21.0` or newer and
   its source ends in `codex`, not `claude`.
 - The MCP command is `node`, its argument is
   `scripts/run_kumiho_mcp.mjs`, and no command or argument contains a

@@ -95,8 +95,9 @@ Never derive an id from the repository, date, process, or turn. Such ids
 either merge separate conversations or split one conversation into several
 working-memory buckets. A non-empty explicit id remains available only for a
 deliberate historical/backfill target. If the server reports that no session
-identity is available, update/restart Codex so it supplies thread metadata;
-do not guess one.
+identity is available, first update or reinstall the Kumiho Memory plugin and
+start a new Codex thread so its MCP process reloads. If it still fails,
+update/restart Codex; do not guess one.
 
 ## Typed ontology (keyless)
 
