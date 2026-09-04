@@ -1273,7 +1273,7 @@ def choose_backend(args: argparse.Namespace) -> str:
     return choice["value"]
 
 
-def _normalize_endpoint(raw: str) -> str:
+def _normalize_endpoint(raw: str, *, allow_remote_tls: bool = False) -> str:
     """Validate a CE endpoint without discarding its transport security."""
     import ipaddress
     target = (raw or "").strip()
@@ -1312,7 +1312,8 @@ def _normalize_endpoint(raw: str) -> str:
         except ValueError:
             loopback = False
     if not loopback:
-        raise ValueError("CE endpoints must use a loopback host")
+        if not (allow_remote_tls and scheme in {"https", "grpcs"}):
+            raise ValueError("CE endpoints must use a loopback host or user-global TLS")
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     authority = f"{host}:{port}"
@@ -1325,6 +1326,7 @@ def _validate_ce_url(
     schemes: set[str],
     label: str,
     require_tls_for_remote: bool = False,
+    allow_credentials: bool = False,
 ) -> str:
     import ipaddress
     import urllib.parse
@@ -1335,7 +1337,7 @@ def _validate_ce_url(
     parsed = urllib.parse.urlsplit(value)
     if parsed.scheme.lower() not in schemes or not parsed.netloc:
         raise ValueError(f"{label} has an unsupported URL")
-    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+    if (not allow_credentials and (parsed.username or parsed.password)) or parsed.query or parsed.fragment:
         raise ValueError(f"{label} must not contain credentials, query, or fragment")
     try:
         parsed.port
@@ -1412,7 +1414,9 @@ def setup_ce(args: argparse.Namespace) -> dict:
     if not AUTO_YES:
         endpoint = ask("CE server endpoint (host:port)", endpoint).strip() or DEFAULT_CE_ENDPOINT
     try:
-        endpoint = _normalize_endpoint(endpoint) or DEFAULT_CE_ENDPOINT
+        endpoint = _normalize_endpoint(
+            endpoint, allow_remote_tls=bool(getattr(args, "ce_endpoint", None))
+        ) or DEFAULT_CE_ENDPOINT
         redis_url = (getattr(args, "ce_redis_url", None) or "").strip()
         if redis_url:
             redis_url = _validate_ce_url(
@@ -1420,6 +1424,7 @@ def setup_ce(args: argparse.Namespace) -> dict:
                 schemes={"redis", "rediss"},
                 label="CE Redis URL",
                 require_tls_for_remote=True,
+                allow_credentials=True,
             )
         llm_base_url = (getattr(args, "ce_llm_base_url", None) or "").strip()
         if llm_base_url:
