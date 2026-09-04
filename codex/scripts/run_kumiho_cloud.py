@@ -1,316 +1,158 @@
 #!/usr/bin/env python3
-"""Start Kumiho MCP with a Codex-isolated official Cloud client.
+"""Run Kumiho MCP in Cloud mode through the Python SDK.
 
-This adapter is selected only by the shared launcher when the host is Codex.
-Claude keeps its existing Cloud bootstrap, including support for an explicitly
-configured control plane.  Codex, however, must never inherit that host-local
-routing or its discovery cache merely because it was started from a Claude
-shell.
+The plugin owns only the host boundary: Cloud always uses Kumiho's official
+control plane and cannot fall back to a local CE server. Token loading,
+refresh, login-cache handling, discovery, and regional routing belong to the
+``kumiho`` Python SDK.
 """
 
 from __future__ import annotations
 
-import base64
-import json
 import os
-import re
 import runpy
 import sys
-import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 OFFICIAL_CONTROL_PLANE_URL = "https://control.kumiho.cloud"
-UNAUTHENTICATED_ENDPOINT = "needs-auth.kumiho.invalid:443"
-CODEX_AUTH_DIRNAME = "codex-cloud"
+OFFICIAL_DISCOVERY_CACHE_DIRNAME = "official-cloud"
+SHARED_HOME_HANDOFF_ENV = "KUMIHO_PLUGIN_SHARED_HOME"
+BACKEND_BOUND_SENTINEL = "_KUMIHO_ADAPTER_BOUND"
+_CLOUD_ROUTE_ENV = (
+    "KUMIHO_AUTO_CONFIGURE",
+    "KUMIHO_CONTROL_PLANE_URL",
+    "KUMIHO_CONTROL_PLANE_API_URL",
+    "KUMIHO_DISCOVERY_CACHE_FILE",
+    "KUMIHO_TENANT_HINT",
+    "KUMIHO_FIREBASE_API_KEY",
+    "KUMIHO_FIREBASE_ID_TOKEN",
+    "KUMIHO_FIREBASE_PROJECT_ID",
+    "KUMIHO_USE_CONTROL_PLANE_TOKEN",
+    "KUMIHO_WORKSPACE_ROOT",
+    "KUMIHO_ENV_FILE",
+    "KUMIHO_CLAUDE_MODE",
+    "KUMIHO_CLAUDE_SERVER_ENDPOINT",
+    "KUMIHO_LOCAL_SERVER_ENDPOINT",
+    "KUMIHO_LOCAL_SERVER_PORT",
+    "KUMIHO_SERVER_ENDPOINT",
+    "KUMIHO_SERVER_ADDRESS",
+    "UPSTASH_REDIS_URL",
+    "KUMIHO_UPSTASH_REDIS_URL",
+    "KUMIHO_MEMORY_PROXY_URL",
+    "KUMIHO_MCP_HOSTED",
+    "KUMIHO_HOSTED_LOCAL_REDIS",
+    "KUMIHO_LOCAL_REDIS_URL",
+    "UPSTASH_REDIS_REST_URL",
+    "UPSTASH_REDIS_REST_TOKEN",
+    "KUMIHO_SERVER_USE_TLS",
+    "KUMIHO_SERVER_AUTHORITY",
+    "KUMIHO_SSL_TARGET_OVERRIDE",
+    "KUMIHO_SERVER_CA_FILE",
+    "KUMIHO_REQUIRE_TLS",
+)
 
 
-def _config_root() -> Path:
-    """Return the shared Kumiho root without reusing another host's auth file."""
-    override = (
-        os.getenv("KUMIHO_CODEX_CONFIG_ROOT", "")
-        or os.getenv("KUMIHO_CONFIG_DIR", "")
-        or ""
-    ).strip()
-    return Path(override).expanduser() if override else Path.home() / ".kumiho"
+class _CloudUnavailableClient:
+    """Non-None SDK default that prevents any implicit local bootstrap."""
+
+    def __getattr__(self, _name):
+        raise RuntimeError("Kumiho Cloud is not configured")
 
 
-def _auth_config_dir() -> Path:
-    """Codex-only credentials live below the shared ``~/.kumiho`` root."""
-    return _config_root() / CODEX_AUTH_DIRNAME
+def _discover_cloud_client(kumiho, *, force_refresh: bool = False):
+    """Run SDK-owned auth and official Cloud discovery without CE fallback."""
+    if not os.getenv("KUMIHO_AUTH_TOKEN", "").strip():
+        # Refresh SDK-managed login credentials before consulting a still-valid
+        # route cache. The plugin deliberately ignores the returned credential;
+        # discovery reloads it through the SDK's normal precedence.
+        from kumiho.auth_cli import ensure_token
+
+        ensure_token(interactive=False)
+    return kumiho.client_from_discovery(
+        id_token=None,
+        control_plane_url=OFFICIAL_CONTROL_PLANE_URL,
+        cache_path=os.environ["KUMIHO_DISCOVERY_CACHE_FILE"],
+        force_refresh=force_refresh,
+    )
 
 
 def _prepare_environment() -> Path:
-    """Pin discovery inputs before importing the SDK.
-
-    ``kumiho`` can auto-configure at import time when KUMIHO_AUTO_CONFIGURE is
-    inherited.  Clear that switch first, then set the only control plane and
-    cache this adapter is allowed to use.
-    """
-    config_root = _config_root()
-    auth_dir = config_root / CODEX_AUTH_DIRNAME
-    cache_path = auth_dir / "discovery-cache.json"
-    auth_dir.mkdir(parents=True, exist_ok=True)
-    for key in (
-        "KUMIHO_AUTH_TOKEN",
-        "KUMIHO_AUTO_CONFIGURE",
-        "KUMIHO_CONTROL_PLANE_API_URL",
-        "KUMIHO_TENANT_HINT",
-        "KUMIHO_FIREBASE_API_KEY",
-        "KUMIHO_FIREBASE_ID_TOKEN",
-        "KUMIHO_FIREBASE_PROJECT_ID",
-        "KUMIHO_USE_CONTROL_PLANE_TOKEN",
-        "KUMIHO_WORKSPACE_ROOT",
-        "KUMIHO_ENV_FILE",
-        "KUMIHO_CLAUDE_MODE",
-        "KUMIHO_CLAUDE_SERVER_ENDPOINT",
-        "KUMIHO_LOCAL_SERVER_ENDPOINT",
-        "KUMIHO_SERVER_ENDPOINT",
-        "KUMIHO_SERVER_ADDRESS",
-        "UPSTASH_REDIS_URL",
-        "KUMIHO_UPSTASH_REDIS_URL",
-        "KUMIHO_MEMORY_PROXY_URL",
-        "KUMIHO_MCP_HOSTED",
-        "KUMIHO_HOSTED_LOCAL_REDIS",
-        "KUMIHO_LOCAL_REDIS_URL",
-        "UPSTASH_REDIS_REST_URL",
-        "UPSTASH_REDIS_REST_TOKEN",
-        "KUMIHO_SERVER_USE_TLS",
-        "KUMIHO_SERVER_AUTHORITY",
-        "KUMIHO_SSL_TARGET_OVERRIDE",
-        "KUMIHO_SERVER_CA_FILE",
-        "KUMIHO_REQUIRE_TLS",
-    ):
+    """Pin official Cloud routing while leaving authentication to the SDK."""
+    trusted_handoff = os.environ.pop(SHARED_HOME_HANDOFF_ENV, "").strip()
+    handed_off = Path(trusted_handoff) if trusted_handoff else None
+    shared_root = (
+        handed_off
+        if handed_off is not None and handed_off.is_absolute()
+        else Path.home() / ".kumiho"
+    )
+    for key in _CLOUD_ROUTE_ENV:
         os.environ.pop(key, None)
-    # The package runtime remains shared at ``<root>/venv``. Only credentials
-    # and the route cache are host-isolated, preventing a Claude custom-control-
-    # plane bearer from ever being offered to the official Codex endpoint.
-    os.environ["KUMIHO_CODEX_CONFIG_ROOT"] = str(config_root)
-    os.environ["KUMIHO_CONFIG_DIR"] = str(auth_dir)
+
+    # Claude, Codex, Kumiho Desktop, kumiho-auth, and kumiho-cli all share the
+    # SDK-owned credential/cache root. An explicit KUMIHO_AUTH_TOKEN is left
+    # untouched so the SDK can apply its documented token-first precedence.
+    os.environ["KUMIHO_CONFIG_DIR"] = str(shared_root)
+    os.environ.pop("KUMIHO_CODEX_CONFIG_ROOT", None)
     os.environ["KUMIHO_CONTROL_PLANE_URL"] = OFFICIAL_CONTROL_PLANE_URL
-    os.environ["KUMIHO_DISCOVERY_CACHE_FILE"] = str(cache_path)
+    os.environ["KUMIHO_DISCOVERY_CACHE_FILE"] = str(
+        shared_root / OFFICIAL_DISCOVERY_CACHE_DIRNAME / "discovery-cache.json"
+    )
     os.environ["KUMIHO_REQUIRE_TLS"] = "1"
-    return cache_path
+
+    return shared_root
 
 
-def _codex_user_agent() -> str:
-    value = (
-        os.getenv("KUMIHO_CLAUDE_DISCOVERY_USER_AGENT", "") or ""
-    ).strip()
-    if re.fullmatch(r"kumiho-codex/[0-9A-Za-z.+-]{1,80}", value):
-        return value
-    root = Path(__file__).resolve().parent.parent
-    for directory in (".codex-plugin", ".claude-plugin"):
-        try:
-            version = json.loads(
-                (root / directory / "plugin.json").read_text(encoding="utf-8")
-            ).get("version")
-        except (OSError, json.JSONDecodeError, AttributeError):
-            continue
-        candidate = (
-            f"kumiho-codex/{version.strip()}"
-            if isinstance(version, str)
-            else ""
-        )
-        if re.fullmatch(r"kumiho-codex/[0-9A-Za-z.+-]{1,80}", candidate):
-            return candidate
-    return "kumiho-codex/unknown"
-
-
-def _clean_token_candidate(value: object) -> str:
-    token = value.strip() if isinstance(value, str) else ""
-    if token.lower().startswith("bearer "):
-        token = token[7:].strip()
-    if any(char in token for char in "\r\n\0"):
-        return ""
-    return token
-
-
-def _add_unique_token(target: list[str], value: object) -> None:
-    token = _clean_token_candidate(value)
-    if token and token not in target:
-        target.append(token)
-
-
-def _cached_token_candidates() -> list[str]:
-    """Load every unexpired Codex-only token, including legacy api_token."""
-    candidates: list[str] = []
-    try:
-        body = json.loads(
-            (_auth_config_dir() / "kumiho_authentication.json").read_text(
-                encoding="utf-8"
-            )
-        )
-    except (OSError, json.JSONDecodeError):
-        return candidates
-    if not isinstance(body, dict):
-        return candidates
-    now = int(time.time())
-    for token_key, expiry_key in (
-        ("control_plane_token", "cp_expires_at"),
-        ("id_token", "expires_at"),
-        ("api_token", "api_token_expires_at"),
-    ):
-        expiry = body.get(expiry_key)
-        if isinstance(expiry, (int, float)) and int(expiry) <= now + 30:
-            continue
-        _add_unique_token(candidates, body.get(token_key))
-    return candidates
-
-
-def _refreshable_cache_candidates() -> list[str]:
-    """Ask the public auth helper to refresh, then include legacy cache forms."""
-    candidates: list[str] = []
-    auth_path = _auth_config_dir() / "kumiho_authentication.json"
-    if auth_path.is_file():
-        try:
-            from kumiho.auth_cli import ensure_token
-
-            result = ensure_token(interactive=False)
-            token = result[0] if isinstance(result, tuple) else result
-            _add_unique_token(candidates, token)
-        except Exception:
-            pass
-    for token in _cached_token_candidates():
-        _add_unique_token(candidates, token)
-    return candidates
-
-
-def _token_is_locally_current(token: str) -> bool:
-    """Reject malformed/expired JWTs before using an offline route cache."""
-    parts = token.split(".")
-    if len(parts) != 3 or any(not part for part in parts):
-        return False
-    try:
-        payload = parts[1] + "=" * (-len(parts[1]) % 4)
-        claims = json.loads(base64.urlsafe_b64decode(payload).decode("utf-8"))
-    except Exception:
-        return False
-    if not isinstance(claims, dict):
-        return False
-    expiry = claims.get("exp")
-    return not isinstance(expiry, (int, float)) or int(expiry) > int(time.time()) + 30
-
-
-def _client_from_official_discovery(
-    kumiho,
-    token: str,
-    cache_path: Path,
-    *,
-    force_refresh: bool = True,
-):
-    """Use SDK cache/record parsing while overriding its generic HTTP UA."""
-    def resolve():
-        return kumiho.client_from_discovery(
-            id_token=token,
-            control_plane_url=OFFICIAL_CONTROL_PLANE_URL,
-            cache_path=str(cache_path),
-            force_refresh=force_refresh,
-        )
-
-    try:
-        from kumiho import discovery as discovery_module
-        original_post = discovery_module.requests.post
-    except Exception:
-        # The UA hook is best-effort across future SDK transports. Routing
-        # safety does not depend on it: the public call still pins both the
-        # official control plane and Codex-only cache.
-        return resolve()
-
-    def post_with_codex_identity(url, *args, **kwargs):
-        headers = dict(kwargs.get("headers") or {})
-        headers["User-Agent"] = _codex_user_agent()
-        kwargs["headers"] = headers
-        return original_post(url, *args, **kwargs)
-
-    try:
-        discovery_module.requests.post = post_with_codex_identity
-    except Exception:
-        # Telemetry must never make an otherwise-compatible public SDK fail.
-        return resolve()
-    try:
-        return resolve()
-    finally:
-        try:
-            discovery_module.requests.post = original_post
-        except Exception:
-            # The discovery result is already valid; a private telemetry hook
-            # restoration failure must not turn it into an auth failure.
-            pass
-
-
-def _configure_client(cache_path: Path, *, allow_cached_route: bool = True):
+def _configure_cloud(*, force_refresh: bool = False) -> bool:
+    """Ask public SDK APIs to own auth, discovery, and regional routing."""
     import kumiho
 
-    authenticated = True
     try:
-        cache_candidates = _refreshable_cache_candidates()
-        client = None
-        token = ""
-        last_error: Exception | None = None
-
-        # Codex accepts only its own credential directory. The shared Desktop
-        # runtime is still reused, but Claude/custom-control-plane credentials
-        # and ambient shell tokens never cross this official-service boundary.
-        for candidate in cache_candidates:
-            try:
-                client = _client_from_official_discovery(
-                    kumiho, candidate, cache_path, force_refresh=True
-                )
-                token = candidate
-                break
-            except Exception as exc:
-                last_error = exc
-
-        # Runtime startup may use an unexpired Codex-only route cache while
-        # offline. Onboarding passes allow_cached_route=False so it never calls
-        # an unverified token "authenticated".
-        if client is None and allow_cached_route and cache_path.is_file():
-            for candidate in cache_candidates:
-                if not _token_is_locally_current(candidate):
-                    continue
-                try:
-                    client = _client_from_official_discovery(
-                        kumiho, candidate, cache_path, force_refresh=False
-                    )
-                    token = candidate
-                    break
-                except Exception as exc:
-                    last_error = exc
-
-        if client is None or not token:
-            if last_error is not None:
-                raise last_error
-            raise RuntimeError("no Cloud credential is available")
-        os.environ["KUMIHO_AUTH_TOKEN"] = token
+        client = _discover_cloud_client(kumiho, force_refresh=force_refresh)
+        kumiho.configure_default_client(client)
     except Exception as exc:
-        # Keep the MCP surface available so Codex can still expose onboarding
-        # and give a useful auth error.  The reserved .invalid endpoint can
-        # never resolve and the empty token cannot fall back to Cloud caches.
-        authenticated = False
-        os.environ["KUMIHO_AUTH_TOKEN"] = ""
-        client = kumiho.connect(
-            endpoint=UNAUTHENTICATED_ENDPOINT,
-            token="",
-            enable_auto_login=False,
-            use_discovery=False,
-        )
+        # kumiho.mcp_server asks the SDK to auto-configure again on each tool
+        # call. In an explicitly selected Cloud process that retry must not
+        # silently probe local CE when Cloud auth is unavailable.
+        def refuse_ce_fallback(*_args, **_kwargs):
+            raise RuntimeError("Kumiho Cloud is not configured")
+
+        kumiho.auto_configure_from_discovery = refuse_ce_fallback
+        # Several SDK MCP tools ignore _ensure_configured()'s False result and
+        # call get_client() anyway. A non-None fail-closed default prevents
+        # get_client() from invoking bootstrap_default_client(), which probes CE.
+        kumiho.configure_default_client(_CloudUnavailableClient())
         print(
-            "[kumiho-codex] Official Cloud discovery is not ready "
-            f"({type(exc).__name__}); run $kumiho-onboard.",
+            "[kumiho-memory] Kumiho Cloud is not ready "
+            f"({type(exc).__name__}); set KUMIHO_AUTH_TOKEN or run "
+            "kumiho-auth login / kumiho-cli login, then restart the host.",
             file=sys.stderr,
         )
+        return False
 
-    kumiho.configure_default_client(client)
-
-    def keep_explicit_cloud_client(*_args, **_kwargs):
+    # Keep every MCP tool call on official SDK discovery so cache refresh and
+    # regional reassignment continue to work in long-lived hosts. Calling the
+    # public direct-discovery API also prevents SDK auto-configure from probing
+    # local CE when Cloud was explicitly selected.
+    def refresh_cloud_client(*_args, **_kwargs):
+        nonlocal client
+        try:
+            client = _discover_cloud_client(
+                kumiho,
+                force_refresh=bool(_kwargs.get("force_refresh", False)),
+            )
+        except Exception:
+            # An expired/unusable Cloud route must fail closed. A later tool
+            # call retries official discovery and can recover automatically.
+            kumiho.configure_default_client(_CloudUnavailableClient())
+            raise RuntimeError("Kumiho Cloud discovery refresh failed") from None
         kumiho.configure_default_client(client)
         return client
 
-    # kumiho.mcp_server checks configuration for each tool call.  Preserve the
-    # check while preventing it from consulting Claude's/default cache later.
-    kumiho.auto_configure_from_discovery = keep_explicit_cloud_client
-    return client, authenticated
+    kumiho.auto_configure_from_discovery = refresh_cloud_client
+    return True
 
 
 def _run_target() -> None:
@@ -318,6 +160,7 @@ def _run_target() -> None:
         from codex_thread_context import install_codex_thread_context
 
         install_codex_thread_context()
+
     args = sys.argv[1:]
     if args[:1] == ["--module"] and len(args) >= 2:
         module = args[1]
@@ -327,7 +170,11 @@ def _run_target() -> None:
     if args[:1] == ["--script"] and len(args) >= 2:
         script = args[1]
         sys.argv = [script, *args[2:]]
-        runpy.run_path(script, run_name="__main__")
+        runpy.run_path(
+            script,
+            run_name="__main__",
+            init_globals={BACKEND_BOUND_SENTINEL: True},
+        )
         return
     if args[:1] == ["--code"] and len(args) == 2:
         sys.argv = ["-c"]
@@ -343,16 +190,23 @@ def _run_target() -> None:
 
 
 def main() -> None:
-    cache_path = _prepare_environment()
+    _prepare_environment()
     auth_check = sys.argv[1:] == ["--auth-check"]
-    _client, authenticated = _configure_client(
-        cache_path,
-        allow_cached_route=not auth_check,
-    )
+    # Resolve once at process startup so an account/API-token switch cannot
+    # inherit another account's still-valid regional route. Later MCP calls
+    # use the SDK's normal cache policy through refresh_cloud_client().
+    authenticated = _configure_cloud(force_refresh=True)
     if auth_check:
         if authenticated:
-            print("[kumiho-codex] Cached Cloud authentication verified.")
+            print("[kumiho-memory] Kumiho Cloud authentication verified by the SDK.")
             return
+        raise SystemExit(1)
+    if not authenticated and len(sys.argv) > 1 and sys.argv[1] in {
+        "--module", "--script", "--code",
+    }:
+        # Auxiliary jobs call SDK clients directly and never enter mcp_server's
+        # guarded auto-configure hook. Never execute their payload after Cloud
+        # bootstrap failed, or the SDK default client could probe local CE.
         raise SystemExit(1)
     _run_target()
 

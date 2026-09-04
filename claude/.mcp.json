@@ -3,6 +3,7 @@
     "kumiho-memory": {
       "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
       "args": [
+        "-I",
         "${CLAUDE_PLUGIN_ROOT}/scripts/run_kumiho_mcp.py"
       ],
       "env": {

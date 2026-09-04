@@ -3,16 +3,17 @@
 
 Interactive setup that:
   1. Finds or creates a Python venv with kumiho packages
-  2. Selects a backend — Kumiho Cloud (API token) or self-hosted CE (no token)
-  3. Writes credentials / CE config to .env.local, OS env, and Desktop config
+  2. Selects a backend and asks the SDK to verify Cloud auth, or configures CE
+  3. Persists only the CE/backend selection; Cloud credentials remain SDK-owned
   4. Ingests discoverable skills into CognitiveMemory/Skills graph
   5. Verifies the MCP server can connect
 
 Usage:
-    python scripts/setup.py                    # interactive (choose backend)
-    python scripts/setup.py --token-stdin -y   # cloud; masked on a terminal
-    python scripts/setup.py --ce -y            # non-interactive self-hosted CE
-    python scripts/setup.py --ce --ce-endpoint 127.0.0.1:9190 -y
+    python -I scripts/setup.py                    # interactive (choose backend)
+    python -I scripts/setup.py -y                 # cloud; use env or SDK login
+    python -I scripts/setup.py --token-stdin -y   # legacy one-run verification
+    python -I scripts/setup.py --ce -y            # non-interactive self-hosted CE
+    python -I scripts/setup.py --ce --ce-endpoint 127.0.0.1:9190 -y
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import argparse
 import base64
 import getpass
 import importlib.util
+import ipaddress
 import json
 import os
 import secrets
@@ -31,8 +33,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bounded_proc
 
 #: Bounds for the provisioning subprocesses. Onboarding is interactive: a hang
@@ -65,8 +69,11 @@ if hasattr(sys.stdout, "reconfigure"):
 SCRIPT_DIR = Path(__file__).resolve().parent
 PLUGIN_DIR = SCRIPT_DIR.parent  # kumiho-plugins/claude/
 IS_WIN = platform.system() == "Windows"
+OFFICIAL_CONTROL_PLANE_URL = "https://control.kumiho.cloud"
 
 _SETUP_HOST_UNTRUSTED_ENV = (
+    "CLAUDE_PLUGIN_ROOT",
+    "CLAUDE_PLUGIN_DATA",
     "CLAUDE_CONFIG_DIR",
     "KUMIHO_CONFIG_DIR",
     "KUMIHO_CLAUDE_HOME",
@@ -78,6 +85,11 @@ _SETUP_HOST_UNTRUSTED_ENV = (
     "USERPROFILE",
     "HOMEDRIVE",
     "HOMEPATH",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONUSERBASE",
+    "PYTHONSTARTUP",
+    "PYTHONINSPECT",
     "KUMIHO_CONTROL_PLANE_URL",
     "KUMIHO_CONTROL_PLANE_API_URL",
     "KUMIHO_TENANT_HINT",
@@ -89,7 +101,77 @@ _SETUP_HOST_UNTRUSTED_ENV = (
     "KUMIHO_DISCOVERY_CACHE_FILE",
     "KUMIHO_WORKSPACE_ROOT",
     "KUMIHO_ENV_FILE",
+    "KUMIHO_CLAUDE_PACKAGE_SPEC",
 )
+_SETUP_HOST_UNTRUSTED_TRANSPORT_ENV = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "AWS_CA_BUNDLE",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "SSLKEYLOGFILE",
+    "OPENSSL_CONF",
+    "OPENSSL_MODULES",
+    "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+    "GRPC_PROXY",
+    "NO_GRPC_PROXY",
+    "GRPC_SSL_CIPHER_SUITES",
+)
+_SETUP_HOST_UNTRUSTED_DATA_ROUTE_ENV = (
+    "KUMIHO_CLAUDE_SERVER_ENDPOINT",
+    "KUMIHO_SERVER_ENDPOINT",
+    "KUMIHO_SERVER_ADDRESS",
+    "KUMIHO_LOCAL_SERVER_ENDPOINT",
+    "KUMIHO_SERVER_AUTHORITY",
+    "KUMIHO_SSL_TARGET_OVERRIDE",
+    "KUMIHO_SERVER_CA_FILE",
+    "UPSTASH_REDIS_URL",
+    "KUMIHO_UPSTASH_REDIS_URL",
+    "KUMIHO_LOCAL_REDIS_URL",
+    "KUMIHO_MEMORY_PROXY_URL",
+    "KUMIHO_MCP_HOSTED",
+    "KUMIHO_HOSTED_LOCAL_REDIS",
+    "UPSTASH_REDIS_REST_URL",
+    "UPSTASH_REDIS_REST_TOKEN",
+    "KUMIHO_LLM_BASE_URL",
+    "OPENAI_BASE_URL",
+    "ANTHROPIC_BASE_URL",
+    "AZURE_OPENAI_ENDPOINT",
+    "KUMIHO_MEMORY_CODE_AUTOMINE",
+)
+_SETUP_PROJECT_LOOPBACK_ROUTE_ENV = frozenset({
+    "KUMIHO_CLAUDE_SERVER_ENDPOINT",
+    "KUMIHO_SERVER_ENDPOINT",
+    "KUMIHO_SERVER_ADDRESS",
+    "KUMIHO_LOCAL_SERVER_ENDPOINT",
+    "UPSTASH_REDIS_URL",
+    "KUMIHO_UPSTASH_REDIS_URL",
+    "KUMIHO_LOCAL_REDIS_URL",
+    "KUMIHO_MEMORY_PROXY_URL",
+    "UPSTASH_REDIS_REST_URL",
+    "KUMIHO_LLM_BASE_URL",
+    "OPENAI_BASE_URL",
+    "ANTHROPIC_BASE_URL",
+    "AZURE_OPENAI_ENDPOINT",
+})
+_SETUP_TRUSTED_GLOBAL_PATH_ENV = frozenset({
+    "KUMIHO_CONFIG_DIR",
+    "KUMIHO_CLAUDE_HOME",
+    "KUMIHO_SERVER_CA_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "AWS_CA_BUNDLE",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "SSLKEYLOGFILE",
+    "OPENSSL_CONF",
+    "OPENSSL_MODULES",
+    "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+})
 
 
 def _setup_host_launch_isolated() -> bool:
@@ -97,6 +179,40 @@ def _setup_host_launch_isolated() -> bool:
         "claude",
         "codex",
     }
+
+
+def _service_route_is_loopback(raw: object) -> bool:
+    if not isinstance(raw, str) or any(char in raw for char in "\r\n\0"):
+        return False
+    value = raw.strip()
+    if not value or "${" in value:
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(
+            value if "://" in value else f"//{value}"
+        )
+        parsed.port
+    except ValueError:
+        return False
+    hostname = (parsed.hostname or "").rstrip(".").lower()
+    if hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _project_route_is_allowed(key: str, raw: object) -> bool:
+    """Allow only loopback service routes during host-driven setup."""
+    if not isinstance(raw, str) or any(char in raw for char in "\r\n\0"):
+        return False
+    value = raw.strip()
+    if not value or "${" in value:
+        return False
+    if _service_route_is_loopback(value):
+        return key in _SETUP_PROJECT_LOOPBACK_ROUTE_ENV
+    return False
 
 
 def _account_home() -> Path:
@@ -127,19 +243,32 @@ def _account_home() -> Path:
 
 
 def _prepare_host_setup_environment() -> None:
-    """Trust Cloud routing/runtime-root only from user-global Claude settings.
+    """Pin official Cloud discovery and trust only local setup routes.
 
-    Claude applies repository settings before it invokes this wizard.  A
-    project must be allowed to select its own token or CE endpoint, but it must
-    never pair the user's cached bearer with a repository-selected Cloud
-    control plane or make setup execute a repository-selected virtualenv.
+    Claude applies repository settings before it invokes this wizard. A
+    project may provide an explicit token for the SDK or select a loopback CE
+    endpoint, but it cannot redirect Cloud discovery, execute a
+    repository-selected virtualenv, or persist a remote CE data route.
     """
     host = (os.getenv("KUMIHO_CLAUDE_HOST", "") or "").strip().lower()
     if host not in {"claude", "codex"}:
+        os.environ["KUMIHO_CONTROL_PLANE_URL"] = OFFICIAL_CONTROL_PLANE_URL
+        os.environ.pop("KUMIHO_CONTROL_PLANE_API_URL", None)
         return
+    safe_project_routes = {}
+    for key in _SETUP_HOST_UNTRUSTED_DATA_ROUTE_ENV:
+        value = (os.getenv(key, "") or "").strip()
+        if _project_route_is_allowed(key, value):
+            safe_project_routes[key] = value
     account_home = _account_home()
-    for key in _SETUP_HOST_UNTRUSTED_ENV:
-        os.environ.pop(key, None)
+    untrusted = frozenset(key.upper() for key in (
+        *_SETUP_HOST_UNTRUSTED_ENV,
+        *_SETUP_HOST_UNTRUSTED_TRANSPORT_ENV,
+        *_SETUP_HOST_UNTRUSTED_DATA_ROUTE_ENV,
+    ))
+    for actual in tuple(os.environ):
+        if actual.upper() in untrusted:
+            os.environ.pop(actual, None)
     os.environ["HOME"] = str(account_home)
     os.environ["USERPROFILE"] = str(account_home)
     if os.name == "nt":
@@ -148,6 +277,7 @@ def _prepare_host_setup_environment() -> None:
         os.environ["HOMEPATH"] = tail or "\\"
         os.environ["APPDATA"] = str(account_home / "AppData" / "Roaming")
         os.environ["LOCALAPPDATA"] = str(account_home / "AppData" / "Local")
+    os.environ.update(safe_project_routes)
     if host != "claude":
         return
 
@@ -165,23 +295,36 @@ def _prepare_host_setup_environment() -> None:
         if not isinstance(env, dict):
             continue
         for key in (
-            "KUMIHO_CONTROL_PLANE_URL",
-            "KUMIHO_TENANT_HINT",
             "KUMIHO_CONFIG_DIR",
+            "KUMIHO_CLAUDE_HOME",
+            "KUMIHO_CLAUDE_PACKAGE_SPEC",
+            *_SETUP_HOST_UNTRUSTED_DATA_ROUTE_ENV,
+            *_SETUP_HOST_UNTRUSTED_TRANSPORT_ENV,
         ):
             raw = env.get(key)
             if key in trusted or not isinstance(raw, str):
                 continue
             value = raw.strip()
-            if not value or any(char in value for char in "\r\n\0"):
+            if (
+                not value
+                or "${" in value
+                or any(char in value for char in "\r\n\0")
+            ):
                 continue
-            if key == "KUMIHO_CONFIG_DIR":
+            if key in _SETUP_TRUSTED_GLOBAL_PATH_ENV:
                 path = Path(value)
                 if not path.is_absolute():
                     continue
                 value = str(path)
+            if (
+                key in _SETUP_HOST_UNTRUSTED_DATA_ROUTE_ENV
+                and not _project_route_is_allowed(key, value)
+            ):
+                continue
             trusted[key] = value
     os.environ.update(trusted)
+    os.environ["KUMIHO_CONTROL_PLANE_URL"] = OFFICIAL_CONTROL_PLANE_URL
+    os.environ.pop("KUMIHO_CONTROL_PLANE_API_URL", None)
 
 
 _prepare_host_setup_environment()
@@ -254,6 +397,8 @@ ENV_LOCAL_FALLBACK = KUMIHO_DIR / ".env.local"  # used when plugin dir is read-o
 SKILL_MD = PLUGIN_DIR / "skills" / "kumiho-memory" / "SKILL.md"
 REFS_DIR = PLUGIN_DIR / "skills" / "kumiho-memory" / "references"
 INGEST_SCRIPT = SCRIPT_DIR / "ingest-skills.py"
+CLOUD_RUNNER = SCRIPT_DIR / "run_kumiho_cloud.py"
+CE_RUNNER = SCRIPT_DIR / "run_kumiho_ce.py"
 
 # Self-hosted Community Edition (CE) defaults — mirror run_kumiho_mcp.py.
 DEFAULT_CE_ENDPOINT = "127.0.0.1:9190"
@@ -270,9 +415,10 @@ _CE_PERSISTED_ENV_KEYS = (
 )
 
 # Provisioning executes package/build code that neither needs nor should
-# inherit runtime credentials or backend routing. Keep package-index and proxy
-# variables intact: private indexes and enterprise networks legitimately need
-# those for pip itself.
+# inherit runtime credentials or backend routing. Direct maintenance retains
+# legacy package-index/proxy overrides. Host-launched onboarding scrubs them
+# because Claude project settings are indistinguishable from ambient exports;
+# private index/proxy policy should live in the user's pip configuration.
 _PROVISION_ENV_EXACT_SCRUB = frozenset({
     "KUMIHO_AUTH_TOKEN",
     "KUMIHO_LLM_API_KEY",
@@ -322,6 +468,22 @@ _PROVISION_ENV_EXACT_SCRUB = frozenset({
 _PROVISION_ENV_SECRET_SUFFIXES = (
     "_API_KEY", "_AUTH_TOKEN", "_ACCESS_TOKEN", "_SECRET_KEY", "_TOKEN",
 )
+_HOST_PROVISION_ENV_PREFIXES = ("PIP_", "PIPENV_", "UV_")
+_HOST_PROVISION_ENV_EXACT_SCRUB = frozenset({
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONUSERBASE",
+    "PYTHONSTARTUP",
+    "PYTHONINSPECT",
+})
 
 
 def _provision_subprocess_env() -> dict[str, str]:
@@ -332,6 +494,13 @@ def _provision_subprocess_env() -> dict[str, str]:
         if (
             normalized in _PROVISION_ENV_EXACT_SCRUB
             or normalized.endswith(_PROVISION_ENV_SECRET_SUFFIXES)
+            or (
+                _setup_host_launch_isolated()
+                and (
+                    normalized in _HOST_PROVISION_ENV_EXACT_SCRUB
+                    or normalized.startswith(_HOST_PROVISION_ENV_PREFIXES)
+                )
+            )
         ):
             env.pop(key, None)
     return env
@@ -522,6 +691,62 @@ CLAUDE_SETTINGS = (
 )
 
 
+def _merge_user_global_claude_env(
+    updates: dict[str, str] | None = None, *, remove: tuple[str, ...] = ()
+) -> bool:
+    """Merge trusted routing while honoring settings.local.json precedence."""
+    updates = updates or {}
+    settings_local = CLAUDE_SETTINGS.with_name("settings.local.json")
+    paths = (settings_local, CLAUDE_SETTINGS)
+    documents: dict[Path, dict] = {}
+    success = True
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            documents[path] = loaded if isinstance(loaded, dict) else {}
+        except (json.JSONDecodeError, OSError) as exc:
+            warn(
+                f"{path} is not readable JSON ({exc}); "
+                "leaving that trusted settings file unchanged"
+            )
+            success = False
+
+    # Put new values in the highest-priority usable existing file. With no
+    # settings yet, create the conventional settings.json. Removal touches
+    # both files so a stale settings.local.json cannot pin the old backend.
+    target = next((path for path in paths if path in documents), CLAUDE_SETTINGS)
+    documents.setdefault(target, {})
+    for path, settings in documents.items():
+        env = settings.get("env")
+        if not isinstance(env, dict):
+            env = {}
+        changed = False
+        for key in remove:
+            if key in env:
+                env.pop(key, None)
+                changed = True
+        if path == target:
+            for key, value in updates.items():
+                if env.get(key) != value:
+                    env[key] = value
+                    changed = True
+        if not changed:
+            continue
+        settings["env"] = env
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            warn(f"Could not write trusted routing to {path} ({exc})")
+            success = False
+    return success
+
+
 def write_python_knob(base_python: str) -> None:
     """Record the interpreter that actually works on THIS machine.
 
@@ -534,7 +759,7 @@ def write_python_knob(base_python: str) -> None:
     """
     try:
         resolved = bounded_proc.run(
-            [base_python, "-c", "import sys; print(sys.executable)"], timeout=30,
+            [base_python, "-I", "-c", "import sys; print(sys.executable)"], timeout=30,
         )
         interpreter = (resolved.stdout or "").strip()
     except (subprocess.TimeoutExpired, OSError):
@@ -722,7 +947,7 @@ def _setup_venv_locked(base_python: str) -> Path:
         VENV_DIR.parent.mkdir(parents=True, exist_ok=True)
         try:
             r = bounded_proc.run(
-                [base_python, "-m", "venv", str(VENV_DIR)], timeout=VENV_TIMEOUT_S,
+                [base_python, "-I", "-m", "venv", str(VENV_DIR)], timeout=VENV_TIMEOUT_S,
                 env=provision_env,
             )
         except subprocess.TimeoutExpired:
@@ -755,13 +980,13 @@ def _setup_venv_locked(base_python: str) -> Path:
             "several minutes is normal)...")
         try:
             pip_check = bounded_proc.run(
-                [str(VENV_PYTHON), "-m", "pip", "--version"],
+                [str(VENV_PYTHON), "-I", "-m", "pip", "--version"],
                 timeout=10,
                 env=provision_env,
             )
             if pip_check.returncode != 0:
                 ensure_pip = bounded_proc.run(
-                    [str(VENV_PYTHON), "-m", "ensurepip", "--upgrade"],
+                    [str(VENV_PYTHON), "-I", "-m", "ensurepip", "--upgrade"],
                     timeout=VENV_TIMEOUT_S,
                     env=provision_env,
                 )
@@ -769,7 +994,7 @@ def _setup_venv_locked(base_python: str) -> Path:
                     fail(f"pip bootstrap failed: {ensure_pip.stderr}")
                     raise SystemExit(1)
             r = bounded_proc.run(
-                [str(VENV_PYTHON), "-m", "pip", "install", "--upgrade", "--quiet",
+                [str(VENV_PYTHON), "-I", "-m", "pip", "install", "--upgrade", "--quiet",
                  *shlex.split(spec)],
                 timeout=PIP_TIMEOUT_S,
                 env=provision_env,
@@ -787,7 +1012,7 @@ def _setup_venv_locked(base_python: str) -> Path:
     # Verify MCP server is importable
     try:
         r = bounded_proc.run(
-            [str(VENV_PYTHON), "-c", "import kumiho.mcp_server"], timeout=10,
+            [str(VENV_PYTHON), "-I", "-c", "import kumiho.mcp_server"], timeout=10,
             env=provision_env,
         )
     except subprocess.TimeoutExpired:
@@ -837,7 +1062,7 @@ def _setup_venv_locked(base_python: str) -> Path:
 
 
 def check_existing_auth() -> str | None:
-    """Check for existing credentials. Returns email if found."""
+    """Legacy cache inspector retained for compatibility; active setup skips it."""
     if not CRED_PATH.exists():
         return None
     try:
@@ -854,7 +1079,7 @@ def check_existing_auth() -> str | None:
 
 
 def cache_token(token: str) -> bool:
-    """Merge API token into ~/.kumiho/kumiho_authentication.json, preserving existing credentials."""
+    """Legacy writer retained for compatibility; active setup never calls it."""
     KUMIHO_DIR.mkdir(parents=True, exist_ok=True)
 
     existing: dict = {}
@@ -904,111 +1129,85 @@ def cache_token(token: str) -> bool:
     return True
 
 
-def setup_auth(cli_token: str | None = None) -> str | None:
-    """Authenticate and return the token, or None if skipped.
-
-    If *cli_token* is provided (via ``--token``), skip all interactive
-    prompts and use it directly.
-    """
-    # Fast path: token supplied via CLI — no prompts needed
-    if cli_token:
-        token = clean_token(cli_token)
-        if not token:
-            fail("Empty token supplied via --token")
-            return None
-        claims = decode_jwt_payload(token)
-        if claims is None:
-            fail("Token doesn't look like a valid JWT (expected 3 dot-separated base64url parts)")
-            return None
-        if cache_token(token):
-            email = (claims.get("email") or claims.get("created_by") or "unknown") if claims else "unknown"
-            ok(f"Token cached at {CRED_PATH}")
-            if email != "unknown":
-                ok(f"Authenticated as {email}")
-        else:
-            fail("Failed to cache token")
-        return token
-
-    # Interactive path
-    existing_email = check_existing_auth()
-    if existing_email:
-        ok(f"Already authenticated as {existing_email}")
-        if not ask_yes_no("Re-authenticate with a new token?", default_yes=False):
-            try:
-                creds = json.loads(CRED_PATH.read_text(encoding="utf-8"))
-                return creds.get("api_token") or creds.get("id_token")
-            except Exception:
-                return None
-
-    choice = ask_choice("How would you like to authenticate?", [
-        {
-            "label": "Paste API token",
-            "note": "from kumiho.io dashboard > API Keys",
-            "value": "token",
-            "recommended": True,
-        },
-        {
-            "label": "CLI login (email + password)",
-            "note": "uses kumiho-auth login",
-            "value": "cli",
-        },
-        {
-            "label": "Skip for now",
-            "note": "set KUMIHO_AUTH_TOKEN later",
-            "value": "skip",
-        },
-    ])
-
-    if choice["value"] == "skip":
-        warn("Authentication skipped — set KUMIHO_AUTH_TOKEN before using the plugin")
-        return None
-
-    if choice["value"] == "cli":
-        log("Running kumiho-auth login...")
-        venv_python = VENV_PYTHON if VENV_PYTHON.exists() else sys.executable
-        r = subprocess.run(
-            [str(venv_python), "-m", "kumiho.auth_cli", "login"],
-            timeout=60,
+def _sdk_cloud_auth_works(token: str | None = None) -> bool:
+    """Let the SDK validate its own explicit token or shared login cache."""
+    env = dict(os.environ)
+    env["KUMIHO_PLUGIN_SHARED_HOME"] = str(KUMIHO_DIR)
+    if token is not None:
+        env["KUMIHO_AUTH_TOKEN"] = token
+    try:
+        result = bounded_proc.run(
+            [str(VENV_PYTHON), "-I", str(CLOUD_RUNNER), "--auth-check"],
+            timeout=30,
+            env=env,
         )
-        if r.returncode == 0:
-            ok("Authenticated via CLI login")
-            try:
-                creds = json.loads(CRED_PATH.read_text(encoding="utf-8"))
-                return creds.get("api_token") or creds.get("id_token")
-            except Exception:
-                return None
-        else:
-            fail("CLI login failed — try pasting an API token instead")
-            return None
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
 
-    # Token method
-    print()
-    print(f"  Paste your Kumiho API token below.")
-    print(f"  {DIM}Find it at kumiho.io > Dashboard > API Keys{RESET}")
-    print(f"  {DIM}Token looks like: eyJ... (three dot-separated parts){RESET}")
-    print()
-    raw = ask_secret("API token")
-    token = clean_token(raw)
 
-    if not token:
-        fail("Empty token — skipping authentication")
-        return None
+def setup_auth(cli_token: str | None = None) -> tuple[str | None, bool]:
+    """Delegate Cloud authentication entirely to the installed Python SDK.
 
-    claims = decode_jwt_payload(token)
-    if claims is None:
-        fail("Token doesn't look like a valid JWT (expected 3 dot-separated base64url parts)")
-        if not ask_yes_no("Store it anyway?", default_yes=False):
-            return None
+    An explicit API token is passed through without parsing. Otherwise the SDK
+    uses the shared ``~/.kumiho`` credentials maintained by Kumiho Desktop,
+    ``kumiho-auth login``, or ``kumiho-cli login``.
+    """
+    token = cli_token.strip() if cli_token is not None else None
+    if token:
+        warn(
+            "Compatibility --token/--token-stdin input is used only by this "
+            "setup process and is not saved. Before starting Claude, configure "
+            "a persistent KUMIHO_AUTH_TOKEN or use kumiho-auth login / "
+            "kumiho-cli login."
+        )
+        if _sdk_cloud_auth_works(token):
+            ok("Explicit Kumiho API token verified by the Python SDK")
+            return token, True
+        fail("The Python SDK could not authenticate with the explicit token")
+        return token, False
 
-    if cache_token(token):
-        email = (claims.get("email") or claims.get("created_by") or "unknown") if claims else "unknown"
-        ok(f"Token cached at {CRED_PATH}")
-        if email != "unknown":
-            ok(f"Authenticated as {email}")
+    ambient = (os.getenv("KUMIHO_AUTH_TOKEN", "") or "").strip()
+    if ambient:
+        if _sdk_cloud_auth_works():
+            ok("KUMIHO_AUTH_TOKEN verified by the Python SDK")
+            return ambient, True
+        fail("The Python SDK could not authenticate with KUMIHO_AUTH_TOKEN")
+        return ambient, False
+
+    if _sdk_cloud_auth_works():
+        ok("Shared ~/.kumiho credentials verified by the Python SDK")
+        return None, True
+
+    if AUTO_YES or not sys.stdin.isatty():
+        warn(
+            "No SDK credential is available. Set KUMIHO_AUTH_TOKEN or run "
+            "kumiho-auth login / kumiho-cli login, then rerun onboarding."
+        )
+        return None, False
+
+    log("No cached SDK credential found; running kumiho-auth login...")
+    try:
+        result = subprocess.run(
+            [str(VENV_PYTHON), "-I", "-m", "kumiho.auth_cli", "login"],
+            timeout=5 * 60,
+            env={**os.environ, "KUMIHO_CONFIG_DIR": str(KUMIHO_DIR)},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        result = None
+    authenticated = bool(
+        result is not None
+        and result.returncode == 0
+        and _sdk_cloud_auth_works()
+    )
+    if authenticated:
+        ok("Shared ~/.kumiho credentials verified by the Python SDK")
     else:
-        fail("Failed to cache token")
-
-    return token
+        fail(
+            "SDK login failed; set KUMIHO_AUTH_TOKEN or run "
+            "kumiho-auth login / kumiho-cli login"
+        )
+    return None, authenticated
 
 
 # ---------------------------------------------------------------------------
@@ -1073,7 +1272,6 @@ def _normalize_endpoint(raw: str) -> str:
             raise ValueError("CE endpoint must include a port")
         port = 443 if scheme in {"https", "grpcs"} else 80
     host = parsed.hostname
-    plaintext = scheme in {"", "http", "grpc"}
     loopback_host = host.rstrip(".").lower()
     loopback = loopback_host == "localhost"
     if not loopback:
@@ -1081,8 +1279,8 @@ def _normalize_endpoint(raw: str) -> str:
             loopback = ipaddress.ip_address(loopback_host).is_loopback
         except ValueError:
             loopback = False
-    if plaintext and not loopback:
-        raise ValueError("remote CE endpoints must use https:// or grpcs://")
+    if not loopback:
+        raise ValueError("CE endpoints must use a loopback host")
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     authority = f"{host}:{port}"
@@ -1111,12 +1309,7 @@ def _validate_ce_url(
         parsed.port
     except ValueError as exc:
         raise ValueError(f"{label} has an invalid port") from exc
-    insecure_scheme = (
-        parsed.scheme.lower()
-        if require_tls_for_remote and parsed.scheme.lower() in {"http", "redis"}
-        else ""
-    )
-    if insecure_scheme:
+    if require_tls_for_remote:
         host = (parsed.hostname or "").rstrip(".").lower()
         loopback = host == "localhost"
         if not loopback:
@@ -1125,8 +1318,7 @@ def _validate_ce_url(
             except ValueError:
                 loopback = False
         if not loopback:
-            secure = "HTTPS" if insecure_scheme == "http" else "rediss://"
-            raise ValueError(f"{label} must use {secure} outside loopback")
+            raise ValueError(f"{label} must use a loopback host")
     return value
 
 
@@ -1248,7 +1440,7 @@ def verify_ce(ce: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Patch MCP config with token
+# Legacy credential/config writers (not used by active Cloud onboarding)
 # ---------------------------------------------------------------------------
 
 
@@ -1408,6 +1600,10 @@ def _neutralize_env_markers(keys: list[str]) -> None:
     # first one (MSIX and classic installs can coexist during migration).
     for desktop_path in _claude_desktop_config_paths():
         _delete_env_from_config(desktop_path, keys)
+    # Host launches intentionally distrust route values merged from a project
+    # or ambient process. Remove the old backend from the exact global source
+    # that the hardened launcher is allowed to restore.
+    _merge_user_global_claude_env(remove=tuple(keys))
 
 
 def _upsert_shell_export(rc_path: Path, key: str, value: str) -> bool:
@@ -1503,7 +1699,9 @@ def _set_os_env_var(key: str, value: str) -> bool:
 
 
 def patch_mcp_json(token: str | None) -> None:
-    """Write token to all reachable MCP config locations.
+    """Legacy compatibility helper; active setup never calls this function.
+
+    Write a token to all reachable MCP config locations.
 
     Priority:
       1. OS user-level env var — Claude Desktop inherits it on next launch
@@ -1560,8 +1758,19 @@ def write_ce_config(ce: dict) -> None:
     """Write CE config to the three surfaces the launcher reads: OS user env,
     Claude Desktop config, and .env.local. No token is involved."""
     pairs = _ce_persist_pairs(ce)
+    updates = dict(pairs)
+    stale = tuple(key for key in _CE_PERSISTED_ENV_KEYS if key not in updates)
+
+    # This exact user-global file persists the validated loopback CE routes
+    # across plugin updates.
+    if _merge_user_global_claude_env(updates, remove=stale):
+        ok(f"CE config written to trusted user settings ({CLAUDE_SETTINGS.parent})")
 
     # 1. OS-level user env vars (inherited by Claude Desktop on next launch)
+    for key in stale:
+        if (os.getenv(key, "") or "").strip():
+            _set_os_env_var(key, "")
+        os.environ.pop(key, None)
     for k, v in pairs:
         if _set_os_env_var(k, v):
             ok(f"{k} set as user environment variable (OS level)")
@@ -1571,7 +1780,8 @@ def write_ce_config(ce: dict) -> None:
     # 2. Claude Desktop global config (triggers MCP server restart)
     desktop_written = False
     for desktop_path in _claude_desktop_config_paths():
-        if _try_write_env_to_config(desktop_path, dict(pairs)):
+        _delete_env_from_config(desktop_path, list(stale))
+        if _try_write_env_to_config(desktop_path, updates):
             ok(f"CE config written to {desktop_path.name} (MCP server will restart)")
             desktop_written = True
             break
@@ -1602,15 +1812,12 @@ def write_ce_config(ce: dict) -> None:
 def run_ingestion(venv_python: Path, token: str | None = None, ce_env: dict | None = None) -> None:
     """Run the ingest-skills.py script to populate CognitiveMemory/Skills.
 
-    Cloud mode authenticates with *token*; CE mode routes tokenlessly via the
-    env derived from *ce_env*."""
+    Cloud mode passes any explicit *token* through unchanged, then delegates
+    auth, refresh, discovery, and regional routing to the SDK adapter. CE mode
+    routes tokenlessly via the env derived from *ce_env*."""
     if not INGEST_SCRIPT.exists():
         warn(f"Ingestion script not found: {INGEST_SCRIPT}")
         warn("Run: python -m kumiho_memory ingest-skill <SKILL.md>")
-        return
-
-    if ce_env is None and not token:
-        warn("Skipping skill ingestion (no auth token) — run later after authenticating")
         return
 
     if not ask_yes_no("Ingest skills into Kumiho graph? (populates CognitiveMemory/Skills)"):
@@ -1623,10 +1830,15 @@ def run_ingestion(venv_python: Path, token: str | None = None, ce_env: dict | No
         # The explicit CE endpoint above intentionally replaces any inherited
         # Cloud endpoint. Only the legacy alias must be removed.
         env.pop("KUMIHO_SERVER_ADDRESS", None)
+        adapter = CE_RUNNER
     else:
-        env = {**os.environ, "KUMIHO_AUTH_TOKEN": token}
+        env = dict(os.environ)
+        if token:
+            env["KUMIHO_AUTH_TOKEN"] = token
+        env["KUMIHO_PLUGIN_SHARED_HOME"] = str(KUMIHO_DIR)
+        adapter = CLOUD_RUNNER
     r = subprocess.run(
-        [str(venv_python), str(INGEST_SCRIPT)],
+        [str(venv_python), "-I", str(adapter), "--script", str(INGEST_SCRIPT)],
         timeout=60,
         env=env,
     )
@@ -1642,23 +1854,16 @@ def run_ingestion(venv_python: Path, token: str | None = None, ce_env: dict | No
 
 
 def verify_connection(venv_python: Path, token: str | None) -> None:
-    """Quick self-test of the MCP server."""
-    if not token:
-        return
-
-    test_script = SCRIPT_DIR / "test_discovery_env.py"
-    if not test_script.exists():
-        return
-
+    """Ask the Cloud adapter and SDK to verify auth plus official discovery."""
     log("Verifying Kumiho Cloud connection...")
-    env = {**os.environ, "KUMIHO_AUTH_TOKEN": token}
-
-    # Write a temp env file for the test
-    temp_env = PLUGIN_DIR / ".env.local"
+    env = dict(os.environ)
+    if token:
+        env["KUMIHO_AUTH_TOKEN"] = token
+    env["KUMIHO_PLUGIN_SHARED_HOME"] = str(KUMIHO_DIR)
     try:
         r = bounded_proc.run(
-            [str(venv_python), str(test_script), "--env-file", str(temp_env)],
-            timeout=15, env=env,
+            [str(venv_python), "-I", str(CLOUD_RUNNER), "--auth-check"],
+            timeout=30, env=env,
         )
     except subprocess.TimeoutExpired:
         warn("Connection test timed out — the MCP server may still work")
@@ -1683,12 +1888,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--token",
         metavar="TOKEN",
-        help="deprecated: API token in argv; prefer --token-stdin",
+        help="deprecated one-run SDK token pass-through; prefer KUMIHO_AUTH_TOKEN",
     )
     p.add_argument(
         "--token-stdin",
         action="store_true",
-        help="read the Cloud API token from stdin (masked when stdin is a TTY)",
+        help="deprecated one-run Cloud token pass-through; the token is not saved",
     )
     p.add_argument(
         "--ce",
@@ -1736,21 +1941,13 @@ def main(argv: list[str] | None = None) -> int:
         except (EOFError, KeyboardInterrupt):
             fail("Could not read the API token from stdin")
             return 2
+    one_run_token = bool(args.token and args.token.strip())
 
     print()
     print(f"  {BOLD}Kumiho Memory Setup for Claude{RESET}")
     print(f"  {DIM}Persistent graph-native cognitive memory{RESET}")
     hr()
     print()
-
-    # Bank a supplied token BEFORE provisioning, which is the long,
-    # failure-prone step. The preferred --token-stdin path keeps it out of argv;
-    # --token remains only for compatibility with existing automation.
-    if args.token:
-        cleaned = clean_token(args.token)
-        if cleaned and cache_token(cleaned):
-            ok("Token cached (kept even if the steps below fail)")
-        print()
 
     # Step 1: Python & venv
     log("Step 1/5: Python environment")
@@ -1775,33 +1972,38 @@ def main(argv: list[str] | None = None) -> int:
     log("Step 2/5: Backend & authentication")
     backend = choose_backend(args)
     token: str | None = None
+    cloud_authenticated = False
     ce: dict | None = None
     if backend == "ce":
         ce = setup_ce(args)
     else:
-        token = setup_auth(cli_token=args.token)
+        token, cloud_authenticated = setup_auth(cli_token=args.token)
         if token:
             os.environ["KUMIHO_AUTH_TOKEN"] = token
     print()
 
-    # Step 3: Persist config (OS env + Desktop config + .env.local)
-    log("Step 3/5: MCP server configuration")
+    # Step 3: Persist backend selection only. Cloud credentials remain owned by
+    # the SDK or by the caller-provided KUMIHO_AUTH_TOKEN environment.
+    log("Step 3/5: Backend configuration")
     if ce is not None:
         write_ce_config(ce)
     else:
-        patch_mcp_json(token)
+        _neutralize_env_markers(list(_CE_PERSISTED_ENV_KEYS))
     print()
 
     # Step 4: Skill ingestion
     log("Step 4/5: Skill ingestion")
-    run_ingestion(venv_python, token=token, ce_env=ce)
+    if ce is not None or cloud_authenticated:
+        run_ingestion(venv_python, token=token, ce_env=ce)
+    else:
+        warn("Skipping skill ingestion until the Python SDK can authenticate")
     print()
 
     # Step 5: Verify
     log("Step 5/5: Verify connection")
     if ce is not None:
         verify_ce(ce)
-    else:
+    elif cloud_authenticated:
         verify_connection(venv_python, token)
     print()
 
@@ -1814,17 +2016,31 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  Self-hosted CE mode configured (endpoint {ce['endpoint']}).")
         print(f"  Start a new session — the plugin bootstraps on first message.")
         print(f"  {DIM}Ensure your kumiho-server CE is running.{RESET}")
-    elif token:
-        print(f"  Claude will connect to Kumiho memory automatically.")
+    elif cloud_authenticated:
+        print(f"  Kumiho Cloud authentication was verified by the Python SDK.")
+        if one_run_token:
+            print(
+                f"  {YELLOW}The compatibility token was used only for this "
+                f"setup process and was not saved.{RESET}"
+            )
+            print(
+                "  Before restarting Claude, configure a persistent "
+                "KUMIHO_AUTH_TOKEN or run kumiho-auth login / kumiho-cli login."
+            )
+        else:
+            print(
+                "  Authentication remains in the host environment or the "
+                "shared SDK credential store."
+            )
         print(f"  Start a new session — the plugin bootstraps on first message.")
     else:
         print(f"  {YELLOW}Remaining:{RESET} Authenticate with one of:")
-        print(f"    1. Run this setup again with a token")
-        print(f"    2. Use /kumiho-onboard in Claude Code")
-        print(f"    3. Set KUMIHO_AUTH_TOKEN environment variable")
+        print(f"    1. Set KUMIHO_AUTH_TOKEN (preferred)")
+        print(f"    2. Run kumiho-auth login or kumiho-cli login")
+        print(f"    3. Re-run /kumiho-onboard")
     print()
     print(f"  {DIM}Plugin:  {PLUGIN_DIR}{RESET}")
-    print(f"  {DIM}Creds:   {CRED_PATH}{RESET}")
+    print(f"  {DIM}SDK home: {KUMIHO_DIR}{RESET}")
     print(f"  {DIM}Venv:    {VENV_DIR}{RESET}")
     print(f"  {DIM}MCP:     {MCP_JSON}{RESET}")
     print()

@@ -96,12 +96,12 @@ def _codex_user_agent() -> str:
 
 
 def _reset_to_safe_cloud() -> None:
-    """Fail closed to official Cloud routing and Codex-owned auth only."""
+    """Fail closed to official Cloud routing with SDK-owned shared auth."""
     for key in (*CODEX_DEDICATED_ENV, *CE_ROUTING_ENV, *CLOUD_ROUTING_ENV):
         os.environ.pop(key, None)
-    # The Cloud adapter reads only ``~/.kumiho/codex-cloud``. Never let an
-    # ambient or Claude custom-control-plane bearer cross into this process.
-    os.environ["KUMIHO_AUTH_TOKEN"] = ""
+    # The Cloud adapter pins the official discovery origin. Preserve an
+    # explicit token verbatim so the SDK can apply token-first precedence;
+    # CE and invalid-config paths still clear it below.
     os.environ[CODEX_BACKEND_ENV] = "cloud"
 
 
@@ -149,7 +149,6 @@ def _normalize_endpoint(raw: object) -> str:
             raise ValueError("CE endpoint must include a port")
         port = 443 if scheme in {"https", "grpcs"} else 80
     host = parsed.hostname
-    plaintext = scheme in {"", "http", "grpc"}
     loopback_host = host.rstrip(".").lower()
     loopback = loopback_host == "localhost"
     if not loopback:
@@ -157,8 +156,8 @@ def _normalize_endpoint(raw: object) -> str:
             loopback = ipaddress.ip_address(loopback_host).is_loopback
         except ValueError:
             loopback = False
-    if plaintext and not loopback:
-        raise ValueError("remote CE endpoints must use https:// or grpcs://")
+    if not loopback:
+        raise ValueError("CE endpoints must use a loopback host")
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     authority = f"{host}:{port}"
@@ -186,12 +185,7 @@ def _validate_url(
         parsed.port
     except ValueError as exc:
         raise ValueError(f"{label} has an invalid port") from exc
-    insecure_scheme = (
-        parsed.scheme.lower()
-        if require_tls_for_remote and parsed.scheme.lower() in {"http", "redis"}
-        else ""
-    )
-    if insecure_scheme:
+    if require_tls_for_remote:
         host = (parsed.hostname or "").rstrip(".").lower()
         loopback = host == "localhost"
         if not loopback:
@@ -200,8 +194,7 @@ def _validate_url(
             except ValueError:
                 loopback = False
         if not loopback:
-            secure = "HTTPS" if insecure_scheme == "http" else "rediss://"
-            raise ValueError(f"{label} must use {secure} outside loopback")
+            raise ValueError(f"{label} must use a loopback host")
     return value
 
 
@@ -239,10 +232,11 @@ def _apply_ce_settings(endpoint: object, redis_url: object, llm_base_url: object
 def _apply_codex_config(path: Path | None = None) -> None:
     """Apply Codex-only backend settings before the shared launcher starts.
 
-    Claude and Codex intentionally share the package runtime, but neither the
-    credential cache nor backend selection. In particular, choosing CE for Codex must not rewrite Claude
-    Desktop settings, and a Claude CE environment must not force Codex away
-    from a Cloud backend selected by its own onboarding wizard.
+    Claude and Codex intentionally share the package runtime and SDK-owned
+    credential cache, but not backend selection. In particular, choosing CE
+    for Codex must not rewrite Claude Desktop settings, and a Claude CE
+    environment must not force Codex away from a Cloud backend selected by
+    its own onboarding wizard.
     """
     config_path = path or _codex_config_path()
     try:

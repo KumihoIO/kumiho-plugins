@@ -26,8 +26,8 @@ change its commands, hooks, or settings. Codex loads its own
 - Python 3.10 or newer
 - Network access only when the shared runtime still needs package installation
 
-The MCP entry runs `node scripts/run_kumiho_mcp.mjs`. The Node launcher
-honors `KUMIHO_PYTHON` first, then probes these candidates:
+The MCP entry runs `node scripts/run_kumiho_mcp.mjs`. The Node launcher uses
+the shared `~/.kumiho/venv` first, then `KUMIHO_PYTHON`, then these fallbacks:
 
 | Platform | Discovery order |
 | --- | --- |
@@ -65,11 +65,11 @@ codex plugin add kumiho-memory@kumiho-plugins
 ```
 
 To uninstall, run only the `codex plugin remove` command. The non-secret
-`~/.kumiho/codex.json` backend preference and Codex Cloud state are deliberately
-left intact for a later reinstall. For a complete Codex-only cleanup, remove
-`~/.kumiho/codex.json` and `~/.kumiho/codex-cloud/` after uninstalling. Do not
-remove `~/.kumiho/venv` or `~/.kumiho/kumiho_authentication.json`: Kumiho
-Desktop and Claude may be using them.
+`~/.kumiho/codex.json` backend preference is deliberately left intact for a
+later reinstall. For a complete Codex-only cleanup, remove only
+`~/.kumiho/codex.json` after uninstalling. Do not remove the rest of
+`~/.kumiho`, including its shared runtime, SDK-owned credentials, or discovery
+cache: Kumiho Desktop and Claude use the same state root.
 
 `marketplace upgrade` refreshes Git marketplaces only. Contributors testing a
 local-path marketplace should use Codex's plugin cachebuster helper before
@@ -102,25 +102,35 @@ backend verification.
 
 The only Codex-specific backend preference/config file the wizard writes is
 `~/.kumiho/codex.json`; it contains a backend name and non-secret CE endpoints,
-and Claude does not read it. Onboarding may also reuse or update the shared
-`~/.kumiho/venv`, use the Codex-only private Cloud credential directory at
-`~/.kumiho/codex-cloud/`, and ingest the bundled Codex skill documents. The
-Codex wizard never edits Claude Desktop config, Claude settings, or Claude hooks.
+and Claude does not read it. Kumiho Desktop, Claude, and Codex share the
+`~/.kumiho` state root and its `~/.kumiho/venv` Python runtime. The Kumiho
+Python SDK owns all Cloud token parsing, credential-cache loading and refresh,
+login fallback, discovery, and regional routing in that shared root. Official
+discovery state is shared at
+`~/.kumiho/official-cloud/discovery-cache.json`; the plugin never selects the
+legacy, origin-ambiguous `~/.kumiho/discovery-cache.json`. The Codex wizard
+never edits Claude Desktop config, Claude settings, or Claude hooks.
 
 Backend support is symmetric and independent: Codex can use either Cloud or
 CE, and Claude can separately use either Cloud or CE. The host-specific config
 prevents selection bleed; it does not restrict either host's backend choices.
-Codex Cloud discovery is pinned to the official control plane and its own
-`~/.kumiho/codex-cloud/discovery-cache.json`, so neither a Claude
-custom-control-plane route nor its bearer token can cross into Codex.
+Codex pins Cloud discovery to `https://control.kumiho.cloud`; the SDK then uses
+only the regional endpoint returned by that official discovery service. The
+plugin clears `KUMIHO_CONTROL_PLANE_API_URL` instead of setting an authentication
+route; the SDK authentication CLI owns its official default.
 
 ### Kumiho Cloud
 
-Request Cloud explicitly only when overriding auto-detection. If a valid Codex
-Cloud credential already exists, setup continues without a prompt. Otherwise Codex gives you an exact
+Request Cloud explicitly only when overriding auto-detection. An explicit
+`KUMIHO_AUTH_TOKEN` is passed through and has first priority. Otherwise the
+Python SDK uses the shared `~/.kumiho` credential cache, refreshes it when
+possible, and requests login when needed. Setup continues without a prompt when
+the SDK can authenticate; otherwise Codex gives you an exact
 `node ... --onboard cloud` command to run in your own terminal. That command
-uses a masked password prompt and never places a password or token in chat,
-process arguments, plugin configuration, or memory.
+uses the SDK's masked login and never places a password or token in chat,
+process arguments, plugin configuration, or memory. The same login can also be
+performed directly with `kumiho-auth login` or `kumiho-cli login` from the
+shared environment.
 
 Do not paste credentials into Codex. The memory skill treats every secret as
 an absolute no-capture exception. To force a fresh login from a checkout, run
@@ -148,17 +158,15 @@ node codex/scripts/run_kumiho_mcp.mjs --onboard ce \
   --ce-redis-url redis://127.0.0.1:6379
 ```
 
-The wizard rejects endpoints and URLs containing embedded credentials. For a
-remote CE deployment, it requires a TLS-bearing endpoint such as
-`grpcs://ce.example.com:7443`; the scheme is preserved through the MCP client
-and liveness check. Plaintext and bare endpoints are accepted only on loopback.
-Likewise, `redis://` is loopback-only; use `rediss://` for Redis on another
-machine.
+The wizard rejects endpoints and URLs containing embedded credentials. CE is a
+strictly local backend: its server, Redis, and optional LLM URLs must use an
+actual loopback host, such as `localhost`, `127.0.0.1`, or `::1`. TLS schemes
+such as `grpcs://`, `rediss://`, and `https://` do not make a non-loopback host
+eligible.
 
 An external LLM key is optional: agent-written reflection, code capture, and
-consolidation with an explicit summary are keyless.
-Plain `http://` LLM URLs are accepted only for loopback hosts; use `https://`
-for an endpoint on another machine.
+consolidation with an explicit summary are keyless. When configured for CE, the
+LLM endpoint must remain on one of the same loopback hosts.
 
 ## First run and provisioning
 
@@ -308,8 +316,9 @@ Running a checkout's `--provision` command also targets `~/.kumiho/venv`.
 
 ### Authentication or CE connection fails
 
-- Cloud: ask Codex to rerun `$kumiho-onboard` for Cloud. If secure login is
-  required, run the displayed command in your own terminal, then rerun onboarding.
+- Cloud: set an explicit `KUMIHO_AUTH_TOKEN`, or authenticate in your own
+  terminal with `kumiho-auth login` or `kumiho-cli login`, then ask Codex to
+  rerun `$kumiho-onboard` for Cloud.
 - CE: confirm the server is running, then ask Codex to rerun
   `$kumiho-onboard` for CE with the correct endpoint. Codex's choice is stored
   in `~/.kumiho/codex.json`, not in Claude settings or shell-only environment

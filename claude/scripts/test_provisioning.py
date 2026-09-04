@@ -877,9 +877,9 @@ def test_desktop_entry_on_legacy_venv_is_rewritten_to_shared_runtime(state, monk
                     "env": {
                         "SENTINEL": "keep",
                         "KUMIHO_CLAUDE_MODE": "ce",
-                        "KUMIHO_CLAUDE_SERVER_ENDPOINT": "grpcs://ce.test:7443",
-                        "UPSTASH_REDIS_URL": "rediss://redis.test:6380/0",
-                        "KUMIHO_LLM_BASE_URL": "https://llm.test/v1",
+                        "KUMIHO_CLAUDE_SERVER_ENDPOINT": "grpcs://127.0.0.1:7443",
+                        "UPSTASH_REDIS_URL": "rediss://127.0.0.1:6380/0",
+                        "KUMIHO_LLM_BASE_URL": "https://127.0.0.1:11434/v1",
                         "KUMIHO_AUTH_TOKEN": "stale-cloud-token",
                     },
                 }
@@ -889,7 +889,9 @@ def test_desktop_entry_on_legacy_venv_is_rewritten_to_shared_runtime(state, monk
     )
     monkeypatch.setattr(L, "_claude_desktop_config_paths", lambda: [config])
     monkeypatch.setenv("KUMIHO_CLAUDE_MODE", "ce")
-    monkeypatch.setenv("KUMIHO_CLAUDE_SERVER_ENDPOINT", "grpcs://ce.test:7443")
+    monkeypatch.setenv(
+        "KUMIHO_CLAUDE_SERVER_ENDPOINT", "grpcs://127.0.0.1:7443"
+    )
     monkeypatch.setenv("KUMIHO_AUTH_TOKEN", "")
 
     L._bootstrap_desktop_server_entries()
@@ -897,14 +899,79 @@ def test_desktop_entry_on_legacy_venv_is_rewritten_to_shared_runtime(state, monk
         "kumiho-memory"
     ]
     assert Path(entry["command"]) == shared_python
+    assert entry["args"] == ["-I", str(installed)]
     assert entry["env"]["SENTINEL"] == "keep"
     assert entry["env"]["KUMIHO_CLAUDE_MODE"] == "ce"
     assert entry["env"]["KUMIHO_CLAUDE_SERVER_ENDPOINT"] == (
-        "grpcs://ce.test:7443"
+        "grpcs://127.0.0.1:7443"
     )
-    assert entry["env"]["UPSTASH_REDIS_URL"] == "rediss://redis.test:6380/0"
-    assert entry["env"]["KUMIHO_LLM_BASE_URL"] == "https://llm.test/v1"
+    assert entry["env"]["UPSTASH_REDIS_URL"] == "rediss://127.0.0.1:6380/0"
+    assert entry["env"]["KUMIHO_LLM_BASE_URL"] == "https://127.0.0.1:11434/v1"
     assert "KUMIHO_AUTH_TOKEN" not in entry["env"]
+
+
+def test_new_desktop_entry_does_not_copy_ambient_cloud_token(state, monkeypatch):
+    installed = (
+        state / "plugins" / "cache" / "kumiho-plugins" / "kumiho-memory"
+        / "0.21.0" / "scripts" / "run_kumiho_mcp.py"
+    )
+    installed.parent.mkdir(parents=True)
+    installed.write_text("", encoding="utf-8")
+    monkeypatch.setattr(L, "__file__", str(installed))
+    shared_python = L._venv_python(L._venv_dir())
+    shared_python.parent.mkdir(parents=True)
+    shared_python.write_text("", encoding="utf-8")
+    config = state / "claude_desktop_config.json"
+    monkeypatch.setattr(L, "_claude_desktop_config_paths", lambda: [config])
+    monkeypatch.setenv("KUMIHO_AUTH_TOKEN", "ambient-cloud-token")
+    monkeypatch.delenv("KUMIHO_CLAUDE_MODE", raising=False)
+    monkeypatch.delenv("KUMIHO_CLAUDE_SERVER_ENDPOINT", raising=False)
+
+    L._bootstrap_desktop_server_entries()
+
+    entry = json.loads(config.read_text(encoding="utf-8"))["mcpServers"][
+        "kumiho-memory"
+    ]
+    assert entry["args"] == ["-I", str(installed)]
+    assert entry["env"]["KUMIHO_CLAUDE_HOST"] == "claude"
+    assert "KUMIHO_AUTH_TOKEN" not in entry["env"]
+
+
+def test_cloud_desktop_repair_preserves_only_existing_entry_token(state, monkeypatch):
+    installed = (
+        state / "plugins" / "cache" / "kumiho-plugins" / "kumiho-memory"
+        / "0.21.0" / "scripts" / "run_kumiho_mcp.py"
+    )
+    installed.parent.mkdir(parents=True)
+    installed.write_text("", encoding="utf-8")
+    monkeypatch.setattr(L, "__file__", str(installed))
+    shared_python = L._venv_python(L._venv_dir())
+    shared_python.parent.mkdir(parents=True)
+    shared_python.write_text("", encoding="utf-8")
+    config = state / "claude_desktop_config.json"
+    config.write_text(
+        json.dumps({"mcpServers": {"kumiho-memory": {
+            "command": "missing-python",
+            "args": ["missing-script.py"],
+            "env": {
+                "KUMIHO_AUTH_TOKEN": "legacy-entry-token",
+                "SENTINEL": "keep",
+            },
+        }}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(L, "_claude_desktop_config_paths", lambda: [config])
+    monkeypatch.setenv("KUMIHO_AUTH_TOKEN", "different-ambient-token")
+    monkeypatch.delenv("KUMIHO_CLAUDE_MODE", raising=False)
+    monkeypatch.delenv("KUMIHO_CLAUDE_SERVER_ENDPOINT", raising=False)
+
+    L._bootstrap_desktop_server_entries()
+
+    entry = json.loads(config.read_text(encoding="utf-8"))["mcpServers"][
+        "kumiho-memory"
+    ]
+    assert entry["env"]["KUMIHO_AUTH_TOKEN"] == "legacy-entry-token"
+    assert entry["env"]["SENTINEL"] == "keep"
 
 
 def test_managed_legacy_desktop_server_name_is_migrated_without_duplication(
@@ -935,6 +1002,7 @@ def test_managed_legacy_desktop_server_name_is_migrated_without_duplication(
 
     servers = json.loads(config.read_text(encoding="utf-8"))["mcpServers"]
     assert "kumiho" not in servers
+    assert servers["kumiho-memory"]["args"] == ["-I", str(installed)]
     assert servers["kumiho-memory"]["env"]["SENTINEL"] == "keep"
 
 
@@ -1043,14 +1111,16 @@ def test_the_detached_provisioner_leaves_something_to_read(state):
     assert "_provision_log_path()" in spawn, "the child must write somewhere readable"
 
 
-def test_existing_shared_runtime_is_safely_adopted_before_discovery():
+def test_existing_shared_runtime_is_safely_adopted_before_backend_routing():
     """Desktop-first installs get the hook alias under the canonical lock."""
     src = (SCRIPTS / "run_kumiho_mcp.py").read_text(encoding="utf-8")
     main = src[src.index("def main() -> int:"):]
     hydration = main.index("_hydrate_env_from_local_config()")
     runtime = main.index("python_path = _ensure_runtime()", hydration)
-    discovery = main.index("_bootstrap_server_endpoint()", runtime)
-    assert hydration < runtime < discovery
+    routing = main.index("cloud_mode = not _ce_mode_enabled()", runtime)
+    assert hydration < runtime < routing
+    assert 'with_name("run_kumiho_cloud.py")' in main[routing:]
+    assert 'with_name("run_kumiho_ce.py")' in main[routing:]
 
 
 def test_windows_interpreter_preflight_requires_a_real_pe_signature(

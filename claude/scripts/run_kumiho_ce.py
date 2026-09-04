@@ -7,9 +7,13 @@ import ipaddress
 import os
 import runpy
 import sys
+from pathlib import Path
 from urllib.parse import urlsplit
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 DEFAULT_CE_REDIS_URL = "redis://127.0.0.1:6379"
+BACKEND_BOUND_SENTINEL = "_KUMIHO_ADAPTER_BOUND"
 
 
 def _validated_endpoint(raw: str) -> str:
@@ -46,8 +50,8 @@ def _validated_endpoint(raw: str) -> str:
             loopback = ipaddress.ip_address(loopback_host).is_loopback
         except ValueError:
             loopback = False
-    if scheme in {"", "http", "grpc"} and not loopback:
-        raise ValueError("remote CE endpoints must use TLS")
+    if not loopback:
+        raise ValueError("CE endpoints must use a loopback host")
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     authority = f"{host}:{port}"
@@ -55,7 +59,7 @@ def _validated_endpoint(raw: str) -> str:
 
 
 def _validated_redis_url(raw: str) -> str:
-    """Allow plaintext Redis only on loopback; remote working memory is TLS."""
+    """Allow CE working memory only on loopback."""
     value = raw.strip()
     if not value or any(char in value for char in "\r\n\0"):
         raise ValueError("CE Redis URL is empty or invalid")
@@ -68,16 +72,15 @@ def _validated_redis_url(raw: str) -> str:
         parsed.port
     except ValueError as exc:
         raise ValueError("CE Redis URL has an invalid port") from exc
-    if parsed.scheme.lower() == "redis":
-        host = parsed.hostname.rstrip(".").lower()
-        loopback = host == "localhost"
-        if not loopback:
-            try:
-                loopback = ipaddress.ip_address(host).is_loopback
-            except ValueError:
-                loopback = False
-        if not loopback:
-            raise ValueError("remote CE Redis must use rediss://")
+    host = parsed.hostname.rstrip(".").lower()
+    loopback = host == "localhost"
+    if not loopback:
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+    if not loopback:
+        raise ValueError("CE Redis must use a loopback host")
     return value
 
 
@@ -100,8 +103,8 @@ def main() -> None:
         )
     except ValueError:
         print(
-            "[kumiho-ce] Explicit CE routing is invalid; remote server and "
-            "Redis endpoints must use TLS.",
+            "[kumiho-ce] Explicit CE routing is invalid; server and Redis "
+            "endpoints must use loopback hosts.",
             file=sys.stderr,
         )
         raise SystemExit(1) from None
@@ -184,7 +187,11 @@ def main() -> None:
     if args[:1] == ["--script"] and len(args) >= 2:
         script = args[1]
         sys.argv = [script, *args[2:]]
-        runpy.run_path(script, run_name="__main__")
+        runpy.run_path(
+            script,
+            run_name="__main__",
+            init_globals={BACKEND_BOUND_SENTINEL: True},
+        )
         return
     if args[:1] == ["--code"] and len(args) == 2:
         sys.argv = ["-c"]

@@ -101,7 +101,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/backfill_inventory.py"
 5. **Dry run first, always.** Run:
 
    ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/scripts/backfill_ingest.py" --dry-run
+   python -I "${CLAUDE_PLUGIN_ROOT}/scripts/backfill_ingest.py" --dry-run
    ```
 
    Show the user the rendered payload (every capture and triple — this is
@@ -111,7 +111,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/backfill_inventory.py"
 6. **Ingest.** Only after that confirmation:
 
    ```bash
-   python "${CLAUDE_PLUGIN_ROOT}/scripts/backfill_ingest.py" --yes
+   python -I "${CLAUDE_PLUGIN_ROOT}/scripts/backfill_ingest.py" --yes
    ```
 
    The runner replays newest→oldest through `kumiho_memory_reflect` (one

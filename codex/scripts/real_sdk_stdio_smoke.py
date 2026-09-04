@@ -48,11 +48,7 @@ def _require_route_marker(
     marker = (
         "CE mode: routing to self-hosted endpoint 127.0.0.1:9"
         if backend == "ce"
-        else (
-            "Official Cloud discovery is not ready"
-            if host == "codex"
-            else "KUMIHO_AUTH_TOKEN is not set; skipping discovery bootstrap"
-        )
+        else "Kumiho Cloud is not ready"
     )
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -195,16 +191,19 @@ def _run_host_backend(
         # lifecycle on both POSIX and Windows.
         declared = json.loads((plugin_root / ".mcp.json").read_text(encoding="utf-8"))
         manifest_command = declared["mcpServers"]["kumiho-memory"]["command"]
+        manifest_args = declared["mcpServers"]["kumiho-memory"]["args"]
         if manifest_command != "${CLAUDE_PLUGIN_DATA}/venv/bin/python":
             raise RuntimeError(f"unexpected Claude MCP command: {manifest_command!r}")
+        if manifest_args[:1] != ["-I"]:
+            raise RuntimeError(f"Claude MCP launch is not isolated: {manifest_args!r}")
         alias_python = home / "claude-plugin-data" / "venv" / "bin" / "python"
         executable = alias_python.with_name("python.exe") if os.name == "nt" else alias_python
         if backend == "cloud":
             if not executable.is_file():
                 raise RuntimeError("Claude onboarding did not create its persistent venv alias")
-            command = [str(executable), str(launcher)]
+            command = [str(executable), "-I", str(launcher)]
         else:
-            command = [str(python), str(launcher)]
+            command = [str(python), "-I", str(launcher)]
 
     process = subprocess.Popen(
         command,

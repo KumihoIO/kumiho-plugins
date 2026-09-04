@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Secure, host-isolated onboarding for the native Codex plugin.
+"""Secure onboarding for the native Codex plugin.
 
 The wizard intentionally accepts no token or password argument.  Cloud
-credentials are acquired only by ``kumiho.auth_cli`` on an interactive TTY and
-stored below ``~/.kumiho/codex-cloud``. The backend file written here contains only
-non-secret Codex backend selection, so it cannot alter Claude's plugin config.
+authentication and discovery are delegated to the Kumiho Python SDK. Claude,
+Codex, Kumiho Desktop, and the SDK CLIs share ``~/.kumiho``; the backend file
+written here contains only non-secret Codex selection and cannot alter Claude's
+plugin config.
 """
 
 from __future__ import annotations
@@ -33,7 +34,6 @@ DEFAULT_CE_REDIS_URL = "redis://127.0.0.1:6379"
 PROVISION_TIMEOUT_S = 15 * 60
 AUTH_TIMEOUT_S = 45
 OFFICIAL_CONTROL_PLANE_URL = "https://control.kumiho.cloud"
-CODEX_AUTH_DIRNAME = "codex-cloud"
 INGEST_TIMEOUT_S = 2 * 60
 
 # Installed plugin snapshots execute this file directly, while unit tests may
@@ -132,7 +132,6 @@ def _normalize_endpoint(raw: str) -> str:
             raise ValueError("CE endpoint must include a port")
         port = 443 if scheme in {"https", "grpcs"} else 80
     host = parsed.hostname
-    plaintext = scheme in {"", "http", "grpc"}
     loopback_host = host.rstrip(".").lower()
     loopback = loopback_host == "localhost"
     if not loopback:
@@ -140,8 +139,8 @@ def _normalize_endpoint(raw: str) -> str:
             loopback = ipaddress.ip_address(loopback_host).is_loopback
         except ValueError:
             loopback = False
-    if plaintext and not loopback:
-        raise ValueError("remote CE endpoints must use https:// or grpcs://")
+    if not loopback:
+        raise ValueError("CE endpoints must use a loopback host")
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     authority = f"{host}:{port}"
@@ -170,12 +169,7 @@ def _validate_url(
         parsed.port
     except ValueError as exc:
         raise ValueError(f"{label} has an invalid port") from exc
-    insecure_scheme = (
-        parsed.scheme.lower()
-        if require_tls_for_remote and parsed.scheme.lower() in {"http", "redis"}
-        else ""
-    )
-    if insecure_scheme:
+    if require_tls_for_remote:
         host = (parsed.hostname or "").rstrip(".").lower()
         loopback = host == "localhost"
         if not loopback:
@@ -184,8 +178,7 @@ def _validate_url(
             except ValueError:
                 loopback = False
         if not loopback:
-            secure = "HTTPS" if insecure_scheme == "http" else "rediss://"
-            raise ValueError(f"{label} must use {secure} outside loopback")
+            raise ValueError(f"{label} must use a loopback host")
     return value
 
 
@@ -231,9 +224,9 @@ def _child_env(
     isolate_cloud_auth: bool = False,
 ) -> dict[str, str]:
     env = os.environ.copy()
-    for key in (
+    untrusted = frozenset(key.upper() for key in (
         "CLAUDE_PLUGIN_DATA",
-        "KUMIHO_AUTH_TOKEN",
+        "KUMIHO_PLUGIN_SHARED_HOME",
         "KUMIHO_CONTROL_PLANE_URL",
         "KUMIHO_CONTROL_PLANE_API_URL",
         "KUMIHO_TENANT_HINT",
@@ -268,21 +261,44 @@ def _child_env(
         "KUMIHO_SSL_TARGET_OVERRIDE",
         "KUMIHO_SERVER_CA_FILE",
         "KUMIHO_REQUIRE_TLS",
-    ):
-        env.pop(key, None)
-    # Codex Cloud auth is always loaded from the host-isolated directory by
-    # run_kumiho_cloud.py. Never forward an ambient/Claude bearer, even for a
-    # non-auth onboarding child.
-    env.pop("KUMIHO_AUTH_TOKEN", None)
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONUSERBASE",
+        "PYTHONSTARTUP",
+        "PYTHONINSPECT",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "AWS_CA_BUNDLE",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "SSLKEYLOGFILE",
+        "OPENSSL_CONF",
+        "OPENSSL_MODULES",
+        "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+        "GRPC_PROXY",
+        "NO_GRPC_PROXY",
+        "GRPC_SSL_CIPHER_SUITES",
+        "OPENAI_BASE_URL",
+        "ANTHROPIC_BASE_URL",
+        "AZURE_OPENAI_ENDPOINT",
+        "KUMIHO_MEMORY_CODE_AUTOMINE",
+    ))
+    for actual in tuple(env):
+        if actual.upper() in untrusted:
+            env.pop(actual, None)
+    if drop_auth_token:
+        env.pop("KUMIHO_AUTH_TOKEN", None)
     env["KUMIHO_CLAUDE_HOST"] = "codex"
     config_root = _config_dir()
     env["KUMIHO_CODEX_CONFIG_ROOT"] = str(config_root)
-    env["KUMIHO_CONFIG_DIR"] = str(
-        config_root / CODEX_AUTH_DIRNAME if isolate_cloud_auth else config_root
-    )
+    env["KUMIHO_CONFIG_DIR"] = str(config_root)
+    env["KUMIHO_PLUGIN_SHARED_HOME"] = str(config_root)
     if isolate_cloud_auth:
         env["KUMIHO_CONTROL_PLANE_URL"] = OFFICIAL_CONTROL_PLANE_URL
-        env["KUMIHO_CONTROL_PLANE_API_URL"] = OFFICIAL_CONTROL_PLANE_URL
     return env
 
 
@@ -331,7 +347,7 @@ def _provision() -> Path | None:
     print("[kumiho-codex] Step 1/5: checking the shared ~/.kumiho/venv runtime...")
     try:
         result = _run(
-            [sys.executable, str(PYTHON_LAUNCHER), "--provision"],
+            [sys.executable, "-I", str(PYTHON_LAUNCHER), "--provision"],
             timeout=PROVISION_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired:
@@ -359,7 +375,7 @@ def _cached_auth_works(
 ) -> bool:
     try:
         result = _run(
-            [str(venv_python), str(CLOUD_RUNNER), "--auth-check"],
+            [str(venv_python), "-I", str(CLOUD_RUNNER), "--auth-check"],
             timeout=AUTH_TIMEOUT_S,
             capture=True,
             drop_auth_token=drop_auth_token,
@@ -396,7 +412,7 @@ def _configure_cloud(venv_python: Path, *, non_interactive: bool, reauth: bool) 
                 )
                 return False
             result = _run_interactive(
-                [str(auth), "login"],
+                [str(venv_python), "-I", "-m", "kumiho.auth_cli", "login"],
                 timeout=5 * 60,
                 drop_auth_token=reauth,
                 isolate_cloud_auth=True,
@@ -485,6 +501,7 @@ def _ingest_skills(venv_python: Path, backend: str) -> bool:
         result = _run(
             [
                 str(venv_python),
+                "-I",
                 str(INGEST_SCRIPT),
                 "--backend",
                 backend,
@@ -510,7 +527,7 @@ def _verify_runtime(venv_python: Path) -> bool:
     print("[kumiho-codex] Step 5/5: verifying the MCP runtime...")
     try:
         result = _run(
-            [sys.executable, str(PYTHON_LAUNCHER), "--self-test"],
+            [sys.executable, "-I", str(PYTHON_LAUNCHER), "--self-test"],
             timeout=PROVISION_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired:
@@ -530,6 +547,7 @@ def _verify_backend(venv_python: Path, backend: str) -> bool:
         result = _run(
             [
                 str(venv_python),
+                "-I",
                 str(VERIFY_SCRIPT),
                 "--backend",
                 backend,
@@ -654,11 +672,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Skip graph skill ingestion while still configuring the backend.",
     )
-    parser.add_argument(
-        "--config-dir",
-        metavar="PATH",
-        help="Override the Kumiho config directory (advanced/testing).",
-    )
     args = parser.parse_args(argv)
     if args.reauth and args.backend == "ce":
         parser.error("--reauth is valid only with the cloud backend")
@@ -668,8 +681,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     _configure_output()
     args = _parse_args(argv)
-    if args.config_dir:
-        os.environ["KUMIHO_CONFIG_DIR"] = str(Path(args.config_dir).expanduser())
 
     print("[kumiho-codex] Kumiho Memory onboarding for Codex")
     print("[kumiho-codex] Credentials are never accepted in chat or command arguments.")

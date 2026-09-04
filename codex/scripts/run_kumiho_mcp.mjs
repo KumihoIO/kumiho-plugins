@@ -110,19 +110,9 @@ function windowsPathExecutables(names, env = process.env) {
 
 function pythonCandidates() {
   const candidates = [];
-  const override = unquote(process.env.KUMIHO_PYTHON);
-  if (override) {
-    const checked = verifiedWindowsExecutable(override);
-    candidates.push({
-      command: checked.executable || override,
-      prefixArgs: [],
-      source: "KUMIHO_PYTHON",
-      preflightError: checked.error,
-    });
-  }
-
   // Kumiho Desktop provisions the shared runtime here. Prefer it before any
-  // host PATH lookup so Codex and Claude use the same managed installation.
+  // override or host PATH lookup so Codex and Claude use the same managed
+  // installation whenever it exists.
   const accountHome = trustedHome();
   const sharedVenvPython = process.platform === "win32"
     ? join(accountHome, ".kumiho", "venv", "Scripts", "python.exe")
@@ -133,6 +123,17 @@ function pythonCandidates() {
       prefixArgs: [],
       source: "~/.kumiho/venv",
       expectedVenv: join(accountHome, ".kumiho", "venv"),
+    });
+  }
+
+  const override = unquote(process.env.KUMIHO_PYTHON);
+  if (override) {
+    const checked = verifiedWindowsExecutable(override);
+    candidates.push({
+      command: checked.executable || override,
+      prefixArgs: [],
+      source: "KUMIHO_PYTHON",
+      preflightError: checked.error,
     });
   }
 
@@ -281,9 +282,9 @@ function mcpEnvironment(env = process.env) {
   childEnv.HOME = accountHome;
   if (process.platform === "win32") childEnv.USERPROFILE = accountHome;
   for (const key of [
-    "KUMIHO_AUTH_TOKEN",
     "KUMIHO_CONFIG_DIR",
     "KUMIHO_CLAUDE_HOME",
+    "KUMIHO_PLUGIN_SHARED_HOME",
     "KUMIHO_CODEX_CONFIG_ROOT",
     "KUMIHO_CONTROL_PLANE_URL",
     "KUMIHO_CONTROL_PLANE_API_URL",
@@ -395,7 +396,7 @@ function startPython(scriptPath, args, label, { bridgeThreadId = false } = {}) {
 
   const child = spawn(
     selected.command,
-    [...selected.prefixArgs, scriptPath, ...args],
+    [...selected.prefixArgs, "-I", scriptPath, ...args],
     {
       env: mcpEnvironment(),
       stdio: bridgeThreadId ? ["pipe", "pipe", "inherit"] : "inherit",

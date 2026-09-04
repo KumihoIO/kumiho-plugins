@@ -5,9 +5,11 @@ description: Set up, re-authenticate, repair, or switch the Kumiho Memory backen
 
 # Kumiho Memory Onboarding (Codex)
 
-Configure the native Codex plugin end to end: shared `~/.kumiho/venv` runtime, backend,
-authentication, skill ingestion, and verification. This is the Codex equivalent
-of Claude's `/kumiho-onboard`, implemented without changing Claude settings.
+Configure the native Codex plugin end to end: the `~/.kumiho` state root and
+`~/.kumiho/venv` runtime shared with Claude and Kumiho Desktop, backend,
+authentication, skill ingestion, and verification. This is the Codex
+equivalent of Claude's `/kumiho-onboard`, implemented without changing Claude
+settings.
 
 ## Absolute secret boundary
 
@@ -17,8 +19,13 @@ environment assignment, tool input, memory capture, or response. If a secret
 appears in chat, do not repeat or reflect it; tell the user to rotate it.
 
 Cloud login is permitted only in a terminal controlled directly by the user.
-The bundled login masks the password and writes Kumiho's private credential
-cache. This skill and its setup helper accept no token argument.
+The Python SDK owns token parsing, its shared credential cache, refresh, login,
+official discovery, and regional routing. Official discovery uses the shared,
+origin-specific `~/.kumiho/official-cloud/discovery-cache.json`, never the
+legacy `~/.kumiho/discovery-cache.json`. Its bundled login masks the password.
+This skill and its setup helper accept no token argument. They may pass an
+already-present `KUMIHO_AUTH_TOKEN` to the SDK verbatim, but must never read,
+transform, print, or capture its value.
 
 ## Resolve the installed entrypoint
 
@@ -48,19 +55,26 @@ node <absolute-plugin-root>/scripts/run_kumiho_mcp.mjs --onboard ...
    node <entrypoint> --onboard cloud --non-interactive
    ```
 
-   This completes automatically when the Codex-only credential cache at
-   `~/.kumiho/codex-cloud/` is already valid. Claude credentials are deliberately
-   not reused because they may belong to a custom control plane. If it reports that
-   secure interactive login is required, state the exact command without
-   `--non-interactive` as the required next action, without framing it as a
+   An explicit `KUMIHO_AUTH_TOKEN` has first priority and must pass through to
+   the SDK unchanged. Otherwise this completes automatically when the SDK can
+   use or refresh the shared credentials under `~/.kumiho`. Cloud is pinned to
+   `https://control.kumiho.cloud`, and only the SDK may choose a regional
+   endpoint from official discovery. Leave `KUMIHO_CONTROL_PLANE_API_URL`
+   unset so the SDK authentication CLI owns its official default. If secure
+   interactive login is required,
+   state the exact command without `--non-interactive` as the required next
+   action and mention that `kumiho-auth login` or `kumiho-cli login` in the
+   user's terminal are equivalent SDK login paths, without framing it as a
    question. Continue any part of the user's original request that does not
    require authentication. Do not offer to receive credentials in chat.
 3. For CE, run non-interactively. The endpoint defaults to
    `127.0.0.1:9190`; pass an explicitly requested endpoint with
    `--ce-endpoint`. Pass `--ce-redis-url` and `--ce-llm-base-url` only when the
    user supplied non-secret URLs. Never pass a URL containing embedded
-   credentials. Plaintext `redis://` is loopback-only; remote Redis must use
-   `rediss://`.
+   credentials. The CE server, Redis, and optional LLM must use an actual
+   loopback host, such as `localhost`, `127.0.0.1`, or `::1`; reject every
+   non-loopback route even when it uses a TLS scheme such as `grpcs://`,
+   `rediss://`, or `https://`.
 
    ```text
    node <entrypoint> --onboard ce --non-interactive
@@ -74,9 +88,12 @@ node <absolute-plugin-root>/scripts/run_kumiho_mcp.mjs --onboard ...
 
 ## What the helper may change
 
-- The shared Kumiho Python runtime at `~/.kumiho/venv`.
-- The Codex-only Cloud credential directory at `~/.kumiho/codex-cloud/`, but
-  only through secure terminal login.
+- The Kumiho state root and Python runtime at `~/.kumiho` and
+  `~/.kumiho/venv`, shared by Codex, Claude, and Kumiho Desktop.
+- SDK-owned credentials and discovery state under `~/.kumiho`; only secure
+  terminal login may create credentials, while SDK refresh and discovery may
+  update their caches. Official discovery is confined to the
+  `official-cloud/discovery-cache.json` cache beneath that shared root.
 - `~/.kumiho/codex.json`, containing only Codex backend selection and
   non-secret CE endpoints.
 - Kumiho graph skill documents during ingestion.

@@ -39,6 +39,7 @@ INGEST_SCRIPT = _HERE / "ingest_skills.py"
 VERIFY_SCRIPT = _HERE / "verify_backend.py"
 CE_RUNNER = _HERE / "run_kumiho_ce.py"
 CLOUD_RUNNER = _HERE / "run_kumiho_cloud.py"
+HOOK_INSTALLER = _HERE / "install_git_hook.py"
 LEGACY_SETUP = _HERE / "setup_codex.py"
 MEMORY_SKILL = _PLUGIN / "skills" / "kumiho-memory" / "SKILL.md"
 ONBOARD_SKILL = _PLUGIN / "skills" / "kumiho-onboard" / "SKILL.md"
@@ -151,7 +152,10 @@ def test_native_plugin_manifest_contract():
 
 def test_native_mcp_uses_node_launcher_without_placeholders():
     body = _load_json(MCP_CONFIG)
-    server = body.get("mcpServers", {}).get("kumiho-memory")
+    assert "mcpServers" not in body, (
+        "Codex bundled MCP config must not use Claude's camelCase wrapper"
+    )
+    server = body.get("mcp_servers", {}).get("kumiho-memory")
     assert isinstance(server, dict), "codex/.mcp.json has no kumiho-memory server"
     assert server.get("command") == "node", (
         "Codex MCP must enter through Node so Python discovery works on Windows"
@@ -207,9 +211,9 @@ def test_node_launcher_source_contract():
     source = NODE_LAUNCHER.read_text(encoding="utf-8")
 
     ordered_markers = (
-        "const override = unquote(process.env.KUMIHO_PYTHON);",
         "const sharedVenvPython = process.platform",
         'source: "~/.kumiho/venv"',
+        "const override = unquote(process.env.KUMIHO_PYTHON);",
         'const defaults = process.platform === "win32"',
         'source: "PATH"',
     )
@@ -217,8 +221,8 @@ def test_node_launcher_source_contract():
         assert marker in source, f"launcher bootstrap contract missing {marker!r}"
     positions = [source.index(marker) for marker in ordered_markers]
     assert positions == sorted(positions), (
-        "Python discovery must prefer KUMIHO_PYTHON, then the shared "
-        "~/.kumiho/venv interpreter, then PATH"
+        "Python discovery must prefer the shared ~/.kumiho/venv interpreter, "
+        "then KUMIHO_PYTHON, then PATH"
     )
     for marker in (
         'join(accountHome, ".kumiho", "venv", "Scripts", "python.exe")',
@@ -256,6 +260,7 @@ def test_node_launcher_source_contract():
     probe_end = source.index("function findPython", probe_start)
     probe_source = source[probe_start:probe_end]
     assert '"-I"' in probe_source
+    assert '[...selected.prefixArgs, "-I", scriptPath, ...args]' in source
     assert '"-S"' not in probe_source, (
         "-S prevents site.py from applying pyvenv.cfg and makes the shared "
         "venv look like base Python"
@@ -276,7 +281,6 @@ def test_node_launcher_source_contract():
             f"Codex session isolation contract missing {marker!r}"
         )
     for key in (
-        "KUMIHO_AUTH_TOKEN",
         "KUMIHO_CONFIG_DIR",
         "KUMIHO_CLAUDE_HOME",
         "KUMIHO_UPSTASH_REDIS_URL",
@@ -288,6 +292,9 @@ def test_node_launcher_source_contract():
         "UPSTASH_REDIS_REST_TOKEN",
     ):
         assert f'"{key}"' in environment_source
+    assert '"KUMIHO_AUTH_TOKEN"' not in environment_source, (
+        "Codex Cloud must pass an explicit SDK token through unchanged"
+    )
     assert "if (!(childEnv.KUMIHO_SESSION_ID" not in environment_source
     assert '(childEnv.KUMIHO_SESSION_ID ?? "").trim()' not in environment_source
     assert "childEnv.HOME = accountHome;" in environment_source
@@ -343,6 +350,9 @@ def test_codex_thread_context_contract():
         assert "install_codex_thread_context" in adapter_source, (
             f"{adapter.name} does not install Codex request context"
         )
+        assert adapter_source.index("sys.path.insert") < adapter_source.index(
+            "from codex_thread_context import"
+        ), f"{adapter.name} cannot import its sibling under python -I"
 
     canonical = (_REPO / "claude" / "scripts" / "run_kumiho_mcp.py")
     if canonical.exists():
@@ -442,23 +452,53 @@ def test_onboarding_skill_and_secret_contract():
     assert VERIFY_SCRIPT.is_file(), "native Codex backend verifier is missing"
     assert CE_RUNNER.is_file(), "explicit CE runtime adapter is missing"
     assert CLOUD_RUNNER.is_file(), "explicit Codex Cloud runtime adapter is missing"
+    assert HOOK_INSTALLER.is_file(), "Decision Memory hook installer is missing"
     ce_runner = CE_RUNNER.read_text(encoding="utf-8")
     assert 'token=""' in ce_runner
     assert "use_discovery=False" in ce_runner
     assert '"KUMIHO_AUTO_CONFIGURE"' in ce_runner
     for mode in ("--module", "--script", "--code"):
         assert mode in ce_runner
+    assert 'BACKEND_BOUND_SENTINEL = "_KUMIHO_ADAPTER_BOUND"' in ce_runner
+    assert "init_globals={BACKEND_BOUND_SENTINEL: True}" in ce_runner
 
     cloud_runner = CLOUD_RUNNER.read_text(encoding="utf-8")
     for marker in (
         "https://control.kumiho.cloud",
-        'CODEX_AUTH_DIRNAME = "codex-cloud"',
+        'SHARED_HOME_HANDOFF_ENV = "KUMIHO_PLUGIN_SHARED_HOME"',
+        'else Path.home() / ".kumiho"',
+        'OFFICIAL_DISCOVERY_CACHE_DIRNAME = "official-cloud"',
         '"discovery-cache.json"',
-        "force_refresh=True",
-        '"KUMIHO_AUTO_CONFIGURE"',
-        '"KUMIHO_AUTH_TOKEN"',
+        "def _prepare_environment()",
+        "def _configure_cloud(",
+        "id_token=None",
+        "ensure_token(interactive=False)",
+        "force_refresh=force_refresh",
+        "authenticated = _configure_cloud(force_refresh=True)",
+        "kumiho-auth login / kumiho-cli login",
+        "refuse_ce_fallback",
+        "refresh_cloud_client",
+        'BACKEND_BOUND_SENTINEL = "_KUMIHO_ADAPTER_BOUND"',
+        "init_globals={BACKEND_BOUND_SENTINEL: True}",
+        "_CloudUnavailableClient",
+        "if not authenticated and len(sys.argv) > 1",
     ):
         assert marker in cloud_runner
+    for forbidden in (
+        "codex-cloud",
+        "CODEX_AUTH_DIRNAME",
+        "_clean_token_candidate",
+        "_cached_token_candidates",
+        "_refreshable_cache_candidates",
+        "_client_from_official_discovery",
+        "kumiho_authentication.json",
+        "api_token",
+        "json.loads(",
+        "base64",
+    ):
+        assert forbidden not in cloud_runner, (
+            f"Cloud adapter still owns SDK authentication detail {forbidden!r}"
+        )
 
     onboarding = ONBOARD_SKILL.read_text(encoding="utf-8")
     assert re.search(r"(?m)^name:\s*kumiho-onboard\s*$", onboarding)
@@ -467,8 +507,15 @@ def test_onboarding_skill_and_secret_contract():
         "--onboard ce --non-interactive",
         "Never ask the user to paste",
         "must not edit Claude",
+        "shared credentials under `~/.kumiho`",
+        "`KUMIHO_AUTH_TOKEN` has first priority",
+        "https://control.kumiho.cloud",
+        "kumiho-auth login",
+        "kumiho-cli login",
+        "non-loopback route",
     ):
         assert marker in onboarding, f"onboarding skill is missing {marker!r}"
+    assert "~/.kumiho/codex-cloud" not in onboarding
 
     memory = MEMORY_SKILL.read_text(encoding="utf-8")
     for marker in (
@@ -487,10 +534,28 @@ def test_onboarding_skill_and_secret_contract():
     assert not re.search(
         r"add_argument\(\s*[\"']--token[\"']", helper
     ), "Codex onboarding must never accept a credential in argv"
+    assert '"--config-dir"' not in helper, (
+        "onboarding must use the shared ~/.kumiho runtime selected at MCP startup"
+    )
     assert re.search(r"bounded_proc\.run\(\s*command\s*,", helper), (
         "onboarding children need a process-tree-bounded timeout"
     )
     assert 'str(CLOUD_RUNNER), "--auth-check"' in helper
+    for marker in (
+        '[sys.executable, "-I", str(PYTHON_LAUNCHER), "--provision"]',
+        '[str(venv_python), "-I", str(CLOUD_RUNNER), "--auth-check"]',
+        'str(venv_python),\n                "-I",\n                str(INGEST_SCRIPT)',
+        '[sys.executable, "-I", str(PYTHON_LAUNCHER), "--self-test"]',
+        'str(venv_python),\n                "-I",\n                str(VERIFY_SCRIPT)',
+        '[str(venv_python), "-I", "-m", "kumiho.auth_cli", "login"]',
+    ):
+        assert marker in helper, f"onboarding Python isolation missing {marker!r}"
+    verifier = VERIFY_SCRIPT.read_text(encoding="utf-8")
+    assert "sys.path.insert(0, str(SCRIPT_DIR))" in verifier
+    ingest_helper = INGEST_SCRIPT.read_text(encoding="utf-8")
+    assert "sys.path.insert(0, str(SCRIPT_DIR))" in ingest_helper, (
+        "isolated skill ingestion cannot resolve its sibling Cloud adapter"
+    )
     assert "def _run_interactive(" in helper, (
         "secure Cloud login must retain the user's terminal"
     )
@@ -498,6 +563,11 @@ def test_onboarding_skill_and_secret_contract():
     interactive = interactive[:interactive.index("\n\ndef ", 1)]
     assert "bounded_proc.run(" in interactive
     assert "stdout=None" in interactive and "stderr=None" in interactive
+
+    hook_installer = HOOK_INSTALLER.read_text(encoding="utf-8")
+    assert "f'\"{python}\" -I \"{worker}\"" in hook_installer, (
+        "the git hook must isolate the shared worker from repository imports"
+    )
 
     onboarding_skill = ONBOARD_SKILL.read_text(encoding="utf-8")
     assert "without framing it as a\n   question" in onboarding_skill
@@ -584,6 +654,19 @@ def test_codex_backend_config_is_host_isolated():
         "KUMIHO_CODEX_CE_ENDPOINT",
         "KUMIHO_CODEX_CE_REDIS_URL",
         "KUMIHO_CODEX_CE_LLM_BASE_URL",
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONUSERBASE",
+        "PYTHONSTARTUP",
+        "PYTHONINSPECT",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "REQUESTS_CA_BUNDLE",
+        "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+        "OPENAI_BASE_URL",
+        "ANTHROPIC_BASE_URL",
+        "AZURE_OPENAI_ENDPOINT",
+        "KUMIHO_MEMORY_CODE_AUTOMINE",
         "KUMIHO_SERVER_USE_TLS",
         "KUMIHO_SERVER_AUTHORITY",
         "KUMIHO_SSL_TARGET_OVERRIDE",
@@ -610,7 +693,7 @@ def test_codex_backend_config_is_host_isolated():
             os.environ["KUMIHO_LOCAL_REDIS_URL"] = "redis://local-alias:6379"
             os.environ["UPSTASH_REDIS_REST_URL"] = "https://redis-rest.example.test"
             os.environ["UPSTASH_REDIS_REST_TOKEN"] = "must-be-scrubbed"
-            os.environ["KUMIHO_AUTH_TOKEN"] = "claude-custom-control-plane-token"
+            os.environ["KUMIHO_AUTH_TOKEN"] = "explicit-api-token"
             os.environ["KUMIHO_LLM_BASE_URL"] = "http://claude-only:11434/v1"
             os.environ["KUMIHO_CONTROL_PLANE_URL"] = "https://untrusted.example.test"
             os.environ["KUMIHO_CONTROL_PLANE_API_URL"] = "https://untrusted.example.test"
@@ -643,7 +726,7 @@ def test_codex_backend_config_is_host_isolated():
                 "KUMIHO_REQUIRE_TLS",
             ):
                 assert key not in os.environ, f"Cloud did not neutralize {key}"
-            assert os.environ["KUMIHO_AUTH_TOKEN"] == ""
+            assert os.environ["KUMIHO_AUTH_TOKEN"] == "explicit-api-token"
             shared = _load_module(
                 _HERE / "_vendored_launcher.py",
                 "kumiho_shared_hydration_test",
@@ -668,7 +751,6 @@ def test_codex_backend_config_is_host_isolated():
             )
             shared._hydrate_env_from_claude_settings = lambda: None
             shared._hydrate_env_from_plugin_mcp = lambda: None
-            shared._load_bearer_token = lambda: None
             shared._hydrate_env_from_local_config()
             assert not shared._ce_mode_enabled(), (
                 "shared hydration overrode Codex's explicit Cloud backend"
@@ -677,6 +759,7 @@ def test_codex_backend_config_is_host_isolated():
             assert "KUMIHO_CONTROL_PLANE_URL" not in os.environ
             assert "KUMIHO_CONTROL_PLANE_API_URL" not in os.environ
             assert "KUMIHO_TENANT_HINT" not in os.environ
+            assert os.environ["KUMIHO_AUTH_TOKEN"] == "explicit-api-token"
 
             path.write_text(
                 json.dumps({
@@ -704,23 +787,6 @@ def test_codex_backend_config_is_host_isolated():
             assert os.environ["KUMIHO_SERVER_ENDPOINT"] == "127.0.0.1:9190"
             assert "KUMIHO_LOCAL_SERVER_ENDPOINT" not in os.environ
 
-            path.write_text(
-                json.dumps({
-                    "schema_version": 1,
-                    "backend": "ce",
-                    "endpoint": "grpcs://ce.example.test:7443",
-                }),
-                encoding="utf-8",
-            )
-            os.environ["UPSTASH_REDIS_URL"] = "redis://claude-only:6379"
-            os.environ["KUMIHO_LLM_BASE_URL"] = "http://claude-only:11434/v1"
-            launcher._apply_codex_config(path)
-            assert os.environ["KUMIHO_CLAUDE_SERVER_ENDPOINT"] == (
-                "grpcs://ce.example.test:7443"
-            )
-            assert os.environ["UPSTASH_REDIS_URL"] == "redis://127.0.0.1:6379"
-            assert "KUMIHO_LLM_BASE_URL" not in os.environ
-
             for invalid in (
                 {"schema_version": 1, "backend": "ce"},
                 {"schema_version": 1, "backend": "unknown"},
@@ -744,8 +810,19 @@ def test_codex_backend_config_is_host_isolated():
                 {
                     "schema_version": 1,
                     "backend": "ce",
-                    "endpoint": "grpcs://ce.example.test:9190",
-                    "llm_base_url": "http://llm.example.test/v1",
+                    "endpoint": "grpcs://ce.example.test:7443",
+                },
+                {
+                    "schema_version": 1,
+                    "backend": "ce",
+                    "endpoint": "127.0.0.1:9190",
+                    "redis_url": "rediss://cache.example.test:6380/0",
+                },
+                {
+                    "schema_version": 1,
+                    "backend": "ce",
+                    "endpoint": "127.0.0.1:9190",
+                    "llm_base_url": "https://llm.example.test/v1",
                 },
             ):
                 path.write_text(json.dumps(invalid), encoding="utf-8")
@@ -824,7 +901,12 @@ def test_onboarding_config_helpers_are_atomic_and_secret_free():
         "KUMIHO_CODEX_CE_REDIS_URL",
         "KUMIHO_CODEX_CE_LLM_BASE_URL",
     )
-    controlled = (*scrubbed, "KUMIHO_CONFIG_DIR", "KUMIHO_AUTH_TOKEN")
+    controlled = (
+        *scrubbed,
+        "KUMIHO_CONFIG_DIR",
+        "KUMIHO_PLUGIN_SHARED_HOME",
+        "KUMIHO_AUTH_TOKEN",
+    )
     prior_env = {key: os.environ.get(key) for key in controlled}
     present_env = {key for key in controlled if key in os.environ}
     try:
@@ -836,11 +918,19 @@ def test_onboarding_config_helpers_are_atomic_and_secret_free():
         )
         os.environ["KUMIHO_CONTROL_PLANE_API_URL"] = "https://untrusted.example.test"
         os.environ["KUMIHO_LLM_BASE_URL"] = "http://claude-only:11434/v1"
+        os.environ["KUMIHO_PLUGIN_SHARED_HOME"] = "C:/untrusted/shared-home"
         os.environ["KUMIHO_AUTH_TOKEN"] = "explicit-codex-token"
         child_env = onboard._child_env()
         for key in scrubbed:
             assert key not in child_env, f"onboarding child inherited {key}"
-        assert "KUMIHO_AUTH_TOKEN" not in child_env
+        assert child_env["KUMIHO_AUTH_TOKEN"] == "explicit-codex-token"
+        assert child_env["KUMIHO_PLUGIN_SHARED_HOME"] == str(onboard._config_dir())
+        cloud_env = onboard._child_env(isolate_cloud_auth=True)
+        assert cloud_env["KUMIHO_CONTROL_PLANE_URL"] == (
+            "https://control.kumiho.cloud"
+        )
+        assert "KUMIHO_CONTROL_PLANE_API_URL" not in cloud_env
+        assert cloud_env["KUMIHO_AUTH_TOKEN"] == "explicit-codex-token"
         assert "KUMIHO_AUTH_TOKEN" not in onboard._child_env(
             drop_auth_token=True
         )
@@ -849,6 +939,7 @@ def test_onboarding_config_helpers_are_atomic_and_secret_free():
             expected = Path(temp) / "venv"
             expected /= "Scripts/python.exe" if os.name == "nt" else "bin/python"
             assert onboard._venv_python() == expected
+            assert onboard._child_env()["KUMIHO_PLUGIN_SHARED_HOME"] == temp
     finally:
         for key in controlled:
             if key in present_env:
@@ -858,15 +949,22 @@ def test_onboarding_config_helpers_are_atomic_and_secret_free():
     assert onboard._normalize_endpoint("http://127.0.0.1:9190/") == (
         "http://127.0.0.1:9190"
     )
-    assert onboard._normalize_endpoint("grpcs://ce.example.test:7443") == (
-        "grpcs://ce.example.test:7443"
+    assert onboard._normalize_endpoint("grpcs://[::1]:7443") == (
+        "grpcs://[::1]:7443"
     )
-    try:
-        onboard._normalize_endpoint("grpc://ce.example.test:9190")
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("remote plaintext CE endpoint was accepted")
+    assert onboard._normalize_endpoint("localhost:9190") == "localhost:9190"
+    assert onboard._normalize_endpoint("127.0.0.2:9190") == "127.0.0.2:9190"
+    for value in (
+        "grpc://ce.example.test:9190",
+        "grpcs://ce.example.test:7443",
+        "https://ce.example.test:443",
+    ):
+        try:
+            onboard._normalize_endpoint(value)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"non-approved CE endpoint was accepted: {value}")
     try:
         onboard._normalize_endpoint("https://user:secret@example.test:9190")
     except ValueError:
@@ -899,17 +997,23 @@ def test_onboarding_config_helpers_are_atomic_and_secret_free():
         label="LLM URL",
         require_tls_for_remote=True,
     ) == "http://127.0.0.1:11434/v1"
-    try:
-        onboard._validate_url(
-            "http://llm.example.test/v1",
-            schemes={"http", "https"},
-            label="LLM URL",
-            require_tls_for_remote=True,
-        )
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("remote plaintext LLM URL was accepted")
+    for value, schemes, label in (
+        ("http://llm.example.test/v1", {"http", "https"}, "LLM URL"),
+        ("https://llm.example.test/v1", {"http", "https"}, "LLM URL"),
+        ("redis://cache.example.test:6379/0", {"redis", "rediss"}, "Redis URL"),
+        ("rediss://cache.example.test:6380/0", {"redis", "rediss"}, "Redis URL"),
+    ):
+        try:
+            onboard._validate_url(
+                value,
+                schemes=schemes,
+                label=label,
+                require_tls_for_remote=True,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"remote {label} was accepted: {value}")
 
     with tempfile.TemporaryDirectory(prefix="kumiho-codex-write-") as temp:
         path = Path(temp) / "nested" / "codex.json"
@@ -934,9 +1038,9 @@ def test_onboarding_preserves_existing_ce_configuration():
             original = {
                 "schema_version": 1,
                 "backend": "ce",
-                "endpoint": "127.0.0.1:9292",
-                "redis_url": "rediss://cache.example.test:6380/0",
-                "llm_base_url": "https://llm.example.test/v1",
+                "endpoint": "grpcs://[::1]:9292",
+                "redis_url": "rediss://localhost:6380/0",
+                "llm_base_url": "https://127.0.0.1:11434/v1",
             }
             onboard._write_config(original)
             existing = onboard._existing_config()
@@ -991,32 +1095,23 @@ def test_automatic_onboarding_refuses_an_invalid_existing_config():
 
 
 def test_ingestion_configures_an_explicit_backend_client():
-    ingest = _load_module(INGEST_SCRIPT, "kumiho_codex_ingest_client_test")
     fake_kumiho = types.ModuleType("kumiho")
     fake_kumiho.__path__ = []
     fake_auth = types.ModuleType("kumiho.auth_cli")
     cloud_client = object()
     ce_client = object()
-    calls = {}
+    calls = {"ensure": 0}
 
-    def ensure_token(interactive=False):
+    def ensure_token(*, interactive=False):
+        calls["ensure"] += 1
         assert interactive is False
-        for key in (
-            "KUMIHO_CONTROL_PLANE_API_URL",
-            "KUMIHO_FIREBASE_API_KEY",
-            "KUMIHO_FIREBASE_ID_TOKEN",
-            "KUMIHO_FIREBASE_PROJECT_ID",
-            "KUMIHO_USE_CONTROL_PLANE_TOKEN",
-            "KUMIHO_WORKSPACE_ROOT",
-            "KUMIHO_ENV_FILE",
-        ):
-            assert key not in os.environ, f"auth routing override leaked: {key}"
-        return "public-token", "cache"
+        return "sdk-private-token", "cache"
 
     fake_auth.ensure_token = ensure_token
 
     def cloud_factory(**kwargs):
         calls["cloud"] = kwargs
+        calls["cloud_token"] = os.environ.get("KUMIHO_AUTH_TOKEN")
         return cloud_client
 
     def ce_factory(**kwargs):
@@ -1028,12 +1123,15 @@ def test_ingestion_configures_an_explicit_backend_client():
     fake_kumiho.connect = ce_factory
     fake_kumiho.configure_default_client = configured.append
 
-    module_names = ("kumiho", "kumiho.auth_cli", "kumiho._token_loader")
+    module_names = ("kumiho", "kumiho.auth_cli", "run_kumiho_cloud")
     prior_modules = {name: sys.modules.get(name) for name in module_names}
+    prior_sys_path = sys.path[:]
     controlled_env = (
         "KUMIHO_CONFIG_DIR",
         "KUMIHO_CODEX_CONFIG_ROOT",
+        "KUMIHO_PLUGIN_SHARED_HOME",
         "KUMIHO_AUTH_TOKEN",
+        "KUMIHO_AUTO_CONFIGURE",
         "KUMIHO_CLAUDE_MODE",
         "KUMIHO_CLAUDE_SERVER_ENDPOINT",
         "KUMIHO_LOCAL_SERVER_ENDPOINT",
@@ -1041,7 +1139,9 @@ def test_ingestion_configures_an_explicit_backend_client():
         "KUMIHO_SERVER_ADDRESS",
         "UPSTASH_REDIS_URL",
         "KUMIHO_LLM_BASE_URL",
+        "KUMIHO_CONTROL_PLANE_URL",
         "KUMIHO_CONTROL_PLANE_API_URL",
+        "KUMIHO_DISCOVERY_CACHE_FILE",
         "KUMIHO_FIREBASE_API_KEY",
         "KUMIHO_FIREBASE_ID_TOKEN",
         "KUMIHO_FIREBASE_PROJECT_ID",
@@ -1058,17 +1158,25 @@ def test_ingestion_configures_an_explicit_backend_client():
     present_env = {key for key in controlled_env if key in os.environ}
     temp_config = tempfile.TemporaryDirectory(prefix="kumiho-ingest-config-")
     try:
-        config_root = Path(temp_config.name)
-        auth_dir = config_root / "codex-cloud"
-        auth_dir.mkdir()
-        (auth_dir / "kumiho_authentication.json").write_text(
-            json.dumps({"api_token": "public-token"}),
-            encoding="utf-8",
-        )
-        os.environ["KUMIHO_CONFIG_DIR"] = str(config_root)
+        # Model ``python -I ingest_skills.py`` without starting a subprocess:
+        # neither CWD nor the script directory is initially importable. The
+        # helper must add only its trusted sibling directory before importing
+        # run_kumiho_cloud.
+        sys.path[:] = [
+            entry for entry in sys.path
+            if entry not in {"", str(_HERE)}
+        ]
+        sys.modules.pop("run_kumiho_cloud", None)
+        ingest = _load_module(INGEST_SCRIPT, "kumiho_codex_ingest_client_test")
+        assert sys.path[0] == str(_HERE)
+
+        fake_home = Path(temp_config.name)
+        shared_root = fake_home / ".kumiho"
+        os.environ["KUMIHO_CONFIG_DIR"] = str(shared_root)
+        os.environ["KUMIHO_PLUGIN_SHARED_HOME"] = str(shared_root)
+        os.environ["KUMIHO_AUTH_TOKEN"] = "explicit-api-token"
         sys.modules["kumiho"] = fake_kumiho
         sys.modules["kumiho.auth_cli"] = fake_auth
-        sys.modules.pop("kumiho._token_loader", None)
         os.environ["KUMIHO_CLAUDE_MODE"] = "ce"
         os.environ["KUMIHO_LOCAL_SERVER_ENDPOINT"] = "wrong-host:9190"
         for key in (
@@ -1086,13 +1194,27 @@ def test_ingestion_configures_an_explicit_backend_client():
         os.environ["KUMIHO_SSL_TARGET_OVERRIDE"] = "wrong-target"
         os.environ["KUMIHO_SERVER_CA_FILE"] = "wrong-ca.pem"
         ingest._configure_backend("cloud", {"backend": "cloud"})
+        imported_adapter = sys.modules.get("run_kumiho_cloud")
+        assert imported_adapter is not None
+        assert Path(imported_adapter.__file__).resolve() == CLOUD_RUNNER.resolve()
         assert calls["cloud"] == {
-            "id_token": "public-token",
+            "id_token": None,
             "control_plane_url": "https://control.kumiho.cloud",
-            "cache_path": str(auth_dir / "discovery-cache.json"),
-            "force_refresh": True,
+            "cache_path": str(
+                shared_root / "official-cloud" / "discovery-cache.json"
+            ),
+            "force_refresh": False,
         }
+        assert calls["cloud_token"] == "explicit-api-token"
+        assert calls["ensure"] == 0
         assert configured[-1] is cloud_client
+        assert os.environ["KUMIHO_CONFIG_DIR"] == str(shared_root)
+        assert "KUMIHO_PLUGIN_SHARED_HOME" not in os.environ
+        assert os.environ["KUMIHO_AUTH_TOKEN"] == "explicit-api-token"
+        assert os.environ["KUMIHO_CONTROL_PLANE_URL"] == (
+            "https://control.kumiho.cloud"
+        )
+        assert "KUMIHO_CONTROL_PLANE_API_URL" not in os.environ
         assert "KUMIHO_CLAUDE_MODE" not in os.environ
         assert "KUMIHO_LOCAL_SERVER_ENDPOINT" not in os.environ
         assert os.environ["KUMIHO_REQUIRE_TLS"] == "1"
@@ -1168,6 +1290,7 @@ def test_ingestion_configures_an_explicit_backend_client():
             assert kwargs["tags"] == ["codex", "kumiho-memory"]
             assert kwargs["dry_run"] is True
     finally:
+        sys.path[:] = prior_sys_path
         for name, previous in prior_modules.items():
             if previous is None:
                 sys.modules.pop(name, None)
@@ -1184,15 +1307,34 @@ def test_ingestion_configures_an_explicit_backend_client():
 def test_codex_ce_adapter_pins_scheme_tls_and_empty_token():
     adapter = _load_module(CE_RUNNER, "kumiho_codex_ce_adapter_test")
     assert adapter._validated_endpoint("127.0.0.1:9190") == "127.0.0.1:9190"
-    assert adapter._validated_endpoint("grpcs://ce.example.test:7443") == (
-        "grpcs://ce.example.test:7443"
+    assert adapter._validated_endpoint("grpcs://[::1]:7443") == (
+        "grpcs://[::1]:7443"
     )
-    try:
-        adapter._validated_endpoint("grpc://ce.example.test:9190")
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("CE adapter accepted a remote plaintext endpoint")
+    assert adapter._validated_endpoint("127.0.0.2:9190") == "127.0.0.2:9190"
+    assert adapter._validated_redis_url("rediss://localhost:6380/0") == (
+        "rediss://localhost:6380/0"
+    )
+    for value in (
+        "grpc://ce.example.test:9190",
+        "grpcs://ce.example.test:7443",
+        "https://ce.example.test:443",
+    ):
+        try:
+            adapter._validated_endpoint(value)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"CE adapter accepted non-approved endpoint {value}")
+    for value in (
+        "redis://cache.example.test:6379/0",
+        "rediss://cache.example.test:6380/0",
+    ):
+        try:
+            adapter._validated_redis_url(value)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"CE adapter accepted remote Redis URL {value}")
     fake_kumiho = types.ModuleType("kumiho")
     calls = {"configured": []}
     client = object()
@@ -1234,7 +1376,7 @@ def test_codex_ce_adapter_pins_scheme_tls_and_empty_token():
         sys.modules["kumiho"] = fake_kumiho
         sys.argv = [str(CE_RUNNER), "--code", "pass"]
         os.environ.update({
-            "KUMIHO_SERVER_ENDPOINT": "grpcs://ce.example.test:7443",
+            "KUMIHO_SERVER_ENDPOINT": "grpcs://[::1]:7443",
             "KUMIHO_SERVER_USE_TLS": "false",
             "KUMIHO_SERVER_AUTHORITY": "stale-authority",
             "KUMIHO_SSL_TARGET_OVERRIDE": "stale-target",
@@ -1255,7 +1397,7 @@ def test_codex_ce_adapter_pins_scheme_tls_and_empty_token():
         })
         adapter.main()
         assert calls["connect"] == {
-            "endpoint": "grpcs://ce.example.test:7443",
+            "endpoint": "grpcs://[::1]:7443",
             "token": "",
             "enable_auto_login": False,
             "use_discovery": False,
@@ -1303,6 +1445,7 @@ def test_codex_cloud_adapter_pins_official_discovery_and_env_tokens():
     controlled = (
         "KUMIHO_CONFIG_DIR",
         "KUMIHO_CODEX_CONFIG_ROOT",
+        "KUMIHO_PLUGIN_SHARED_HOME",
         "KUMIHO_AUTH_TOKEN",
         "KUMIHO_AUTO_CONFIGURE",
         "KUMIHO_CONTROL_PLANE_URL",
@@ -1310,16 +1453,25 @@ def test_codex_cloud_adapter_pins_official_discovery_and_env_tokens():
         "KUMIHO_DISCOVERY_CACHE_FILE",
         "KUMIHO_CLAUDE_DISCOVERY_USER_AGENT",
         "KUMIHO_TENANT_HINT",
+        "KUMIHO_FIREBASE_API_KEY",
+        "KUMIHO_FIREBASE_ID_TOKEN",
+        "KUMIHO_FIREBASE_PROJECT_ID",
+        "KUMIHO_USE_CONTROL_PLANE_TOKEN",
+        "KUMIHO_WORKSPACE_ROOT",
+        "KUMIHO_ENV_FILE",
         "KUMIHO_SERVER_ENDPOINT",
         "KUMIHO_SERVER_ADDRESS",
         "KUMIHO_CLAUDE_MODE",
         "KUMIHO_CLAUDE_SERVER_ENDPOINT",
+        "KUMIHO_LOCAL_SERVER_ENDPOINT",
+        "KUMIHO_LOCAL_SERVER_PORT",
         "KUMIHO_SERVER_USE_TLS",
         "KUMIHO_SERVER_AUTHORITY",
         "KUMIHO_SSL_TARGET_OVERRIDE",
         "KUMIHO_SERVER_CA_FILE",
         "KUMIHO_REQUIRE_TLS",
         "KUMIHO_LLM_BASE_URL",
+        "UPSTASH_REDIS_URL",
         "KUMIHO_UPSTASH_REDIS_URL",
         "KUMIHO_MEMORY_PROXY_URL",
         "KUMIHO_MCP_HOSTED",
@@ -1330,16 +1482,16 @@ def test_codex_cloud_adapter_pins_official_discovery_and_env_tokens():
     )
     prior_env = {key: os.environ.get(key) for key in controlled}
     present_env = {key for key in controlled if key in os.environ}
-    module_names = (
-        "kumiho",
-        "kumiho.auth_cli",
-        "kumiho.discovery",
-    )
+    module_names = ("kumiho", "kumiho.auth_cli")
     prior_modules = {name: sys.modules.get(name) for name in module_names}
     try:
         with tempfile.TemporaryDirectory(prefix="kumiho-cloud-adapter-") as temp:
+            fake_home = Path(temp)
+            shared_root = fake_home / ".kumiho"
             os.environ.update({
-                "KUMIHO_CONFIG_DIR": temp,
+                "KUMIHO_CONFIG_DIR": str(fake_home / "redirected"),
+                "KUMIHO_CODEX_CONFIG_ROOT": str(fake_home / "codex-only"),
+                "KUMIHO_PLUGIN_SHARED_HOME": str(shared_root),
                 "KUMIHO_AUTH_TOKEN": "Bearer environment-token",
                 "KUMIHO_AUTO_CONFIGURE": "1",
                 "KUMIHO_CONTROL_PLANE_URL": "https://untrusted.example.test",
@@ -1347,13 +1499,24 @@ def test_codex_cloud_adapter_pins_official_discovery_and_env_tokens():
                 "KUMIHO_DISCOVERY_CACHE_FILE": str(Path(temp) / "claude-cache.json"),
                 "KUMIHO_CLAUDE_DISCOVERY_USER_AGENT": "kumiho-codex/0.21.0",
                 "KUMIHO_TENANT_HINT": "claude-tenant",
+                "KUMIHO_FIREBASE_API_KEY": "untrusted-api-key",
+                "KUMIHO_FIREBASE_ID_TOKEN": "untrusted-id-token",
+                "KUMIHO_FIREBASE_PROJECT_ID": "untrusted-project",
+                "KUMIHO_USE_CONTROL_PLANE_TOKEN": "1",
+                "KUMIHO_WORKSPACE_ROOT": str(fake_home / "untrusted-workspace"),
+                "KUMIHO_ENV_FILE": str(fake_home / "untrusted.env"),
                 "KUMIHO_SERVER_ENDPOINT": "untrusted.example.test:443",
+                "KUMIHO_SERVER_ADDRESS": "untrusted.example.test:443",
                 "KUMIHO_CLAUDE_MODE": "ce",
+                "KUMIHO_CLAUDE_SERVER_ENDPOINT": "untrusted.example.test:443",
+                "KUMIHO_LOCAL_SERVER_ENDPOINT": "untrusted.example.test:443",
+                "KUMIHO_LOCAL_SERVER_PORT": "9190",
                 "KUMIHO_SERVER_USE_TLS": "false",
                 "KUMIHO_SERVER_AUTHORITY": "wrong-authority",
                 "KUMIHO_SSL_TARGET_OVERRIDE": "wrong-target",
                 "KUMIHO_SERVER_CA_FILE": "wrong-ca.pem",
                 "KUMIHO_LLM_BASE_URL": "http://127.0.0.1:9/v1",
+                "UPSTASH_REDIS_URL": "redis://wrong.example.test:6379",
                 "KUMIHO_UPSTASH_REDIS_URL": "redis://wrong.example.test:6379",
                 "KUMIHO_MEMORY_PROXY_URL": "https://wrong.example.test",
                 "KUMIHO_MCP_HOSTED": "1",
@@ -1362,31 +1525,44 @@ def test_codex_cloud_adapter_pins_official_discovery_and_env_tokens():
                 "UPSTASH_REDIS_REST_URL": "https://wrong.example.test",
                 "UPSTASH_REDIS_REST_TOKEN": "must-not-leak",
             })
-            cache_path = adapter._prepare_environment()
-            auth_dir = Path(temp) / "codex-cloud"
-            assert cache_path == auth_dir / "discovery-cache.json"
-            assert os.environ["KUMIHO_CODEX_CONFIG_ROOT"] == temp
-            assert os.environ["KUMIHO_CONFIG_DIR"] == str(auth_dir)
+            prepared_root = adapter._prepare_environment()
+            cache_path = shared_root / "official-cloud" / "discovery-cache.json"
+            assert prepared_root == shared_root
+            assert "KUMIHO_CODEX_CONFIG_ROOT" not in os.environ
+            assert "KUMIHO_PLUGIN_SHARED_HOME" not in os.environ
+            assert os.environ["KUMIHO_CONFIG_DIR"] == str(shared_root)
+            assert os.environ["KUMIHO_AUTH_TOKEN"] == "Bearer environment-token"
             assert os.environ["KUMIHO_CONTROL_PLANE_URL"] == (
                 "https://control.kumiho.cloud"
             )
+            assert "KUMIHO_CONTROL_PLANE_API_URL" not in os.environ
             assert os.environ["KUMIHO_DISCOVERY_CACHE_FILE"] == str(cache_path)
+            assert cache_path != shared_root / "discovery-cache.json"
             for key in (
                 "KUMIHO_AUTO_CONFIGURE",
-                "KUMIHO_CONTROL_PLANE_API_URL",
                 "KUMIHO_TENANT_HINT",
+                "KUMIHO_FIREBASE_API_KEY",
+                "KUMIHO_FIREBASE_ID_TOKEN",
+                "KUMIHO_FIREBASE_PROJECT_ID",
+                "KUMIHO_USE_CONTROL_PLANE_TOKEN",
+                "KUMIHO_WORKSPACE_ROOT",
+                "KUMIHO_ENV_FILE",
                 "KUMIHO_SERVER_ENDPOINT",
+                "KUMIHO_SERVER_ADDRESS",
                 "KUMIHO_CLAUDE_MODE",
+                "KUMIHO_CLAUDE_SERVER_ENDPOINT",
+                "KUMIHO_LOCAL_SERVER_ENDPOINT",
+                "KUMIHO_LOCAL_SERVER_PORT",
                 "KUMIHO_SERVER_USE_TLS",
                 "KUMIHO_SERVER_AUTHORITY",
                 "KUMIHO_SSL_TARGET_OVERRIDE",
                 "KUMIHO_SERVER_CA_FILE",
-                "KUMIHO_AUTH_TOKEN",
                 "KUMIHO_UPSTASH_REDIS_URL",
                 "KUMIHO_MEMORY_PROXY_URL",
                 "KUMIHO_MCP_HOSTED",
                 "KUMIHO_HOSTED_LOCAL_REDIS",
                 "KUMIHO_LOCAL_REDIS_URL",
+                "UPSTASH_REDIS_URL",
                 "UPSTASH_REDIS_REST_URL",
                 "UPSTASH_REDIS_REST_TOKEN",
             ):
@@ -1397,153 +1573,115 @@ def test_codex_cloud_adapter_pins_official_discovery_and_env_tokens():
             fake_kumiho = types.ModuleType("kumiho")
             fake_kumiho.__path__ = []
             fake_auth = types.ModuleType("kumiho.auth_cli")
-            fake_discovery = types.ModuleType("kumiho.discovery")
             calls = {
                 "ensure": 0,
-                "ensure_value": "cached-token",
                 "configured": [],
                 "discovery_attempts": [],
-                "reject_tokens": set(),
+                "failures_remaining": 0,
+                "events": [],
             }
 
             def ensure_token(*, interactive=False):
                 calls["ensure"] += 1
+                calls["events"].append("ensure")
                 assert interactive is False
-                if calls.get("ensure_error"):
-                    raise RuntimeError("simulated unusable auth-cli cache")
-                return calls["ensure_value"], "cache"
+                return "sdk-private-token", "cache"
 
             fake_auth.ensure_token = ensure_token
 
-            cloud_client = object()
-
-            def raw_post(_url, *args, **kwargs):
-                calls["http_headers"] = kwargs.get("headers")
-                return object()
-
-            fake_discovery.requests = types.SimpleNamespace(post=raw_post)
-            fake_kumiho.discovery = fake_discovery
+            direct_client = object()
+            refreshed_client = object()
+            calls["client"] = direct_client
 
             def client_from_discovery(**kwargs):
-                calls["discovery"] = kwargs
+                calls["events"].append("discover")
                 calls["discovery_attempts"].append(dict(kwargs))
-                if kwargs["id_token"] in calls["reject_tokens"]:
-                    raise RuntimeError("simulated rejected credential")
-                discovery = getattr(fake_kumiho, "discovery", None)
-                if discovery is not None:
-                    discovery.requests.post(
-                        "https://control.kumiho.cloud/api/discovery/tenant",
-                        headers={"User-Agent": "kumiho-python/0.13.0"},
-                    )
-                return cloud_client
+                if calls["failures_remaining"]:
+                    calls["failures_remaining"] -= 1
+                    raise RuntimeError("simulated SDK discovery failure")
+                return calls["client"]
 
             fake_kumiho.client_from_discovery = client_from_discovery
-            fake_kumiho.connect = lambda **kwargs: calls.setdefault(
-                "fallback", kwargs
-            )
             fake_kumiho.configure_default_client = calls["configured"].append
-            fake_kumiho.auto_configure_from_discovery = lambda: None
             sys.modules["kumiho"] = fake_kumiho
             sys.modules["kumiho.auth_cli"] = fake_auth
-            sys.modules.pop("kumiho._token_loader", None)
-            sys.modules["kumiho.discovery"] = fake_discovery
 
-            auth_path = auth_dir / "kumiho_authentication.json"
-            auth_path.write_text(
-                json.dumps({"api_token": "isolated-api-token"}),
-                encoding="utf-8",
-            )
-            client, authenticated = adapter._configure_client(cache_path)
-            assert authenticated and client is cloud_client
+            assert adapter._configure_cloud()
+            assert calls["ensure"] == 0
+            expected_direct = {
+                "id_token": None,
+                "control_plane_url": "https://control.kumiho.cloud",
+                "cache_path": str(cache_path),
+                "force_refresh": False,
+            }
+            assert calls["discovery_attempts"] == [expected_direct]
+            assert calls["configured"][-1] is direct_client
+            assert fake_kumiho.auto_configure_from_discovery() is direct_client
+            assert calls["discovery_attempts"] == [expected_direct, expected_direct]
+            assert os.environ["KUMIHO_AUTH_TOKEN"] == "Bearer environment-token"
+
+            # Without an explicit API token, refresh SDK-owned login state
+            # before even a valid route cache can produce a client. The plugin
+            # never receives or forwards the SDK's returned credential.
+            os.environ.pop("KUMIHO_AUTH_TOKEN", None)
+            calls["discovery_attempts"].clear()
+            calls["events"].clear()
+            calls["failures_remaining"] = 0
+            calls["client"] = refreshed_client
+            assert adapter._configure_cloud(force_refresh=True)
+            expected_refresh = {
+                "id_token": None,
+                "control_plane_url": "https://control.kumiho.cloud",
+                "cache_path": str(cache_path),
+                "force_refresh": True,
+            }
             assert calls["ensure"] == 1
-            assert calls["discovery"] == {
-                "id_token": "cached-token",
-                "control_plane_url": "https://control.kumiho.cloud",
-                "cache_path": str(cache_path),
-                "force_refresh": True,
-            }
-            assert calls["configured"][-1] is cloud_client
-            assert calls["http_headers"]["User-Agent"] == "kumiho-codex/0.21.0"
-            assert fake_kumiho.auto_configure_from_discovery() is cloud_client
-
-            # A future SDK may stop exporting its private discovery module.
-            # The adapter must retain official routing through the public API,
-            # even if the optional User-Agent hook can no longer be installed.
-            del fake_kumiho.discovery
-            sys.modules.pop("kumiho.discovery", None)
-            calls.pop("discovery", None)
-            assert adapter._client_from_official_discovery(
-                fake_kumiho, "fallback-token", cache_path
-            ) is cloud_client
-            assert calls["discovery"] == {
-                "id_token": "fallback-token",
-                "control_plane_url": "https://control.kumiho.cloud",
-                "cache_path": str(cache_path),
-                "force_refresh": True,
-            }
-
-            # Ambient tokens are ignored even if introduced after environment
-            # preparation; only the Codex-owned credential directory is read.
-            os.environ["KUMIHO_AUTH_TOKEN"] = "stale-environment-token"
-            calls["discovery_attempts"].clear()
-            calls["reject_tokens"] = {"stale-environment-token"}
-            client, authenticated = adapter._configure_client(cache_path)
-            assert authenticated and client is cloud_client
-            assert calls["discovery"]["id_token"] == "cached-token"
+            assert calls["events"] == ["ensure", "discover"]
+            assert calls["discovery_attempts"] == [expected_refresh]
+            assert calls["configured"][-1] is refreshed_client
+            assert fake_kumiho.auto_configure_from_discovery() is refreshed_client
+            assert calls["discovery_attempts"] == [
+                expected_refresh,
+                {**expected_refresh, "force_refresh": False},
+            ]
+            assert calls["ensure"] == 2
             assert all(
-                attempt["id_token"] != "stale-environment-token"
-                for attempt in calls["discovery_attempts"]
-            ), "ambient auth crossed the Codex Cloud credential boundary"
-
-            # A token in the shared root may belong to Claude's custom control
-            # plane and must never be offered to the official Codex endpoint.
-            auth_path.unlink()
-            shared_secret = "claude-custom-control-plane-token"
-            (Path(temp) / "kumiho_authentication.json").write_text(
-                json.dumps({"api_token": shared_secret}),
-                encoding="utf-8",
-            )
-            calls["discovery_attempts"].clear()
-            _client, authenticated = adapter._configure_client(
-                cache_path,
-                allow_cached_route=False,
-            )
-            assert not authenticated
-            assert all(
-                attempt["id_token"] != shared_secret
+                attempt["id_token"] is None
                 for attempt in calls["discovery_attempts"]
             )
+            assert "KUMIHO_AUTH_TOKEN" not in os.environ
 
-            # A Codex-owned dashboard cache may contain only api_token, which
-            # auth_cli.ensure_token does not understand; that host-local legacy
-            # form remains supported.
-            auth_path.write_text(
-                json.dumps({"api_token": "api-cache-token"}),
-                encoding="utf-8",
-            )
-            calls["ensure_error"] = True
-            calls["reject_tokens"] = set()
+            # A long-lived MCP refreshes the SDK-owned region route. If that
+            # route is expired/unavailable, it fails closed instead of asking
+            # the SDK's generic auto-configurer to probe local CE.
             calls["discovery_attempts"].clear()
-            client, authenticated = adapter._configure_client(cache_path)
-            assert authenticated and client is cloud_client
-            assert calls["discovery"]["id_token"] == "api-cache-token"
+            calls["failures_remaining"] = 1
+            try:
+                fake_kumiho.auto_configure_from_discovery()
+            except RuntimeError as exc:
+                assert "Cloud discovery refresh failed" in str(exc)
+            else:
+                raise AssertionError("failed Cloud route refresh did not fail closed")
+            assert isinstance(calls["configured"][-1], adapter._CloudUnavailableClient)
 
-            # Onboarding auth-check never calls an unverified token valid via
-            # an offline discovery record.
-            calls["reject_tokens"] = {
-                "api-cache-token",
-            }
-            _client, authenticated = adapter._configure_client(
-                cache_path,
-                allow_cached_route=False,
-            )
-            assert not authenticated
-            assert calls["fallback"] == {
-                "endpoint": "needs-auth.kumiho.invalid:443",
-                "token": "",
-                "enable_auto_login": False,
-                "use_discovery": False,
-            }
+            os.environ["KUMIHO_AUTH_TOKEN"] = "Bearer environment-token"
+            calls["discovery_attempts"].clear()
+            calls["failures_remaining"] = 2
+            calls["ensure"] = 0
+            error = io.StringIO()
+            with redirect_stderr(error):
+                assert not adapter._configure_cloud()
+            assert calls["ensure"] == 0
+            message = error.getvalue()
+            assert "kumiho-auth login" in message
+            assert "kumiho-cli login" in message
+            assert "environment-token" not in message
+            try:
+                fake_kumiho.auto_configure_from_discovery()
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("failed Cloud auth could fall back to CE")
     finally:
         for name, previous in prior_modules.items():
             if previous is None:

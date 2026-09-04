@@ -13,6 +13,11 @@ from urllib.parse import urlsplit
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PLUGIN_DIR = SCRIPT_DIR.parent
+# Onboarding launches this file with ``python -I``. Add only the trusted
+# sibling directory so the Cloud adapter can be imported without restoring
+# CWD, PYTHONPATH, or user-site imports.
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 SKILL_MD = PLUGIN_DIR / "skills" / "kumiho-memory" / "SKILL.md"
 REFS_DIR = PLUGIN_DIR / "skills" / "kumiho-memory" / "references"
 DEFAULT_CE_REDIS_URL = "redis://127.0.0.1:6379"
@@ -80,7 +85,6 @@ def _normalize_endpoint(raw: object) -> str:
             raise RuntimeError("CE endpoint must include a port")
         port = 443 if scheme in {"https", "grpcs"} else 80
     host = parsed.hostname
-    plaintext = scheme in {"", "http", "grpc"}
     loopback_host = host.rstrip(".").lower()
     loopback = loopback_host == "localhost"
     if not loopback:
@@ -88,8 +92,8 @@ def _normalize_endpoint(raw: object) -> str:
             loopback = ipaddress.ip_address(loopback_host).is_loopback
         except ValueError:
             loopback = False
-    if plaintext and not loopback:
-        raise RuntimeError("remote CE endpoints must use https:// or grpcs://")
+    if not loopback:
+        raise RuntimeError("CE endpoints must use a loopback host")
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     authority = f"{host}:{port}"
@@ -117,12 +121,7 @@ def _validate_url(
         parsed.port
     except ValueError as exc:
         raise RuntimeError(f"{label} has an invalid port") from exc
-    insecure_scheme = (
-        parsed.scheme.lower()
-        if require_tls_for_remote and parsed.scheme.lower() in {"http", "redis"}
-        else ""
-    )
-    if insecure_scheme:
+    if require_tls_for_remote:
         host = (parsed.hostname or "").rstrip(".").lower()
         loopback = host == "localhost"
         if not loopback:
@@ -131,8 +130,7 @@ def _validate_url(
             except ValueError:
                 loopback = False
         if not loopback:
-            secure = "HTTPS" if insecure_scheme == "http" else "rediss://"
-            raise RuntimeError(f"{label} must use {secure} outside loopback")
+            raise RuntimeError(f"{label} must use a loopback host")
     return value
 
 
@@ -178,14 +176,13 @@ def _configure_backend(backend: str, config: dict) -> None:
     for key in TRANSPORT_ROUTING_ENV:
         os.environ.pop(key, None)
     if backend == "cloud":
-        # Use the exact same adapter as MCP startup. This keeps official
-        # control-plane pinning, the Codex-only cache, TLS policy, token
-        # handling, and User-Agent behavior in one implementation.
+        # Use the exact same adapter as MCP startup. It pins official Cloud
+        # routing while the Python SDK owns token handling and discovery.
         import run_kumiho_cloud as cloud_adapter
 
         try:
-            cache_path = cloud_adapter._prepare_environment()
-            _client, authenticated = cloud_adapter._configure_client(cache_path)
+            cloud_adapter._prepare_environment()
+            authenticated = cloud_adapter._configure_cloud(force_refresh=True)
         except ImportError:
             raise
         except Exception as exc:

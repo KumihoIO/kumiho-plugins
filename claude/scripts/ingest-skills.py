@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -36,52 +37,35 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PLUGIN_DIR = SCRIPT_DIR.parent  # kumiho-plugins/claude/
 SKILL_MD = PLUGIN_DIR / "skills" / "kumiho-memory" / "SKILL.md"
 REFS_DIR = PLUGIN_DIR / "skills" / "kumiho-memory" / "references"
+_KUMIHO_ADAPTER_BOUND = globals().get("_KUMIHO_ADAPTER_BOUND", False) is True
 
 
-def _configure_explicit_ce() -> None:
-    """Bind CE directly so cached Cloud auth can never redirect ingestion."""
+def _ce_mode_enabled() -> bool:
     mode = (os.getenv("KUMIHO_CLAUDE_MODE", "") or "").strip().lower()
-    endpoint = (os.getenv("KUMIHO_SERVER_ENDPOINT", "") or "").strip()
-    if mode not in {"ce", "community", "self-hosted", "self_hosted", "local"}:
-        return
-    if not endpoint:
-        raise RuntimeError("CE ingestion requires KUMIHO_SERVER_ENDPOINT")
-    for key in (
-        "KUMIHO_AUTO_CONFIGURE",
-        "KUMIHO_CONTROL_PLANE_URL",
-        "KUMIHO_CONTROL_PLANE_API_URL",
-        "KUMIHO_DISCOVERY_CACHE_FILE",
-        "KUMIHO_TENANT_HINT",
-        "KUMIHO_FIREBASE_API_KEY",
-        "KUMIHO_FIREBASE_PROJECT_ID",
-        "KUMIHO_SERVER_USE_TLS",
-        "KUMIHO_SERVER_AUTHORITY",
-        "KUMIHO_SSL_TARGET_OVERRIDE",
-        "KUMIHO_SERVER_CA_FILE",
-        "KUMIHO_REQUIRE_TLS",
-    ):
-        os.environ.pop(key, None)
-    scheme = endpoint.partition("://")[0].lower() if "://" in endpoint else ""
-    if scheme in {"grpcs", "https"}:
-        os.environ["KUMIHO_SERVER_USE_TLS"] = "true"
-        os.environ["KUMIHO_REQUIRE_TLS"] = "1"
-    else:
-        os.environ["KUMIHO_SERVER_USE_TLS"] = "false"
-    os.environ["KUMIHO_AUTH_TOKEN"] = ""
-    import kumiho
+    return mode in {"ce", "community", "self-hosted", "self_hosted", "local"}
 
-    client = kumiho.connect(
-        endpoint=endpoint,
-        token="",
-        enable_auto_login=False,
-        use_discovery=False,
+
+def _dispatch_through_backend_adapter() -> int | None:
+    """Re-enter a documented direct invocation through the safe adapter."""
+    if _KUMIHO_ADAPTER_BOUND is True:
+        return None
+    adapter_name = "run_kumiho_ce.py" if _ce_mode_enabled() else "run_kumiho_cloud.py"
+    adapter = SCRIPT_DIR / adapter_name
+    if not adapter.is_file():
+        print(f"ERROR: backend adapter not found at {adapter}", file=sys.stderr)
+        return 1
+    result = subprocess.run(
+        [sys.executable, "-I", str(adapter), "--script", str(Path(__file__).resolve()),
+         *sys.argv[1:]],
     )
-    kumiho.configure_default_client(client)
+    return result.returncode
 
 
 def main() -> int:
+    dispatched = _dispatch_through_backend_adapter()
+    if dispatched is not None:
+        return dispatched
     try:
-        _configure_explicit_ce()
         from kumiho_memory.skill_ingest import ingest_batch, ingest_skill, parse_skill
     except ImportError:
         print(
@@ -89,9 +73,6 @@ def main() -> int:
             "  pip install 'kumiho-memory[all]>=1.4.0'",
             file=sys.stderr,
         )
-        return 1
-    except RuntimeError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
     dry_run = "--dry-run" in sys.argv or "-n" in sys.argv

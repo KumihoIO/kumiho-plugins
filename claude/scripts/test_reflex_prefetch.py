@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Tests for the detached prefetch worker.
 
-Nothing here touches the network: the endpoint cache is pre-seeded and the one
-venv subprocess is replaced.  The load-bearing assertions are the ones for
-failures that are silent in production -- the auth sentinel (a doomed gRPC call
-every turn, forever), the dedup fall-through (a good cache replaced by an empty
-one), and the cp949 round trip (Korean surviving the pipe).
+Nothing here touches the network: the SDK-adapter subprocess is replaced. The
+load-bearing assertions are the ones for failures that are silent in
+production -- SDK-owned token handling, the dedup fall-through (a good cache
+replaced by an empty one), and the cp949 round trip (Korean surviving the pipe).
 
 Run: python -m pytest claude/scripts/test_reflex_prefetch.py -q
 """
@@ -70,8 +69,8 @@ class _Spy:
 
 
 def _prepare(tmp_path, monkeypatch, *, sid="s1", prompt="why did we pick postgres",
-             endpoint="grpc.kumiho.example:443", venv=True, spy=None, mod=None):
-    """A warm, offline environment: state dir, fake venv, cached endpoint."""
+             venv=True, spy=None, mod=None):
+    """A warm, offline environment with a fake shared venv."""
     monkeypatch.setenv("KUMIHO_CLAUDE_HOME", str(tmp_path))
     monkeypatch.setenv("KUMIHO_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("KUMIHO_REFLEX_PREFETCH", raising=False)
@@ -94,8 +93,6 @@ def _prepare(tmp_path, monkeypatch, *, sid="s1", prompt="why did we pick postgre
             d.mkdir(parents=True, exist_ok=True)
             (d / "python.exe").write_text("", encoding="utf-8")
             (d / "python").write_text("", encoding="utf-8")
-    (reflex / "endpoint.json").write_text(
-        json.dumps({"endpoint": endpoint, "ts": int(time.time())}), encoding="utf-8")
     (reflex / ("%s.session.json" % sid)).write_text(
         json.dumps({"session_id": sid, "cwd": str(tmp_path), "transcript_path": ""}),
         encoding="utf-8")
@@ -173,7 +170,7 @@ def test_endpoint_only_ce_prefetch_uses_the_tokenless_adapter(tmp_path, monkeypa
     spy = _Spy(_payload())
     mod = _prepare(tmp_path, monkeypatch, spy=spy)
     monkeypatch.setenv(
-        "KUMIHO_CLAUDE_SERVER_ENDPOINT", "grpcs://ce.example.test:7443"
+        "KUMIHO_CLAUDE_SERVER_ENDPOINT", "grpcs://127.0.0.1:7443"
     )
     assert mod.main() == 0
     assert spy.ce_modes == [True]
@@ -267,14 +264,16 @@ def test_a_different_question_defeats_the_debounce(tmp_path, monkeypatch):
     assert len(spy.calls) == 1
 
 
-def test_auth_sentinel_skips_before_any_subprocess(tmp_path, monkeypatch):
+def test_tokenless_cloud_still_delegates_auth_to_the_sdk_adapter(
+    tmp_path, monkeypatch
+):
     spy = _Spy(_payload())
-    mod = _prepare(tmp_path, monkeypatch, spy=spy,
-                   endpoint="needs-auth.kumiho.invalid:443")
+    mod = _prepare(tmp_path, monkeypatch, spy=spy)
+    monkeypatch.delenv("KUMIHO_AUTH_TOKEN", raising=False)
     assert mod.main() == 0
-    assert "skip: no auth token" in _log(tmp_path)
-    assert spy.calls == []
-    assert _recall(tmp_path) is None
+    assert len(spy.calls) == 1
+    assert spy.ce_modes == [False]
+    assert _recall(tmp_path)["count"] == 2
 
 
 def test_missing_venv_skips_before_any_subprocess(tmp_path, monkeypatch):
@@ -336,12 +335,6 @@ def test_unknown_tool_error_latches_and_the_next_run_skips(tmp_path, monkeypatch
     assert mod.main() == 0
     assert json.loads((tmp_path / "reflex" / "s1.state").read_text(
         encoding="utf-8"))["engage_unsupported"] is True
-    # A transport failure also drops the endpoint cache so a moved region heals.
-    assert not (tmp_path / "reflex" / "endpoint.json").exists()
-
-    (tmp_path / "reflex" / "endpoint.json").write_text(
-        json.dumps({"endpoint": "grpc.kumiho.example:443", "ts": int(time.time())}),
-        encoding="utf-8")
     assert mod.main() == 0
     assert len(spy.calls) == 1  # latched: no second attempt
     assert "engage unsupported" in _log(tmp_path)
@@ -368,10 +361,26 @@ def test_cold_session_start_path_uses_branch_and_directory(tmp_path, monkeypatch
 def test_korean_survives_the_real_subprocess_pipe(tmp_path, monkeypatch):
     """cp949 is the default piped encoding here, so the engage hop is the one
     place Korean silently turns into mojibake.  This runs a REAL subprocess
-    (the local interpreter, no network) to exercise that pipe end to end."""
+    through a local stand-in for the SDK adapter (no network) to exercise that
+    pipe end to end."""
     mod = _load()
     original = mod._call_engage
     calls = []
+
+    # _call_engage intentionally enters run_kumiho_cloud.py now.  Give this
+    # encoding test a tiny local adapter with the same --code contract so it
+    # still exercises Python -I and the real Windows pipe without asking the
+    # installed SDK to authenticate or discover a regional endpoint.
+    adapter_dir = tmp_path / "adapter"
+    adapter_dir.mkdir()
+    (adapter_dir / "run_kumiho_cloud.py").write_text(
+        "import sys\n"
+        "assert sys.argv[1:2] == ['--code'] and len(sys.argv) == 3\n"
+        "exec(compile(sys.argv[2], '<test-cloud-code>', 'exec'), "
+        "{'__name__': '__main__'})\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "__file__", str(adapter_dir / "worker.py"))
 
     def through_a_real_pipe(python_path, args, *, ce_mode=False):
         calls.append(args)

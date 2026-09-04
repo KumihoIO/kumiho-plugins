@@ -110,13 +110,16 @@ def _spawn_prefetch(payload: dict, session_id: str) -> None:
     if not cwd or not os.path.isdir(cwd):
         cwd = os.getcwd()
     kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
-              "stderr": subprocess.DEVNULL, "cwd": cwd}
+              "stderr": subprocess.DEVNULL, "cwd": cwd,
+              "env": rs.secured_hook_child_env()}
     if os.name == "nt":
         kwargs["creationflags"] = 0x8 | 0x200  # DETACHED_PROCESS | NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
     try:
-        subprocess.Popen([sys.executable, str(worker), cwd, session_id], **kwargs)
+        subprocess.Popen(
+            [sys.executable, "-I", str(worker), cwd, session_id], **kwargs
+        )
     except OSError as exc:
         rs.log("prefetch spawn failed: %s" % exc)
 

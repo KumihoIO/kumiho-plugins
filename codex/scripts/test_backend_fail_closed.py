@@ -47,19 +47,19 @@ def _assert_failed_backend_is_scrubbed(shim) -> None:
         assert key not in os.environ
 
 
-def test_missing_codex_config_defaults_to_cloud_without_inheriting_claude(
+def test_missing_codex_config_defaults_to_cloud_with_shared_explicit_token(
     tmp_path, monkeypatch
 ):
     shim = _load_module(SHIM_PATH, "kumiho_codex_missing_config_test")
     _clear_backend_environment(monkeypatch, shim)
-    monkeypatch.setenv("KUMIHO_AUTH_TOKEN", "claude-custom-control-plane-token")
+    monkeypatch.setenv("KUMIHO_AUTH_TOKEN", "explicit-shared-api-token")
     monkeypatch.setenv("KUMIHO_CLAUDE_MODE", "ce")
     monkeypatch.setenv("KUMIHO_CLAUDE_SERVER_ENDPOINT", "wrong-host:9190")
 
     shim._apply_codex_config(tmp_path / "missing-codex.json")
 
     assert os.environ[shim.CODEX_BACKEND_ENV] == "cloud"
-    assert os.environ["KUMIHO_AUTH_TOKEN"] == ""
+    assert os.environ["KUMIHO_AUTH_TOKEN"] == "explicit-shared-api-token"
     assert "KUMIHO_CLAUDE_MODE" not in os.environ
     assert "KUMIHO_CLAUDE_SERVER_ENDPOINT" not in os.environ
 
@@ -141,111 +141,63 @@ def test_cloud_ingestion_reuses_sibling_adapter_and_rejects_unauthenticated(
         "kumiho_codex_ingest_sibling_cloud_adapter_test",
     )
     calls = []
-    cache_path = tmp_path / "codex-discovery-cache.json"
-    client = object()
 
     def prepare_environment():
         calls.append(("prepare",))
-        return cache_path
+        return tmp_path / ".kumiho"
 
-    def configure_authenticated(received_cache):
-        calls.append(("configure", received_cache))
-        return client, True
+    def configure_authenticated(**kwargs):
+        calls.append(("configure", kwargs))
+        return True
 
     monkeypatch.setattr(adapter, "_prepare_environment", prepare_environment)
-    monkeypatch.setattr(adapter, "_configure_client", configure_authenticated)
+    monkeypatch.setattr(adapter, "_configure_cloud", configure_authenticated)
     monkeypatch.setitem(sys.modules, "run_kumiho_cloud", adapter)
 
     ingest._configure_backend("cloud", {"backend": "cloud"})
 
     assert Path(adapter.__file__).resolve() == CLOUD_ADAPTER_PATH.resolve()
-    assert calls == [("prepare",), ("configure", cache_path)]
+    assert calls == [("prepare",), ("configure", {"force_refresh": True})]
 
     calls.clear()
 
-    def configure_unauthenticated(received_cache):
-        calls.append(("configure", received_cache))
-        return object(), False
+    def configure_unauthenticated(**kwargs):
+        calls.append(("configure", kwargs))
+        return False
 
-    monkeypatch.setattr(adapter, "_configure_client", configure_unauthenticated)
+    monkeypatch.setattr(adapter, "_configure_cloud", configure_unauthenticated)
     with pytest.raises(RuntimeError, match="authentication.*unavailable"):
         ingest._configure_backend("cloud", {"backend": "cloud"})
-    assert calls == [("prepare",), ("configure", cache_path)]
+    assert calls == [("prepare",), ("configure", {"force_refresh": True})]
 
 
-class _AssignmentBlockedRequests:
-    def __init__(self, post):
-        self._post = post
-
-    @property
-    def post(self):
-        return self._post
-
-    @post.setter
-    def post(self, _value):
-        raise RuntimeError("private transport is read-only")
-
-
-class _RestoreBlockedRequests:
-    def __init__(self, post):
-        self._post = post
-        self._writes = 0
-
-    @property
-    def post(self):
-        return self._post
-
-    @post.setter
-    def post(self, value):
-        self._writes += 1
-        if self._writes > 1:
-            raise RuntimeError("private transport cannot be restored")
-        self._post = value
-
-
-@pytest.mark.parametrize(
-    "requests_type",
-    (_AssignmentBlockedRequests, _RestoreBlockedRequests),
-    ids=("assignment-blocked", "restore-blocked"),
-)
-def test_private_user_agent_hook_failure_keeps_public_discovery_working(
-    tmp_path, monkeypatch, requests_type
-):
+def test_cloud_adapter_uses_public_sdk_discovery_contract(tmp_path, monkeypatch):
     adapter = _load_module(
         CLOUD_ADAPTER_PATH,
-        f"kumiho_codex_private_ua_{requests_type.__name__}",
+        "kumiho_codex_public_discovery_contract_test",
     )
     calls = []
     public_client = object()
-
-    def original_post(*_args, **_kwargs):
-        return object()
-
-    discovery = types.ModuleType("kumiho.discovery")
-    discovery.requests = requests_type(original_post)
     fake_kumiho = types.ModuleType("kumiho")
-    fake_kumiho.__path__ = []
-    fake_kumiho.discovery = discovery
 
     def client_from_discovery(**kwargs):
         calls.append(kwargs)
         return public_client
 
     fake_kumiho.client_from_discovery = client_from_discovery
-    monkeypatch.setitem(sys.modules, "kumiho", fake_kumiho)
-    monkeypatch.setitem(sys.modules, "kumiho.discovery", discovery)
-    cache_path = tmp_path / "codex-discovery-cache.json"
+    cache_path = tmp_path / "official-cloud" / "discovery-cache.json"
+    monkeypatch.setenv("KUMIHO_AUTH_TOKEN", "explicit-api-token")
+    monkeypatch.setenv("KUMIHO_DISCOVERY_CACHE_FILE", str(cache_path))
 
-    result = adapter._client_from_official_discovery(
+    result = adapter._discover_cloud_client(
         fake_kumiho,
-        "opaque-test-token",
-        cache_path,
+        force_refresh=True,
     )
 
     assert result is public_client
     assert calls == [
         {
-            "id_token": "opaque-test-token",
+            "id_token": None,
             "control_plane_url": adapter.OFFICIAL_CONTROL_PLANE_URL,
             "cache_path": str(cache_path),
             "force_refresh": True,

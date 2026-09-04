@@ -18,7 +18,7 @@ Or inside Claude Code: run `/plugin`, **Add marketplace** →
 Then choose a backend and finish setup:
 
 ```bash
-/kumiho-onboard cloud         # then use the masked local-terminal token prompt
+/kumiho-onboard cloud         # explicit API token preferred; SDK login also works
 /kumiho-onboard ce            # self-hosted kumiho-server Community Edition
 ```
 
@@ -45,7 +45,7 @@ Full guide, hooks, Decision Memory, and Cloud-vs-CE details:
 |---|---|---|
 | Auth | API token | none (CE enforces its own) |
 | Store | managed Neo4j + Redis | **you run** Neo4j + Redis + embedding via [kumiho-server-community](https://github.com/KumihoIO/kumiho-server-community) |
-| Setup | Claude: `/kumiho-onboard cloud` → masked terminal prompt<br>Codex: `$kumiho-onboard` → Cloud | Claude: `/kumiho-onboard ce`<br>Codex: `$kumiho-onboard` → CE |
+| Setup | Claude: `/kumiho-onboard cloud` → SDK auth<br>Codex: `$kumiho-onboard` → Cloud | Claude: `/kumiho-onboard ce`<br>Codex: `$kumiho-onboard` → CE |
 
 Both hosts support both backends independently: Claude may use Cloud while
 Codex uses CE, or the reverse. Their backend selections do not overwrite one

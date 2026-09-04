@@ -79,6 +79,12 @@ def test_hooks_name_pythonw_everywhere():
         for h in group["hooks"]
     }
     assert commands == {"${CLAUDE_PLUGIN_DATA}/venv/bin/pythonw"}
+    assert all(
+        h["args"][:1] == ["-I"]
+        for event in hooks["hooks"].values()
+        for group in event
+        for h in group["hooks"]
+    )
 
 
 if __name__ == "__main__":

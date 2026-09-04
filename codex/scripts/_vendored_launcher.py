@@ -24,6 +24,11 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+# ``python -I`` deliberately removes the script directory from ``sys.path``.
+# Every host-controlled entry point uses isolated mode so a checkout-provided
+# ``sitecustomize`` cannot run before this launcher gets a chance to sanitize
+# the environment; add back only this launcher's own sibling modules.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bounded_proc
 
 
@@ -89,9 +94,12 @@ _HOST_UNTRUSTED_CLOUD_ENV = (
     "KUMIHO_ENV_FILE",
 )
 _HOST_UNTRUSTED_PATH_ENV = (
+    "CLAUDE_PLUGIN_ROOT",
+    "CLAUDE_PLUGIN_DATA",
     "KUMIHO_CONFIG_DIR",
     "CLAUDE_CONFIG_DIR",
     "KUMIHO_CLAUDE_HOME",
+    "KUMIHO_PLUGIN_SHARED_HOME",
     "XDG_CONFIG_HOME",
     "XDG_CACHE_HOME",
     "APPDATA",
@@ -100,8 +108,117 @@ _HOST_UNTRUSTED_PATH_ENV = (
     "USERPROFILE",
     "HOMEDRIVE",
     "HOMEPATH",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONUSERBASE",
+    "PYTHONSTARTUP",
+    "PYTHONINSPECT",
+)
+_HOST_UNTRUSTED_SECRET_ENV = (
+    "KUMIHO_AUTH_TOKEN",
+)
+_HOST_UNTRUSTED_PROVISION_ENV = (
+    "KUMIHO_CLAUDE_PACKAGE_SPEC",
+)
+_HOST_UNTRUSTED_TRANSPORT_ENV = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "AWS_CA_BUNDLE",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "SSLKEYLOGFILE",
+    "OPENSSL_CONF",
+    "OPENSSL_MODULES",
+    "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+    "GRPC_PROXY",
+    "NO_GRPC_PROXY",
+    "GRPC_SSL_CIPHER_SUITES",
+)
+_HOST_UNTRUSTED_DATA_ROUTE_ENV = (
+    "KUMIHO_CLAUDE_SERVER_ENDPOINT",
+    "KUMIHO_SERVER_ENDPOINT",
+    "KUMIHO_SERVER_ADDRESS",
+    "KUMIHO_LOCAL_SERVER_ENDPOINT",
+    "KUMIHO_SERVER_AUTHORITY",
+    "KUMIHO_SSL_TARGET_OVERRIDE",
+    "KUMIHO_SERVER_CA_FILE",
+    "UPSTASH_REDIS_URL",
+    "KUMIHO_UPSTASH_REDIS_URL",
+    "KUMIHO_LOCAL_REDIS_URL",
+    "KUMIHO_MEMORY_PROXY_URL",
+    "KUMIHO_MCP_HOSTED",
+    "KUMIHO_HOSTED_LOCAL_REDIS",
+    "UPSTASH_REDIS_REST_URL",
+    "UPSTASH_REDIS_REST_TOKEN",
+    "KUMIHO_LLM_BASE_URL",
+    "OPENAI_BASE_URL",
+    "ANTHROPIC_BASE_URL",
+    "AZURE_OPENAI_ENDPOINT",
+    "KUMIHO_MEMORY_CODE_AUTOMINE",
+)
+# A repository may point at services on the user's own machine. Any route that
+# crosses the machine boundary must come from an exact user-global Claude
+# settings file instead.
+_HOST_PROJECT_LOOPBACK_ROUTE_ENV = frozenset({
+    "KUMIHO_CLAUDE_SERVER_ENDPOINT",
+    "KUMIHO_SERVER_ENDPOINT",
+    "KUMIHO_SERVER_ADDRESS",
+    "KUMIHO_LOCAL_SERVER_ENDPOINT",
+    "UPSTASH_REDIS_URL",
+    "KUMIHO_UPSTASH_REDIS_URL",
+    "KUMIHO_LOCAL_REDIS_URL",
+    "KUMIHO_MEMORY_PROXY_URL",
+    "UPSTASH_REDIS_REST_URL",
+    "KUMIHO_LLM_BASE_URL",
+    "OPENAI_BASE_URL",
+    "ANTHROPIC_BASE_URL",
+    "AZURE_OPENAI_ENDPOINT",
+})
+_HOST_TRUSTED_GLOBAL_PATH_ENV = frozenset({
+    "KUMIHO_CONFIG_DIR",
+    "KUMIHO_CLAUDE_HOME",
+    "KUMIHO_SERVER_CA_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "AWS_CA_BUNDLE",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "SSLKEYLOGFILE",
+    "OPENSSL_CONF",
+    "OPENSSL_MODULES",
+    "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+})
+_HOST_PERSISTED_USER_ENV = (
+    "KUMIHO_AUTH_TOKEN",
+    *_HOST_UNTRUSTED_CLOUD_ENV,
+    "KUMIHO_CONFIG_DIR",
+    "KUMIHO_CLAUDE_HOME",
+    *_HOST_UNTRUSTED_PROVISION_ENV,
+    *_HOST_UNTRUSTED_TRANSPORT_ENV,
+    *_HOST_UNTRUSTED_DATA_ROUTE_ENV,
 )
 _HOST_KINDS = {"claude", "codex"}
+
+_HOST_PROVISION_ENV_PREFIXES = ("PIP_", "PIPENV_", "UV_")
+_HOST_PROVISION_ENV_EXACT_SCRUB = frozenset({
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONUSERBASE",
+    "PYTHONSTARTUP",
+    "PYTHONINSPECT",
+})
 
 # Package managers and build backends never need host credentials. Keeping
 # these out of provisioning children prevents a dependency build hook from
@@ -276,6 +393,33 @@ def _host_launch_isolated() -> bool:
     return (os.getenv("KUMIHO_CLAUDE_HOST", "") or "").strip().lower() in _HOST_KINDS
 
 
+def _service_route_is_loopback(raw: object) -> bool:
+    """Return whether a service URL/authority resolves only to loopback.
+
+    This is a provenance check, not a complete backend validator. The normal
+    CE/Redis/LLM validators still enforce their supported schemes and shapes.
+    """
+    if not isinstance(raw, str) or any(char in raw for char in "\r\n\0"):
+        return False
+    value = raw.strip()
+    if not value or _looks_like_placeholder(value):
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(
+            value if "://" in value else f"//{value}"
+        )
+        parsed.port
+    except ValueError:
+        return False
+    hostname = (parsed.hostname or "").rstrip(".").lower()
+    if hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
 def _account_home() -> Path:
     """Return the OS account home without trusting host-injected HOME values."""
     if not _host_launch_isolated():
@@ -304,6 +448,87 @@ def _account_home() -> Path:
     return home
 
 
+def _trusted_persisted_user_environment() -> dict[str, str]:
+    """Read environment values from user-owned persistent sources.
+
+    Claude merges project settings over its process environment, so the live
+    value has ambiguous provenance. Reading the underlying OS-user store (or
+    the exact files written by setup.py) preserves existing installations
+    without trusting a repository override.
+    """
+    wanted = set(_HOST_PERSISTED_USER_ENV)
+    if (os.getenv("KUMIHO_CLAUDE_HOST", "") or "").strip().lower() == "codex":
+        # Codex backend/auth routing comes only from codex.json. The transport
+        # and package identity are host-neutral and may be shared.
+        wanted = set((*_HOST_UNTRUSTED_PROVISION_ENV, *_HOST_UNTRUSTED_TRANSPORT_ENV))
+    found: dict[str, str] = {}
+    if os.name == "nt":
+        try:
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as handle:
+                for key in wanted:
+                    try:
+                        raw, _kind = winreg.QueryValueEx(handle, key)
+                    except OSError:
+                        continue
+                    if isinstance(raw, str):
+                        found[key] = raw
+        except (ImportError, OSError):
+            pass
+    else:
+        home = _account_home()
+        for path in (
+            home / ".config" / "environment.d" / "kumiho.conf",
+            home / ".zshenv",
+            home / ".profile",
+        ):
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                text = line.strip()
+                if text.startswith("export "):
+                    text = text[7:].lstrip()
+                key, separator, encoded = text.partition("=")
+                key = key.strip()
+                if not separator or key not in wanted or key in found:
+                    continue
+                try:
+                    values = shlex.split(encoded, comments=True, posix=True)
+                except ValueError:
+                    continue
+                if len(values) == 1:
+                    found[key] = values[0]
+
+    trusted: dict[str, str] = {}
+    for key, raw in found.items():
+        value = raw.strip()
+        if (
+            not value
+            or "${" in value
+            or "$" in value
+            or "`" in value
+            or any(char in raw for char in "\r\n\0")
+        ):
+            continue
+        if key in _HOST_TRUSTED_GLOBAL_PATH_ENV:
+            path = Path(value)
+            if not path.is_absolute():
+                continue
+            value = str(path)
+        trusted[key] = value
+    return trusted
+
+
+def _hydrate_trusted_persisted_user_environment() -> None:
+    if not _host_launch_isolated():
+        return
+    for key, value in _trusted_persisted_user_environment().items():
+        _set_env_if_absent(key, value, "the OS user environment")
+
+
 def _clear_host_untrusted_environment() -> None:
     """Drop Cloud route/cache and runtime-root values injected by a project.
 
@@ -315,9 +540,30 @@ def _clear_host_untrusted_environment() -> None:
     """
     if not _host_launch_isolated():
         return
+    ambient_token = (os.getenv("KUMIHO_AUTH_TOKEN", "") or "").strip()
+    keep_ambient_token = (
+        bool(ambient_token)
+        and not _looks_like_placeholder(ambient_token)
+    )
+    safe_project_routes = {}
+    for key in _HOST_UNTRUSTED_DATA_ROUTE_ENV:
+        value = (os.getenv(key, "") or "").strip()
+        if _host_config_value_allowed(key, value):
+            safe_project_routes[key] = value
     account_home = _account_home()
-    for key in (*_HOST_UNTRUSTED_CLOUD_ENV, *_HOST_UNTRUSTED_PATH_ENV):
-        os.environ.pop(key, None)
+    untrusted = frozenset(key.upper() for key in (
+        *_HOST_UNTRUSTED_CLOUD_ENV,
+        *_HOST_UNTRUSTED_PATH_ENV,
+        *_HOST_UNTRUSTED_SECRET_ENV,
+        *_HOST_UNTRUSTED_PROVISION_ENV,
+        *_HOST_UNTRUSTED_TRANSPORT_ENV,
+        *_HOST_UNTRUSTED_DATA_ROUTE_ENV,
+    ))
+    # Environment keys are case-sensitive on POSIX. Normalize comparisons so
+    # lowercase proxy aliases cannot bypass the host boundary.
+    for actual in tuple(os.environ):
+        if actual.upper() in untrusted:
+            os.environ.pop(actual, None)
     # Keep subsequent stdlib/SDK Path.home and user-config lookups pinned to
     # the OS account even if the host originally inherited hostile values.
     os.environ["HOME"] = str(account_home)
@@ -328,6 +574,9 @@ def _clear_host_untrusted_environment() -> None:
         os.environ["HOMEPATH"] = tail or "\\"
         os.environ["APPDATA"] = str(account_home / "AppData" / "Roaming")
         os.environ["LOCALAPPDATA"] = str(account_home / "AppData" / "Local")
+    if keep_ambient_token:
+        os.environ["KUMIHO_AUTH_TOKEN"] = ambient_token
+    os.environ.update(safe_project_routes)
 
 
 def _kumiho_home() -> Path:
@@ -610,6 +859,13 @@ def _provision_subprocess_env(extra: dict[str, str] | None = None) -> dict[str, 
         if (
             normalized in _PROVISION_SECRET_ENV
             or normalized.endswith(_PROVISION_SECRET_SUFFIXES)
+            or (
+                _host_launch_isolated()
+                and (
+                    normalized in _HOST_PROVISION_ENV_EXACT_SCRUB
+                    or normalized.startswith(_HOST_PROVISION_ENV_PREFIXES)
+                )
+            )
         ):
             env.pop(key, None)
     if extra:
@@ -811,6 +1067,7 @@ def _installed_versions(
         r = bounded_proc.run(
             [
                 str(python_path),
+                "-I",
                 "-c",
                 probe,
                 json.dumps(normalized),
@@ -911,24 +1168,24 @@ def _needs_install(
 def _install_dependencies(python_path: Path, package_spec: str) -> None:
     provision_env = _provision_subprocess_env()
     if _run(
-        [str(python_path), "-m", "pip", "--version"],
+        [str(python_path), "-I", "-m", "pip", "--version"],
         check=False,
         timeout=PROBE_TIMEOUT_S,
         env=provision_env,
     ):
         _run(
-            [str(python_path), "-m", "ensurepip", "--upgrade"],
+            [str(python_path), "-I", "-m", "ensurepip", "--upgrade"],
             timeout=PIP_TIMEOUT_S,
             env=provision_env,
         )
     _run(
-        [str(python_path), "-m", "pip", "install", "--upgrade", "pip"],
+        [str(python_path), "-I", "-m", "pip", "install", "--upgrade", "pip"],
         timeout=PIP_TIMEOUT_S,
         env=provision_env,
     )
     packages = shlex.split(package_spec) if package_spec else shlex.split(DEFAULT_PACKAGE_SPEC)
     _run(
-        [str(python_path), "-m", "pip", "install", "--upgrade", *packages],
+        [str(python_path), "-I", "-m", "pip", "install", "--upgrade", *packages],
         timeout=PIP_TIMEOUT_S,
         env=provision_env,
     )
@@ -1901,7 +2158,8 @@ def _spawn_detached_provisioning(lock_token: str) -> bool:
         kwargs["start_new_session"] = True
     try:
         child = subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), "--provision"], **kwargs
+            [sys.executable, "-I", str(Path(__file__).resolve()), "--provision"],
+            **kwargs
         )
         # Do not leave the parent's reservation behind if Python dies before
         # importing this module and adopting it. The child rewrites the lock
@@ -2183,7 +2441,7 @@ def _provision(venv_dir: Path, python_path: Path, marker_path: Path,
         try:
             _assert_provision_lock_owned()
             _run(
-                [str(creation_python), "-m", "venv", str(venv_dir)],
+                [str(creation_python), "-I", "-m", "venv", str(venv_dir)],
                 timeout=PIP_TIMEOUT_S,
                 env=_provision_subprocess_env(),
             )
@@ -2432,6 +2690,32 @@ def _set_env_if_absent(key: str, value: str, source: str) -> bool:
     return True
 
 
+def _host_config_value_allowed(
+    key: str, value: object, *, user_global: bool = False
+) -> bool:
+    """Apply the host provenance policy to a config-sourced value."""
+    if not _host_launch_isolated() or user_global:
+        return True
+    if key in _HOST_UNTRUSTED_DATA_ROUTE_ENV:
+        if key == "KUMIHO_CLAUDE_SERVER_ENDPOINT":
+            normalized = _normalize_server_target(
+                value if isinstance(value, str) else ""
+            )
+            return bool(normalized and _ce_server_target_is_safe(normalized))
+        if key == "UPSTASH_REDIS_URL":
+            return isinstance(value, str) and _ce_redis_url_is_safe(value.strip())
+        return (
+            key in _HOST_PROJECT_LOOPBACK_ROUTE_ENV
+            and _service_route_is_loopback(value)
+        )
+    return key not in (
+        *_HOST_UNTRUSTED_CLOUD_ENV,
+        *_HOST_UNTRUSTED_PATH_ENV,
+        *_HOST_UNTRUSTED_PROVISION_ENV,
+        *_HOST_UNTRUSTED_TRANSPORT_ENV,
+    )
+
+
 def _normalize_host_session_id() -> None:
     """Publish the host's session identity as KUMIHO_SESSION_ID.
 
@@ -2478,9 +2762,10 @@ def _plugin_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _read_dotenv_file(dotenv_path: Path) -> None:
+def _read_dotenv_file(dotenv_path: Path, *, user_global: bool = False) -> None:
     """Parse and apply KEY=VALUE pairs from a single dotenv file."""
     try:
+        entries: list[tuple[str, str]] = []
         for line in dotenv_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
@@ -2490,20 +2775,21 @@ def _read_dotenv_file(dotenv_path: Path) -> None:
             key, _, value = line.partition("=")
             key = key.strip()
             value = value.strip()
-            if _host_launch_isolated() and key in (
-                *_HOST_UNTRUSTED_CLOUD_ENV,
-                *_HOST_UNTRUSTED_PATH_ENV,
-            ):
-                # Host-launched Cloud routing and the executable runtime root
-                # have provenance requirements. They are restored only from
-                # user-global Claude settings below, never from ambient or a
-                # checkout-local dotenv file.
-                continue
             if len(value) >= 2 and (
                 (value[0] == '"' and value[-1] == '"')
                 or (value[0] == "'" and value[-1] == "'")
             ):
                 value = value[1:-1]
+            entries.append((key, value))
+
+        for key, value in entries:
+            if not _host_config_value_allowed(
+                key, value, user_global=user_global
+            ):
+                # Host-launched Cloud routing and the executable runtime root
+                # have provenance requirements. They are restored only from
+                # user-global config, never from a checkout-local dotenv file.
+                continue
             _set_env_if_absent(key, value, str(dotenv_path))
     except Exception:
         pass
@@ -2528,7 +2814,9 @@ def _hydrate_env_from_dotenv() -> None:
     # 2. ~/.kumiho/.env.local fallback
     kumiho_env = _account_home() / ".kumiho" / ".env.local"
     if kumiho_env.exists():
-        _read_dotenv_file(kumiho_env)
+        # This path is anchored beneath the native account home after host
+        # sanitation and is the setup wizard's read-only-plugin fallback.
+        _read_dotenv_file(kumiho_env, user_global=True)
 
 
 def _hydrate_env_from_plugin_mcp() -> None:
@@ -2557,14 +2845,15 @@ def _hydrate_env_from_plugin_mcp() -> None:
     for key in (
         "KUMIHO_AUTH_TOKEN",
         "KUMIHO_CONTROL_PLANE_URL",
+        "KUMIHO_CONTROL_PLANE_API_URL",
         "KUMIHO_TENANT_HINT",
         "KUMIHO_CLAUDE_MODE",
-        "KUMIHO_CLAUDE_SERVER_ENDPOINT",
+        *_HOST_UNTRUSTED_DATA_ROUTE_ENV,
     ):
-        if _host_launch_isolated() and key in _HOST_UNTRUSTED_CLOUD_ENV:
-            continue
         raw = env.get(key)
         if isinstance(raw, str):
+            if not _host_config_value_allowed(key, raw):
+                continue
             _set_env_if_absent(key, raw, f"{mcp_path}")
 
 
@@ -2601,9 +2890,47 @@ def _is_user_global_claude_setting(path: Path) -> bool:
     return os.path.normcase(os.path.abspath(path)) in trusted
 
 
+def _hydrate_shared_package_spec_from_user_settings() -> None:
+    """Load the one package identity shared by Claude and Codex.
+
+    The legacy variable name is Claude-specific, but the runtime is not. If
+    Codex ignored this exact user-global override, alternating hosts would
+    reinstall the shared venv against two different marker identities.
+    """
+    if not _host_launch_isolated():
+        return
+    settings_root = _account_home() / ".claude"
+    for settings_path in (
+        settings_root / "settings.local.json",
+        settings_root / "settings.json",
+    ):
+        try:
+            body = json.loads(settings_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        env = body.get("env") if isinstance(body, dict) else None
+        raw = env.get("KUMIHO_CLAUDE_PACKAGE_SPEC") if isinstance(env, dict) else None
+        if not isinstance(raw, str):
+            continue
+        value = raw.strip()
+        if (
+            value
+            and "${" not in value
+            and not any(char in value for char in "\r\n\0")
+        ):
+            os.environ["KUMIHO_CLAUDE_PACKAGE_SPEC"] = value
+            print(
+                f"[kumiho-claude] Loaded KUMIHO_CLAUDE_PACKAGE_SPEC from "
+                f"{settings_path}.",
+                file=sys.stderr,
+            )
+            return
+
+
 def _hydrate_env_from_claude_settings() -> None:
     candidates = _candidate_settings_paths()
     found_any = False
+    trusted_global_keys_loaded: set[str] = set()
     for settings_path in candidates:
         if not settings_path.exists():
             continue
@@ -2617,36 +2944,67 @@ def _hydrate_env_from_claude_settings() -> None:
         if not isinstance(env, dict):
             continue
         found_any = True
-        # Preserve Claude Code's existing project settings support for tokens
-        # and CE selection. A repository-controlled Cloud route is different:
-        # pairing it with the shared ~/.kumiho bearer could disclose that
-        # credential merely by opening a repository. Custom Cloud routes and
-        # tenant hints therefore remain user-global or explicit-env only.
+        user_global = _is_user_global_claude_setting(settings_path)
+        # Preserve Claude Code's existing project settings support for explicit
+        # tokens and CE selection. Project-provided Cloud routes are discarded
+        # independently; the Cloud adapter later pins the official origin.
         keys = [
             "KUMIHO_AUTH_TOKEN",
             "KUMIHO_CLAUDE_MODE",
-            "KUMIHO_CLAUDE_SERVER_ENDPOINT",
+            *_HOST_UNTRUSTED_DATA_ROUTE_ENV,
         ]
-        if _is_user_global_claude_setting(settings_path):
+        if user_global:
             keys.extend((
                 "KUMIHO_CONTROL_PLANE_URL",
+                "KUMIHO_CONTROL_PLANE_API_URL",
                 "KUMIHO_TENANT_HINT",
+                "KUMIHO_FIREBASE_API_KEY",
+                "KUMIHO_FIREBASE_PROJECT_ID",
                 "KUMIHO_CONFIG_DIR",
+                "KUMIHO_CLAUDE_HOME",
+                "KUMIHO_CLAUDE_PACKAGE_SPEC",
+                *_HOST_UNTRUSTED_TRANSPORT_ENV,
             ))
         for key in keys:
             raw = env.get(key)
             if isinstance(raw, str):
-                if key == "KUMIHO_CONFIG_DIR":
-                    candidate = Path(raw.strip()).expanduser()
-                    if (
-                        not raw.strip()
-                        or _looks_like_placeholder(raw)
-                        or any(char in raw for char in "\r\n\0")
-                        or not candidate.is_absolute()
-                    ):
+                value = raw.strip()
+                if (
+                    not value
+                    or _looks_like_placeholder(raw)
+                    or "${" in raw
+                    or any(char in raw for char in "\r\n\0")
+                ):
+                    continue
+                if key in _HOST_TRUSTED_GLOBAL_PATH_ENV:
+                    candidate = Path(value)
+                    if not candidate.is_absolute():
                         continue
-                    raw = str(candidate)
-                _set_env_if_absent(key, raw, f"{settings_path}")
+                    value = str(candidate)
+                if not _host_config_value_allowed(
+                    key, value, user_global=user_global
+                ):
+                    continue
+                # A trusted global remote route must beat an earlier project
+                # loopback value. settings.local.json remains higher priority
+                # than settings.json through this first-wins set.
+                if user_global and key in (
+                    *_HOST_UNTRUSTED_CLOUD_ENV,
+                    *_HOST_UNTRUSTED_PATH_ENV,
+                    *_HOST_UNTRUSTED_PROVISION_ENV,
+                    *_HOST_UNTRUSTED_TRANSPORT_ENV,
+                    *_HOST_UNTRUSTED_DATA_ROUTE_ENV,
+                ):
+                    if key in trusted_global_keys_loaded:
+                        continue
+                    os.environ[key] = value
+                    trusted_global_keys_loaded.add(key)
+                    print(
+                        f"[kumiho-claude] Loaded {key} from {settings_path}.",
+                        file=sys.stderr,
+                    )
+                    continue
+                _set_env_if_absent(key, value, f"{settings_path}")
     if not found_any:
         print(
             f"[kumiho-claude] Searched {len(candidates)} settings paths; "
@@ -2657,33 +3015,49 @@ def _hydrate_env_from_claude_settings() -> None:
         )
 
 
+def _align_trusted_control_plane_api_url() -> None:
+    """Use a trusted custom discovery base for auth REST unless split explicitly.
+
+    The SDK/auth CLI consumes ``KUMIHO_CONTROL_PLANE_API_URL`` while discovery
+    consumes ``KUMIHO_CONTROL_PLANE_URL``. Host launch sanitation means a
+    concrete primary URL in a Claude host came from user-global settings; a
+    markerless direct invocation is user-controlled by definition. Custom
+    deployments historically commonly serve both APIs at that base, so
+    inheriting it is safer and more compatible than sending login credentials
+    to the official API. An explicit trusted API URL always wins. Codex keeps
+    its host-isolated official auth path.
+    """
+    if (os.getenv("KUMIHO_CLAUDE_HOST", "") or "").strip().lower() == "codex":
+        return
+    primary = (os.getenv("KUMIHO_CONTROL_PLANE_URL", "") or "").strip()
+    api = (os.getenv("KUMIHO_CONTROL_PLANE_API_URL", "") or "").strip()
+    if primary and not _looks_like_placeholder(primary) and not api:
+        os.environ["KUMIHO_CONTROL_PLANE_API_URL"] = primary
+
+
 def _hydrate_env_from_local_config() -> None:
     # Host processes inherit project settings before this code runs. Remove
     # untrusted Cloud routes and runtime roots before loading a bearer or
     # resolving an executable; trusted Claude values are restored by directly
     # reading user-global settings below. Codex never reads Claude settings.
     _clear_host_untrusted_environment()
+    _hydrate_trusted_persisted_user_environment()
+    # Package identity is the narrow exception: both hosts mutate the same
+    # ~/.kumiho/venv and therefore must honor one trusted global spec.
+    _hydrate_shared_package_spec_from_user_settings()
     # Codex has its own host-specific backend config. Reading Claude project,
-    # settings, or plugin files here could redirect Codex discovery (and its
+    # settings (apart from the shared package identity above), or plugin files
+    # here could redirect Codex discovery (and its
     # bearer token) to a Claude-only control plane. Claude keeps the original
     # hydration path unchanged.
     if os.getenv("KUMIHO_CLAUDE_HOST") == "codex":
-        # Codex Cloud has a host-isolated credential directory beneath the
-        # shared Kumiho root. Do not even load Claude/custom-control-plane
-        # credentials into this process; the adapter handles Codex auth later.
+        # Codex has its own backend selection. Authentication remains in the
+        # shared SDK-owned ~/.kumiho store used by Claude and Desktop.
         _apply_codex_backend_override()
         return
     _hydrate_env_from_dotenv()
     _hydrate_env_from_claude_settings()
     _hydrate_env_from_plugin_mcp()
-    env_auth = (os.getenv("KUMIHO_AUTH_TOKEN", "") or "").strip()
-    cached = _load_bearer_token()
-    if cached and (not env_auth or _looks_like_placeholder(env_auth)):
-        os.environ["KUMIHO_AUTH_TOKEN"] = cached
-        print(
-            "[kumiho-claude] Loaded KUMIHO_AUTH_TOKEN from local Kumiho credential cache.",
-            file=sys.stderr,
-        )
     _apply_codex_backend_override()
 
 
@@ -2702,7 +3076,6 @@ def _apply_codex_backend_override() -> None:
     os.environ.pop("KUMIHO_USE_CONTROL_PLANE_TOKEN", None)
     os.environ.pop("KUMIHO_WORKSPACE_ROOT", None)
     os.environ.pop("KUMIHO_ENV_FILE", None)
-    os.environ["KUMIHO_AUTH_TOKEN"] = ""
     backend = (os.getenv("KUMIHO_CODEX_BACKEND", "") or "").strip().lower()
     if backend == "cloud":
         for key in (
@@ -2904,20 +3277,12 @@ def _bootstrap_desktop_server_entries() -> None:
 
     server_entry: dict = {
         "command": command,
-        "args": [str(script_path)],
+        "args": ["-I", str(script_path)],
         "env": {
             "CLAUDE_PLUGIN_ROOT": str(plugin_root),
             "KUMIHO_CLAUDE_HOST": "claude",
         },
     }
-    # Include the resolved token if one is available so Claude Desktop picks
-    # it up immediately on the next restart (no extra /kumiho-onboard step needed).
-    # Never in CE mode: CE runs tokenless, and a stale cloud login cached in
-    # ~/.kumiho must not leak into a Desktop config file as plaintext.
-    token = _clean_token_candidate((os.getenv("KUMIHO_AUTH_TOKEN", "") or "").strip())
-    if token and not _looks_like_placeholder(token) and not _ce_mode_enabled():
-        server_entry["env"]["KUMIHO_AUTH_TOKEN"] = token
-
     for desktop_path in _claude_desktop_config_paths():
         try:
             if desktop_path.exists():
@@ -2940,7 +3305,7 @@ def _bootstrap_desktop_server_entries() -> None:
             if not isinstance(entry, dict):
                 return False
             args = entry.get("args") or []
-            if not args or Path(args[0]) != script_path:
+            if args != ["-I", str(script_path)]:
                 return False        # absent, or pinned to another version
             cmd = entry.get("command")
             if not cmd or not Path(cmd).exists():
@@ -2959,9 +3324,11 @@ def _bootstrap_desktop_server_entries() -> None:
             if not isinstance(entry, dict):
                 return False
             args = entry.get("args") or []
-            if not args or not isinstance(args[0], str):
+            if not args:
                 return False
-            raw = args[0]
+            raw = args[1] if args[:1] == ["-I"] and len(args) > 1 else args[0]
+            if not isinstance(raw, str):
+                return False
             try:
                 if Path(raw).resolve() == script_path.resolve():
                     return True
@@ -3002,15 +3369,17 @@ def _bootstrap_desktop_server_entries() -> None:
             previous = legacy if managed_legacy else {}
         repaired = dict(previous)
         repaired["command"] = command
-        repaired["args"] = [str(script_path)]
+        repaired["args"] = ["-I", str(script_path)]
         previous_env = previous.get("env")
         repaired_env = dict(previous_env) if isinstance(previous_env, dict) else {}
         repaired_env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
         repaired_env["KUMIHO_CLAUDE_HOST"] = "claude"
         if _ce_mode_enabled():
             repaired_env.pop("KUMIHO_AUTH_TOKEN", None)
-        elif token:
-            repaired_env["KUMIHO_AUTH_TOKEN"] = token
+        # In Cloud mode, preserve a token already present in a legacy entry
+        # for compatibility, but never copy an ambient/project credential into
+        # global Desktop configuration. Authentication persistence belongs to
+        # the SDK or to a host-level KUMIHO_AUTH_TOKEN set by the user.
         repaired["env"] = repaired_env
         servers["kumiho-memory"] = repaired
         if managed_legacy:
@@ -3169,9 +3538,6 @@ def _normalize_server_target(raw_target: str) -> str | None:
 def _ce_server_target_is_safe(target: str) -> bool:
     has_scheme = "://" in target
     parsed = urllib.parse.urlsplit(target if has_scheme else f"//{target}")
-    scheme = parsed.scheme.lower() if has_scheme else ""
-    if scheme in {"https", "grpcs"}:
-        return True
     host = (parsed.hostname or "").rstrip(".").lower()
     if host == "localhost":
         return True
@@ -3182,7 +3548,7 @@ def _ce_server_target_is_safe(target: str) -> bool:
 
 
 def _ce_redis_url_is_safe(value: str) -> bool:
-    """Allow plaintext Redis only on the local machine."""
+    """Allow CE working memory only on the local machine."""
     if any(char in value for char in "\r\n\0"):
         return False
     parsed = urllib.parse.urlsplit(value)
@@ -3199,8 +3565,6 @@ def _ce_redis_url_is_safe(value: str) -> bool:
         parsed.port
     except ValueError:
         return False
-    if parsed.scheme.lower() == "rediss":
-        return True
     host = parsed.hostname.rstrip(".").lower()
     if host == "localhost":
         return True
@@ -3216,8 +3580,8 @@ def _resolve_ce_redis_url(raw: str | None = None) -> str:
         value = DEFAULT_CE_REDIS_URL
     if not _ce_redis_url_is_safe(value):
         raise SystemExit(
-            "[kumiho-claude] Refusing an unsafe CE Redis URL; plaintext "
-            "redis:// is allowed only on loopback, otherwise use rediss://."
+            "[kumiho-claude] Refusing a non-loopback CE Redis URL; "
+            "CE services must run on the local machine."
         )
     return value
 
@@ -3246,8 +3610,8 @@ def _resolve_ce_endpoint() -> str | None:
         if normalized:
             if not _ce_server_target_is_safe(normalized):
                 raise SystemExit(
-                    "[kumiho-claude] Refusing a plaintext remote CE endpoint; "
-                    "use https:// or grpcs://."
+                    "[kumiho-claude] Refusing a non-loopback CE endpoint; "
+                    "CE services must run on the local machine."
                 )
             return normalized
         print(
@@ -3261,9 +3625,8 @@ def _resolve_ce_endpoint() -> str | None:
 def _bootstrap_ce_endpoint(endpoint: str) -> None:
     """Point the SDK at a self-hosted CE server instead of cloud discovery.
 
-    CE is launched through the plugin's explicit-client adapter, rather than
-    the SDK's loopback-only auto-detection. This supports both local and remote
-    CE while preserving grpc(s)/http(s) transport semantics.
+    CE is launched through the plugin's explicit-client adapter after the
+    endpoint and its supporting services have been restricted to loopback.
     """
     os.environ.pop("KUMIHO_SERVER_ADDRESS", None)
     os.environ.pop("KUMIHO_LOCAL_SERVER_ENDPOINT", None)
@@ -3595,23 +3958,55 @@ def _llm_base_url_is_safe(value: str) -> bool:
         parsed.port
     except ValueError:
         return False
+    host = parsed.hostname.rstrip(".").lower()
+    loopback = host == "localhost"
+    if not loopback:
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+    if _ce_mode_enabled():
+        return loopback
     if parsed.scheme.lower() == "https":
         return True
-    host = parsed.hostname.rstrip(".").lower()
-    if host == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
+    return loopback
 
 
 def _configure_llm_fallback() -> None:
-    if os.getenv("KUMIHO_CLAUDE_DISABLE_LLM_FALLBACK", "").strip().lower() in {"1", "true", "yes"}:
-        return
-
-    key_vars = ("KUMIHO_LLM_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+    key_vars = (
+        "KUMIHO_LLM_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AZURE_CLIENT_SECRET",
+        "AZURE_OPENAI_API_KEY",
+        "HF_TOKEN",
+    )
+    provider_route_vars = (
+        "OPENAI_BASE_URL",
+        "ANTHROPIC_BASE_URL",
+        "AZURE_OPENAI_ENDPOINT",
+    )
+    ce_mode = _ce_mode_enabled()
+    if ce_mode:
+        # CE permits one canonical, validated loopback model route. Provider
+        # aliases and key-only configurations can otherwise select their
+        # vendors' public defaults behind the plugin's back.
+        for key in provider_route_vars:
+            os.environ.pop(key, None)
     base_url = (os.getenv("KUMIHO_LLM_BASE_URL", "") or "").strip()
+    if ce_mode and (not base_url or _looks_like_placeholder(base_url)):
+        for key in key_vars:
+            os.environ.pop(key, None)
+        os.environ["KUMIHO_LLM_PROVIDER"] = "openai"
+        os.environ["OPENAI_API_KEY"] = "kumiho-claude-fallback"
+        os.environ["KUMIHO_LLM_BASE_URL"] = "http://127.0.0.1:9/v1"
+        return
     if (
         base_url
         and not _looks_like_placeholder(base_url)
@@ -3626,11 +4021,14 @@ def _configure_llm_fallback() -> None:
         os.environ["OPENAI_API_KEY"] = "kumiho-claude-fallback"
         os.environ["KUMIHO_LLM_BASE_URL"] = "http://127.0.0.1:9/v1"
         print(
-            "[kumiho-claude] Ignored an unsafe LLM base URL: remote model "
-            "endpoints must use HTTPS. Optional LLM enrichment is disabled; "
+            "[kumiho-claude] Ignored an unsafe LLM base URL: CE model "
+            "endpoints must be loopback and Cloud remote endpoints must use "
+            "HTTPS. Optional LLM enrichment is disabled; "
             "core memory tools remain available.",
             file=sys.stderr,
         )
+        return
+    if os.getenv("KUMIHO_CLAUDE_DISABLE_LLM_FALLBACK", "").strip().lower() in {"1", "true", "yes"}:
         return
     if any(os.getenv(var, "").strip() for var in key_vars):
         return
@@ -3668,7 +4066,15 @@ def _configure_llm_fallback() -> None:
     # Only the optional enrichment paths call one, and the placeholder config
     # above (dummy key + dead-port base URL) makes those calls fail fast
     # instead of hanging on a missing endpoint.
-    mode = "CE mode" if _ce_mode_enabled() else "no API key detected"
+    mode = "CE mode" if ce_mode else "no API key detected"
+    opt_in = (
+        "set KUMIHO_LLM_BASE_URL to a loopback OpenAI-compatible endpoint AND "
+        "KUMIHO_LLM_MODEL to a model it serves (e.g. local Ollama llama3.1)."
+        if ce_mode
+        else "set KUMIHO_LLM_BASE_URL to an OpenAI-compatible endpoint AND "
+        "KUMIHO_LLM_MODEL to a model it serves, or set KUMIHO_LLM_API_KEY / "
+        "OPENAI_API_KEY / ANTHROPIC_API_KEY."
+    )
     print(
         f"[kumiho-claude] Keyless operation ({mode}): core memory tools "
         "(reflect, decompose, code_capture, code_why, recall) fully work "
@@ -3677,10 +4083,7 @@ def _configure_llm_fallback() -> None:
         "enrichment (automatic edge discovery, Dream State, summarizer-written "
         "consolidation summaries) is off — a fail-fast placeholder LLM config "
         "is pinned (dummy OPENAI_API_KEY, dead-port KUMIHO_LLM_BASE_URL). To "
-        "opt in, set KUMIHO_LLM_BASE_URL to an OpenAI-compatible endpoint AND "
-        "KUMIHO_LLM_MODEL to a model it serves (e.g. a local Ollama with "
-        "llama3.1), or set KUMIHO_LLM_API_KEY / OPENAI_API_KEY / "
-        "ANTHROPIC_API_KEY.",
+        f"opt in, {opt_in}",
         file=sys.stderr,
     )
 
@@ -3729,8 +4132,8 @@ def main() -> int:
         os.environ[_SYNC_PROVISION_ENV] = "1"
 
     if args.repair_desktop_entry:
-        _sanitize_placeholder_env_vars()
         _hydrate_env_from_local_config()
+        _sanitize_placeholder_env_vars()
         if _desktop_bootstrap_enabled():
             _bootstrap_desktop_server_entries()
         return 0
@@ -3738,14 +4141,14 @@ def main() -> int:
     if args.provision:
         # Nothing else: no discovery, no Desktop config, no auth. Provisioning
         # must succeed for a user who has not authenticated yet.
-        _sanitize_placeholder_env_vars()
         _hydrate_env_from_local_config()
+        _sanitize_placeholder_env_vars()
         _ensure_runtime()
         print("[kumiho-claude] Provisioning complete.", file=sys.stderr)
         return 0
 
-    _sanitize_placeholder_env_vars()
     _hydrate_env_from_local_config()
+    _sanitize_placeholder_env_vars()
     # Validate/adopt/provision the shared runtime before auth or discovery.
     # _ensure_runtime holds the canonical ~/.kumiho/provision.lock while it
     # repairs the hook interpreter and migrates Claude's compatibility alias,
@@ -3759,35 +4162,19 @@ def main() -> int:
     # a vendored copy running under codex must never touch Desktop configs.
     if _desktop_bootstrap_enabled():
         _bootstrap_desktop_server_entries()
-    # CE / self-hosted mode is tokenless and server-authenticated: skip the
-    # cloud-token sync and auth warnings so they do not fire spuriously.
-    if not _ce_mode_enabled():
-        if _desktop_bootstrap_enabled():
-            _sync_token_to_desktop_config()
-        _validate_auth_token()
-        _warn_auth()
-    codex_cloud = (
-        os.getenv("KUMIHO_CLAUDE_HOST") == "codex" and not _ce_mode_enabled()
-    )
-    if codex_cloud:
-        # The Codex-only adapter below pins the official control plane and a
-        # dedicated discovery cache before it imports the SDK.  Do not perform
-        # the Claude bootstrap first: besides doing the request twice, that
-        # would make host routing depend on ambient discovery state again.
+    cloud_mode = not _ce_mode_enabled()
+    if cloud_mode:
+        # Both hosts use the same narrow adapter. It pins the official control
+        # plane, then delegates token loading, refresh, and discovery to the
+        # Python SDK.
         os.environ.pop("KUMIHO_SERVER_ENDPOINT", None)
         os.environ.pop("KUMIHO_SERVER_ADDRESS", None)
+        os.environ["KUMIHO_PLUGIN_SHARED_HOME"] = str(_kumiho_home())
     else:
-        try:
-            _bootstrap_server_endpoint()
-        except RuntimeError as exc:
-            # Prevent SDK from falling back to localhost:8080.
-            os.environ["KUMIHO_SERVER_ENDPOINT"] = "needs-auth.kumiho.invalid:443"
-            print(
-                "[kumiho-claude] Discovery bootstrap failed. "
-                f"Run {_onboard_command_label()} to set up authentication. "
-                f"Error: {exc}",
-                file=sys.stderr,
-            )
+        ce_endpoint = _resolve_ce_endpoint()
+        if ce_endpoint is None:  # defensive: cloud_mode is derived from the same predicate
+            raise SystemExit("[kumiho-memory] CE mode has no configured endpoint.")
+        _bootstrap_ce_endpoint(ce_endpoint)
     _configure_llm_fallback()
 
     if args.self_test:
@@ -3799,7 +4186,7 @@ def main() -> int:
             "sys.exit(0 if not missing else 1)"
         )
         return _run(
-            [str(python_path), "-c", check_code],
+            [str(python_path), "-I", "-c", check_code],
             check=False,
             timeout=PROBE_TIMEOUT_S,
             env=_provision_subprocess_env(),
@@ -3811,16 +4198,14 @@ def main() -> int:
             raise SystemExit(
                 f"[kumiho-claude] CE runtime adapter is missing: {ce_runner}"
             )
-        cmd = [str(python_path), str(ce_runner), *passthrough]
-    elif codex_cloud:
+        cmd = [str(python_path), "-I", str(ce_runner), *passthrough]
+    else:
         cloud_runner = Path(__file__).resolve().with_name("run_kumiho_cloud.py")
         if not cloud_runner.is_file():
             raise SystemExit(
-                f"[kumiho-codex] Cloud runtime adapter is missing: {cloud_runner}"
+                f"[kumiho-memory] Cloud runtime adapter is missing: {cloud_runner}"
             )
-        cmd = [str(python_path), str(cloud_runner), *passthrough]
-    else:
-        cmd = [str(python_path), "-m", "kumiho.mcp_server", *passthrough]
+        cmd = [str(python_path), "-I", str(cloud_runner), *passthrough]
     # On Windows os.execv spawns a new process and immediately exits the
     # current one.  Claude Desktop monitors the original PID; when it exits
     # the transport is closed ~85 ms later even though the child is still

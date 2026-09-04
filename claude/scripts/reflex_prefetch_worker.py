@@ -12,21 +12,17 @@ The query text is NEVER passed in argv: process command lines are captured by
 EDR agents, so the prompt is read from ``<sid>.turn.json`` instead and only the
 cwd + session id travel on the command line.
 
-Deliberately does NOT reuse two launcher steps the sibling workers call:
+Deliberately does NOT reuse the launcher's runtime provisioning step:
 
 * ``_ensure_runtime()`` -- it can run ``venv.create`` + ``pip install`` and
   spawns a probe subprocess even when warm.  A per-turn worker must never
   provision anything, so the venv is probed directly (interpreter + marker
   file) and a cold state dir is a skip, not an install.
-* ``_bootstrap_server_endpoint()`` per invocation -- control-plane discovery is
-  an HTTPS round trip.  The resolved endpoint is cached in
-  ``<reflex>/endpoint.json`` for 15 minutes and the cache is dropped on any
-  transport error so a moved region self-heals.
 
-The auth sentinel is the load-bearing bail: with no token that bootstrap does
-NOT raise, it pins ``needs-auth.kumiho.invalid:443`` (RFC 6761, never
-resolves).  Without the explicit check every single turn would fire a doomed
-gRPC call at a host that cannot exist, forever.
+Cloud calls go through ``run_kumiho_cloud.py``.  That adapter pins the official
+control plane while the Python SDK owns authentication, refresh, discovery,
+regional routing, and its discovery cache.  CE remains an explicit loopback
+route prepared by the launcher.
 
 Run: python reflex_prefetch_worker.py <cwd> <session_id>  (detached; prints nothing)
 """
@@ -50,10 +46,8 @@ import reflex_state as rs  # noqa: E402
 # Global, not per-session: the venv and the endpoint cache are global state, so
 # two sessions prefetching at once would contend over the same files.
 LOCK_STALE_S = 300
-ENDPOINT_TTL_S = 900
 ENGAGE_TIMEOUT_S = 45
 MARKER_FILE = ".installed-packages.txt"
-AUTH_SENTINEL = "needs-auth.kumiho.invalid"
 
 DEFAULT_MIN_INTERVAL_S = 45
 DEFAULT_LIMIT = 5
@@ -143,10 +137,6 @@ def _state_path(session_id: str) -> Path:
     return rs.reflex_dir() / ("%s.state" % session_id)
 
 
-def _endpoint_path() -> Path:
-    return rs.reflex_dir() / "endpoint.json"
-
-
 def _env_int(name: str, default: int) -> int:
     raw = (os.getenv(name, "") or "").strip()
     try:
@@ -172,38 +162,6 @@ def _venv_ready(launcher) -> Path | None:
     if not python_path.exists() or not launcher._marker_path().exists():
         return None
     return python_path
-
-
-def _resolve_endpoint(launcher) -> str:
-    """Endpoint with a 15-minute cache; CE always goes through the launcher."""
-    if launcher._ce_mode_enabled():
-        launcher._bootstrap_server_endpoint()  # explicit CE, no discovery round trip
-        return (os.getenv("KUMIHO_SERVER_ENDPOINT", "") or "").strip()
-
-    cached = rs.read_json(_endpoint_path(), None)
-    if isinstance(cached, dict):
-        endpoint = str(cached.get("endpoint") or "").strip()
-        ts = cached.get("ts")
-        if endpoint and isinstance(ts, (int, float)) and (time.time() - ts) < ENDPOINT_TTL_S:
-            os.environ["KUMIHO_SERVER_ENDPOINT"] = endpoint
-            os.environ.pop("KUMIHO_SERVER_ADDRESS", None)
-            return endpoint
-
-    launcher._bootstrap_server_endpoint()  # may raise RuntimeError
-    endpoint = (os.getenv("KUMIHO_SERVER_ENDPOINT", "") or "").strip()
-    # Never cache the auth sentinel: it costs nothing to re-derive (the
-    # no-token path short-circuits before any network call) and caching it
-    # would keep the reflex dark for 15 minutes after a token finally lands.
-    if endpoint and AUTH_SENTINEL not in endpoint:
-        rs.write_json_atomic(_endpoint_path(), {"endpoint": endpoint, "ts": int(time.time())})
-    return endpoint
-
-
-def _drop_endpoint_cache() -> None:
-    try:
-        _endpoint_path().unlink(missing_ok=True)
-    except OSError:
-        pass
 
 
 # --------------------------------------------------------------------- query
@@ -474,10 +432,9 @@ def _call_engage(python_path, args: dict, *, ce_mode: bool = False) -> tuple:
     """
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
-    command = [str(python_path), "-c", _ENGAGE_SNIPPET]
-    if ce_mode:
-        adapter = Path(__file__).resolve().parent / "run_kumiho_ce.py"
-        command = [str(python_path), str(adapter), "--code", _ENGAGE_SNIPPET]
+    adapter_name = "run_kumiho_ce.py" if ce_mode else "run_kumiho_cloud.py"
+    adapter = Path(__file__).resolve().parent / adapter_name
+    command = [str(python_path), "-I", str(adapter), "--code", _ENGAGE_SNIPPET]
     try:
         proc = subprocess.run(
             command,
@@ -517,11 +474,9 @@ def _prefetch(session_id: str, cwd_arg: str) -> int:
     launcher = _load_launcher()
 
     # Same environment pipeline as the MCP server, minus provisioning.
-    launcher._sanitize_placeholder_env_vars()
     launcher._hydrate_env_from_local_config()
+    launcher._sanitize_placeholder_env_vars()
     ce_mode = launcher._ce_mode_enabled()
-    if not ce_mode:
-        launcher._validate_auth_token()
     launcher._configure_llm_fallback()
     # NOTE: no keyless bail here, unlike code_ingest_worker.  Commit mining
     # needs an LLM; engage in summarized mode does not.  Keyless is fine.
@@ -540,15 +495,19 @@ def _prefetch(session_id: str, cwd_arg: str) -> int:
             rs.log("skip: venv not provisioned")
         return 0
 
-    try:
-        endpoint = _resolve_endpoint(launcher)
-    except RuntimeError as exc:
-        _drop_endpoint_cache()
-        rs.log("skip: endpoint bootstrap failed (%s)" % exc)
-        return 0
-    if AUTH_SENTINEL in endpoint:
-        rs.log("skip: no auth token")
-        return 0
+    if ce_mode:
+        try:
+            ce_endpoint = launcher._resolve_ce_endpoint()
+            if ce_endpoint is None:
+                raise RuntimeError("CE mode has no configured endpoint")
+            launcher._bootstrap_ce_endpoint(ce_endpoint)
+        except RuntimeError as exc:
+            rs.log("skip: CE endpoint bootstrap failed (%s)" % exc)
+            return 0
+    else:
+        # The child adapter consumes this one-shot, validated handoff. It leaves
+        # any explicit KUMIHO_AUTH_TOKEN untouched for the SDK to interpret.
+        os.environ["KUMIHO_PLUGIN_SHARED_HOME"] = str(launcher._kumiho_home())
 
     session = rs.read_json(_session_path(session_id), None) or {}
     turn = rs.read_json(_turn_path(session_id), None) or {}
@@ -593,9 +552,6 @@ def _prefetch(session_id: str, cwd_arg: str) -> int:
         ce_mode=ce_mode,
     )
     if data is None:
-        # Any failure invalidates the cached endpoint: a moved region or a dead
-        # cache entry must not keep failing for the rest of its 15-minute TTL.
-        _drop_endpoint_cache()
         if _is_unknown_tool_error(error):
             state["engage_unsupported"] = True
             rs.write_json_atomic(_state_path(session_id), state)
