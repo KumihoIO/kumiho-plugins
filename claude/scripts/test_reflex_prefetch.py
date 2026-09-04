@@ -102,10 +102,16 @@ def _prepare(tmp_path, monkeypatch, *, sid="s1", prompt="why did we pick postgre
             json.dumps({"prompt": prompt}, ensure_ascii=True), encoding="utf-8")
 
     mod = mod or _load()
-    real_load_launcher = mod._load_launcher
 
     def isolated_launcher():
-        launcher = real_load_launcher()
+        # Load from the real scripts directory, not the worker's mutable
+        # ``__file__``. The subprocess-pipe test points that value at a tiny
+        # adapter directory so _call_engage uses the local stand-in.
+        spec = importlib.util.spec_from_file_location(
+            "kumiho_claude_launcher", SCRIPTS / "run_kumiho_mcp.py"
+        )
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
         # The worker deliberately mirrors Claude's normal hydration pipeline,
         # but this test must not import the developer machine's real
         # ~/.claude/settings.json or repository .env files.  Keep the pipeline
