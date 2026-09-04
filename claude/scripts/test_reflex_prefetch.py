@@ -74,6 +74,7 @@ def _prepare(tmp_path, monkeypatch, *, sid="s1", prompt="why did we pick postgre
     monkeypatch.setenv("KUMIHO_CLAUDE_HOME", str(tmp_path))
     monkeypatch.setenv("KUMIHO_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("KUMIHO_REFLEX_PREFETCH", raising=False)
+    monkeypatch.delenv("KUMIHO_CLAUDE_HOST", raising=False)
     monkeypatch.delenv("KUMIHO_CLAUDE_MODE", raising=False)
     monkeypatch.delenv("KUMIHO_CLAUDE_SERVER_ENDPOINT", raising=False)
     # Cleared unconditionally: a leaked host value points at a REAL venv, so

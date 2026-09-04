@@ -201,6 +201,10 @@ def test_claude_setup_restores_trusted_roots_but_pins_cloud_and_local_routes(
     monkeypatch.setenv("KUMIHO_CLAUDE_HOST", "claude")
     monkeypatch.setenv("KUMIHO_CONFIG_DIR", str(tmp_path / "project-runtime"))
     monkeypatch.setenv("KUMIHO_CLAUDE_HOME", str(tmp_path / "project-state"))
+    # Do not let direct environment mutations from earlier tests masquerade as
+    # trusted user-global settings in this isolated setup contract.
+    monkeypatch.delenv("KUMIHO_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("KUMIHO_MEMORY_CODE_AUTOMINE", raising=False)
 
     mod = _load("kumiho_setup_user_global_root", "setup.py")
 

@@ -30,7 +30,11 @@ def _run(payload: dict, home: Path, args=(), env_extra: dict | None = None):
     # No PYTHONIOENCODING, raw UTF-8 bytes -- production conditions. See the
     # note in test_reflex_observe._run_hook.
     env = {k: v for k, v in os.environ.items()
-           if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+           if k not in (
+               "PYTHONIOENCODING",
+               "PYTHONUTF8",
+               "KUMIHO_WORKING_MEMORY_TTL",
+           )}
     env["KUMIHO_CLAUDE_HOME"] = str(home)
     env.update(env_extra or {})
     r = subprocess.run(

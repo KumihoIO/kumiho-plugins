@@ -1,5 +1,5 @@
 {
-  "mcp_servers": {
+  "mcpServers": {
     "kumiho-memory": {
       "command": "node",
       "args": [

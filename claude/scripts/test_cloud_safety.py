@@ -42,9 +42,19 @@ CLOUD = _cloud_adapter()
 
 
 @pytest.fixture(autouse=True)
-def _isolate_machine_user_environment(monkeypatch):
+def _isolate_machine_user_environment():
     """Unit tests never inherit the developer/runner's real persisted env."""
-    monkeypatch.setattr(L, "_trusted_persisted_user_environment", lambda: {})
+    original_environment = os.environ.copy()
+    original_reader = L._trusted_persisted_user_environment
+    L._trusted_persisted_user_environment = lambda: {}
+    try:
+        yield
+    finally:
+        # Launcher/adapter code intentionally edits os.environ directly. Keep
+        # those production mutations from becoming another test's input.
+        L._trusted_persisted_user_environment = original_reader
+        os.environ.clear()
+        os.environ.update(original_environment)
 
 
 def test_claude_manifest_marks_the_host_for_environment_isolation():
@@ -156,6 +166,7 @@ def test_cloud_adapter_refreshes_sdk_login_before_cached_discovery(monkeypatch):
     fake_auth.ensure_token = ensure_token
     monkeypatch.setitem(sys.modules, "kumiho", fake_kumiho)
     monkeypatch.setitem(sys.modules, "kumiho.auth_cli", fake_auth)
+    monkeypatch.delenv("KUMIHO_AUTH_TOKEN", raising=False)
     CLOUD._prepare_environment()
 
     assert CLOUD._configure_cloud()
@@ -188,6 +199,7 @@ def test_cloud_adapter_refresh_failure_installs_fail_closed_client(monkeypatch):
     fake_auth.ensure_token = lambda *, interactive: None
     monkeypatch.setitem(sys.modules, "kumiho", fake_kumiho)
     monkeypatch.setitem(sys.modules, "kumiho.auth_cli", fake_auth)
+    monkeypatch.delenv("KUMIHO_AUTH_TOKEN", raising=False)
     CLOUD._prepare_environment()
 
     assert CLOUD._configure_cloud()
@@ -219,6 +231,7 @@ def test_cloud_adapter_failure_disables_ce_fallback_and_names_sdk_logins(
     fake_auth.ensure_token = login_unavailable
     monkeypatch.setitem(sys.modules, "kumiho", fake_kumiho)
     monkeypatch.setitem(sys.modules, "kumiho.auth_cli", fake_auth)
+    monkeypatch.delenv("KUMIHO_AUTH_TOKEN", raising=False)
     CLOUD._prepare_environment()
 
     assert not CLOUD._configure_cloud()
@@ -386,6 +399,17 @@ def test_hostile_ambient_routes_are_removed_without_replacing_explicit_token(
     monkeypatch.setenv("HOME", str(tmp_path / "project-home"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "project-home"))
     monkeypatch.setattr(L, "_account_home", lambda: account_home)
+    # Several launcher tests intentionally mutate the process environment
+    # directly. Clear every asserted route first so this test supplies all of
+    # its own hostile inputs instead of inheriting one from an earlier test.
+    for key in (
+        *L._HOST_UNTRUSTED_CLOUD_ENV,
+        *L._HOST_UNTRUSTED_PATH_ENV,
+        *L._HOST_UNTRUSTED_PROVISION_ENV,
+        *L._HOST_UNTRUSTED_TRANSPORT_ENV,
+        *L._HOST_UNTRUSTED_DATA_ROUTE_ENV,
+    ):
+        monkeypatch.delenv(key, raising=False)
     for key, value in {
         "KUMIHO_CONTROL_PLANE_URL": "https://attacker.invalid",
         "KUMIHO_CONTROL_PLANE_API_URL": "https://attacker.invalid/api",

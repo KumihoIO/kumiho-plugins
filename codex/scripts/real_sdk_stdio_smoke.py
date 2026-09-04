@@ -29,6 +29,13 @@ EXPECTED_TOOLS = {
 }
 
 
+def _claude_plugin_data(home: Path) -> Path:
+    return (
+        home / ".claude" / "plugins" / "data"
+        / "kumiho-memory-kumiho-plugins"
+    )
+
+
 def _reader(stream, output: queue.Queue[str | None]) -> None:
     try:
         for line in iter(stream.readline, ""):
@@ -157,7 +164,7 @@ def _run_host_backend(
         XDG_CACHE_HOME=str(home / ".cache"),
         XDG_CONFIG_HOME=str(home / ".config"),
         CLAUDE_CONFIG_DIR=str(home / ".claude"),
-        CLAUDE_PLUGIN_DATA=str(home / "claude-plugin-data"),
+        CLAUDE_PLUGIN_DATA=str(_claude_plugin_data(home)),
     )
     if os.name == "nt":
         env["USERPROFILE"] = str(home)
@@ -196,7 +203,7 @@ def _run_host_backend(
             raise RuntimeError(f"unexpected Claude MCP command: {manifest_command!r}")
         if manifest_args[:1] != ["-I"]:
             raise RuntimeError(f"Claude MCP launch is not isolated: {manifest_args!r}")
-        alias_python = home / "claude-plugin-data" / "venv" / "bin" / "python"
+        alias_python = _claude_plugin_data(home) / "venv" / "bin" / "python"
         executable = alias_python.with_name("python.exe") if os.name == "nt" else alias_python
         if backend == "cloud":
             if not executable.is_file():
@@ -331,9 +338,18 @@ def main() -> int:
     if not python.is_file() or ROOT in home.parents or home == ROOT:
         print("integration paths are invalid", file=sys.stderr)
         return 2
+    claude_manifest = json.loads(
+        (ROOT / "claude" / ".claude-plugin" / "plugin.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    claude_version = claude_manifest["version"]
     snapshots = {
-        host: home / f"installed-kumiho-memory-{host}"
-        for host in ("codex", "claude")
+        "codex": home / "installed-kumiho-memory-codex",
+        "claude": (
+            home / ".claude" / "plugins" / "cache" / "kumiho-plugins"
+            / "kumiho-memory" / claude_version
+        ),
     }
     for host, plugin_root in snapshots.items():
         if plugin_root.exists():

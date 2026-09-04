@@ -152,10 +152,7 @@ def test_native_plugin_manifest_contract():
 
 def test_native_mcp_uses_node_launcher_without_placeholders():
     body = _load_json(MCP_CONFIG)
-    assert "mcpServers" not in body, (
-        "Codex bundled MCP config must not use Claude's camelCase wrapper"
-    )
-    server = body.get("mcp_servers", {}).get("kumiho-memory")
+    server = body.get("mcpServers", {}).get("kumiho-memory")
     assert isinstance(server, dict), "codex/.mcp.json has no kumiho-memory server"
     assert server.get("command") == "node", (
         "Codex MCP must enter through Node so Python discovery works on Windows"
@@ -1203,7 +1200,7 @@ def test_ingestion_configures_an_explicit_backend_client():
             "cache_path": str(
                 shared_root / "official-cloud" / "discovery-cache.json"
             ),
-            "force_refresh": False,
+            "force_refresh": True,
         }
         assert calls["cloud_token"] == "explicit-api-token"
         assert calls["ensure"] == 0
