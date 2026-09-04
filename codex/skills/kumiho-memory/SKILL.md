@@ -50,6 +50,30 @@ copied exactly: reflect forwards the hint as a space path verbatim, so
 Fall back to the capture type (`decisions`, `facts`, `preferences`,
 `corrections`) when none fits.
 
+## Bounded recall — Codex only
+
+Recall is a working context, not a transcript dump. For a substantive request
+whose topic may have history, make one targeted `kumiho_memory_engage` call
+derived from the current user message. Prefer the summarized mode with
+`limit=3`; keep the query short and specific. Do not fetch whole spaces,
+session transcripts, or old artifacts just to be safe.
+
+Keep only the few returned memories that constrain the current answer (their
+short title/summary and krefs). Treat roughly 1,200 characters or three items
+as the normal working-context budget. If the result is empty, continue from
+the code, docs, and git history instead of asking the user to repeat context.
+
+Broaden retrieval only when a relevant decision is missing or two memories
+conflict. Resolve a code-specific question with `kumiho_code_why` for the
+affected file rather than issuing another broad engage call. Never repeat an
+identical query in the same turn, and do not engage for trivial acknowledgements.
+
+Before a material change, keep a small internal receipt containing: the
+relevant decision(s), the constraint(s) that must not be violated, the files
+in scope, and the source krefs. This is a checkpoint for reasoning, not text to
+repeat to the user. If the user corrects any premise, discard the receipt and
+rebuild it from the correction before continuing.
+
 ## Every answer you had to ask for gets stored
 
 If you had to ask the user, the answer was not in the code, the docs or
