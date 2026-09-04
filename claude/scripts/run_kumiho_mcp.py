@@ -888,7 +888,14 @@ def _provision_subprocess_env(extra: dict[str, str] | None = None) -> dict[str, 
         }
         for key in _HOST_TRUSTED_PROVISION_TRANSPORT_ENV:
             value = trusted_transport.get(key)
-            if value:
+            # A project may overwrite a previously loaded settings value in
+            # the live environment. Do not let that overwrite inherit the
+            # stale trusted value; a missing value is safe to restore.
+            if value and (
+                key not in _TRUSTED_SETTINGS_TRANSPORT_ENV
+                or key not in os.environ
+                or os.environ.get(key) == value
+            ):
                 env[key] = value
     if extra:
         env.update(extra)
