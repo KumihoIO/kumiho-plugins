@@ -551,6 +551,8 @@ def _clear_host_untrusted_environment() -> None:
     """
     if not _host_launch_isolated():
         return
+    host = (os.getenv("KUMIHO_CLAUDE_HOST", "") or "").strip().lower()
+    ambient_token = (os.getenv("KUMIHO_AUTH_TOKEN", "") or "").strip()
     safe_project_routes = {}
     for key in _HOST_UNTRUSTED_DATA_ROUTE_ENV:
         value = (os.getenv(key, "") or "").strip()
@@ -580,6 +582,8 @@ def _clear_host_untrusted_environment() -> None:
         os.environ["HOMEPATH"] = tail or "\\"
         os.environ["APPDATA"] = str(account_home / "AppData" / "Roaming")
         os.environ["LOCALAPPDATA"] = str(account_home / "AppData" / "Local")
+    if host == "codex" and ambient_token and not _looks_like_placeholder(ambient_token):
+        os.environ["KUMIHO_AUTH_TOKEN"] = ambient_token
     os.environ.update(safe_project_routes)
 
 
