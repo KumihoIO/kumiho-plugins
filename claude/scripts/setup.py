@@ -10,7 +10,7 @@ Interactive setup that:
 
 Usage:
     python -I scripts/setup.py                    # interactive (choose backend)
-    python -I scripts/setup.py -y                 # cloud; use env or SDK login
+    python -I scripts/setup.py -y                 # persisted backend, Cloud if fresh
     python -I scripts/setup.py --token-stdin -y   # legacy one-run verification
     python -I scripts/setup.py --ce -y            # non-interactive self-hosted CE
     python -I scripts/setup.py --ce --ce-endpoint 127.0.0.1:9190 -y
@@ -121,6 +121,7 @@ _SETUP_HOST_UNTRUSTED_TRANSPORT_ENV = (
     "NO_GRPC_PROXY",
     "GRPC_SSL_CIPHER_SUITES",
 )
+_SETUP_HOST_UNTRUSTED_BACKEND_ENV = ("KUMIHO_CLAUDE_MODE",)
 _SETUP_HOST_UNTRUSTED_DATA_ROUTE_ENV = (
     "KUMIHO_CLAUDE_SERVER_ENDPOINT",
     "KUMIHO_SERVER_ENDPOINT",
@@ -172,6 +173,18 @@ _SETUP_TRUSTED_GLOBAL_PATH_ENV = frozenset({
     "OPENSSL_MODULES",
     "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
 })
+_SETUP_TRUSTED_PROVISION_TRANSPORT_ENV = frozenset({
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "AWS_CA_BUNDLE",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "GRPC_PROXY",
+    "NO_GRPC_PROXY", "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+})
+
+# Values restored from the user's exact Claude settings file are allowed to
+# reach pip.  The live host environment is still treated as untrusted: a
+# repository must not be able to redirect onboarding through its own proxy or
+# CA bundle.
+_SETUP_TRUSTED_TRANSPORT_ENV: dict[str, str] = {}
 
 
 def _setup_host_launch_isolated() -> bool:
@@ -264,6 +277,7 @@ def _prepare_host_setup_environment() -> None:
     untrusted = frozenset(key.upper() for key in (
         *_SETUP_HOST_UNTRUSTED_ENV,
         *_SETUP_HOST_UNTRUSTED_TRANSPORT_ENV,
+        *_SETUP_HOST_UNTRUSTED_BACKEND_ENV,
         *_SETUP_HOST_UNTRUSTED_DATA_ROUTE_ENV,
     ))
     for actual in tuple(os.environ):
@@ -298,6 +312,7 @@ def _prepare_host_setup_environment() -> None:
             "KUMIHO_CONFIG_DIR",
             "KUMIHO_CLAUDE_HOME",
             "KUMIHO_CLAUDE_PACKAGE_SPEC",
+            *_SETUP_HOST_UNTRUSTED_BACKEND_ENV,
             *_SETUP_HOST_UNTRUSTED_DATA_ROUTE_ENV,
             *_SETUP_HOST_UNTRUSTED_TRANSPORT_ENV,
         ):
@@ -316,12 +331,18 @@ def _prepare_host_setup_environment() -> None:
                 if not path.is_absolute():
                     continue
                 value = str(path)
+            if key in _SETUP_HOST_UNTRUSTED_BACKEND_ENV and value.lower() not in {
+                "cloud", "managed", "ce", "community", "self-hosted", "local",
+            }:
+                continue
             if (
                 key in _SETUP_HOST_UNTRUSTED_DATA_ROUTE_ENV
                 and not _project_route_is_allowed(key, value)
             ):
                 continue
             trusted[key] = value
+            if key in _SETUP_TRUSTED_PROVISION_TRANSPORT_ENV:
+                _SETUP_TRUSTED_TRANSPORT_ENV[key] = value
     os.environ.update(trusted)
     os.environ["KUMIHO_CONTROL_PLANE_URL"] = OFFICIAL_CONTROL_PLANE_URL
     os.environ.pop("KUMIHO_CONTROL_PLANE_API_URL", None)
@@ -503,6 +524,10 @@ def _provision_subprocess_env() -> dict[str, str]:
             )
         ):
             env.pop(key, None)
+    if _setup_host_launch_isolated():
+        # Re-add only proxy/CA values read from the user's exact Claude
+        # settings file. Ambient project values were removed above.
+        env.update(_SETUP_TRUSTED_TRANSPORT_ENV)
     return env
 
 
@@ -1216,13 +1241,20 @@ def setup_auth(cli_token: str | None = None) -> tuple[str | None, bool]:
 
 
 def choose_backend(args: argparse.Namespace) -> str:
-    """Return 'cloud' or 'ce'. Preserves the cloud default for non-interactive
-    runs and whenever a token is supplied, so existing scripts are unaffected."""
+    """Return ``cloud`` or ``ce`` while preserving an existing CE selection.
+
+    ``--yes`` is commonly used by host integrations that cannot answer a
+    prompt. In that mode an existing persisted backend is authoritative; a
+    fresh install retains the historical Cloud default.
+    """
     if getattr(args, "ce", False):
         return "ce"
     if args.token:
         return "cloud"
     if AUTO_YES:
+        persisted = (os.getenv("KUMIHO_CLAUDE_MODE", "") or "").strip().lower()
+        if persisted in {"ce", "community", "self-hosted", "local"}:
+            return "ce"
         return "cloud"
 
     choice = ask_choice("Which Kumiho backend?", [
@@ -1987,7 +2019,7 @@ def main(argv: list[str] | None = None) -> int:
     log("Step 3/5: Backend configuration")
     if ce is not None:
         write_ce_config(ce)
-    else:
+    elif cloud_authenticated:
         _neutralize_env_markers(list(_CE_PERSISTED_ENV_KEYS))
     print()
 

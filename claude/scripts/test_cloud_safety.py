@@ -65,15 +65,14 @@ def test_claude_manifest_marks_the_host_for_environment_isolation():
     assert env["KUMIHO_CLAUDE_HOST"] == "claude"
 
 
-def test_claude_manifest_bootstraps_only_from_persistent_plugin_data():
+def test_claude_manifest_bootstraps_from_persisted_python_or_system_python():
     manifest = json.loads(
         (Path(__file__).parents[1] / ".mcp.json").read_text(encoding="utf-8")
     )
     server = manifest["mcpServers"]["kumiho-memory"]
-    assert server["command"] == "${CLAUDE_PLUGIN_DATA}/venv/bin/python"
+    assert server["command"] == "${KUMIHO_PYTHON:-python}"
     assert server["args"][:1] == ["-I"]
-    assert "KUMIHO_PYTHON" not in server["command"]
-    assert ":-python" not in server["command"]
+    assert "CLAUDE_PLUGIN_DATA" not in server["command"]
 
 
 def test_plugin_local_env_example_does_not_own_cloud_auth_or_routing():

@@ -231,6 +231,15 @@ def test_live_writer_blocks_probe_of_existing_runtime(state, monkeypatch):
         L._release_provision_lock(token)
 
 
+def test_ready_path_waits_briefly_for_maintenance_lock(state, monkeypatch):
+    attempts = iter([None, "ready-token"])
+    sleeps = []
+    monkeypatch.setattr(L, "_acquire_provision_lock", lambda: next(attempts))
+    monkeypatch.setattr(L.time, "sleep", lambda delay: sleeps.append(delay))
+    assert L._acquire_provision_lock_with_wait(timeout_s=1) == "ready-token"
+    assert sleeps and sleeps[0] <= L._READY_LOCK_BACKOFF_S
+
+
 def test_detached_child_rechecks_and_skips_pip_when_race_is_already_satisfied(
     state, monkeypatch
 ):

@@ -187,6 +187,7 @@ def test_claude_setup_restores_trusted_roots_but_pins_cloud_and_local_routes(
                 "KUMIHO_FIREBASE_API_KEY": "private-firebase-key",
                 "KUMIHO_FIREBASE_PROJECT_ID": "private-firebase-project",
                 "KUMIHO_CLAUDE_PACKAGE_SPEC": "kumiho[mcp]==9.9.9",
+                "KUMIHO_CLAUDE_MODE": "ce",
                 "HTTPS_PROXY": "http://trusted-proxy.example.test:8080",
                 "REQUESTS_CA_BUNDLE": str(trusted_ca),
                 "KUMIHO_LLM_BASE_URL": "https://trusted-llm.example.test/v1",
@@ -218,8 +219,12 @@ def test_claude_setup_restores_trusted_roots_but_pins_cloud_and_local_routes(
     assert "KUMIHO_FIREBASE_API_KEY" not in os.environ
     assert "KUMIHO_FIREBASE_PROJECT_ID" not in os.environ
     assert mod.package_spec() == "kumiho[mcp]==9.9.9"
+    assert os.environ["KUMIHO_CLAUDE_MODE"] == "ce"
     assert os.environ["HTTPS_PROXY"] == "http://trusted-proxy.example.test:8080"
     assert os.environ["REQUESTS_CA_BUNDLE"] == str(trusted_ca)
+    provision_env = mod._provision_subprocess_env()
+    assert provision_env["HTTPS_PROXY"] == "http://trusted-proxy.example.test:8080"
+    assert provision_env["REQUESTS_CA_BUNDLE"] == str(trusted_ca)
     assert "KUMIHO_LLM_BASE_URL" not in os.environ
     assert "KUMIHO_MEMORY_CODE_AUTOMINE" not in os.environ
     assert mod._launcher_state_dir() == trusted_state.absolute()
@@ -536,6 +541,31 @@ def test_noninteractive_setup_never_opens_an_sdk_login_prompt(
     output = capsys.readouterr().out
     assert "kumiho-auth login" in output
     assert "kumiho-cli login" in output
+
+
+def test_yes_preserves_persisted_ce_backend(wizard, monkeypatch):
+    wizard.AUTO_YES = True
+    monkeypatch.setenv("KUMIHO_CLAUDE_MODE", "ce")
+    args = type("Args", (), {"ce": False, "token": None})()
+    assert wizard.choose_backend(args) == "ce"
+
+
+def test_unauthenticated_cloud_setup_does_not_clear_ce_markers(
+    wizard, monkeypatch
+):
+    monkeypatch.setattr(wizard, "find_python", lambda: "python3")
+    monkeypatch.setattr(wizard, "write_python_knob", lambda _python: None)
+    monkeypatch.setattr(wizard, "setup_venv", lambda _python: wizard.VENV_PYTHON)
+    monkeypatch.setattr(wizard, "setup_auth", lambda cli_token=None: (None, False))
+    monkeypatch.setattr(wizard, "run_ingestion", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(wizard, "verify_connection", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        wizard,
+        "_neutralize_env_markers",
+        lambda _keys: pytest.fail("unauthenticated setup must preserve CE markers"),
+    )
+    wizard.AUTO_YES = True
+    assert wizard.main(["--yes"]) == 0
 
 
 def test_legacy_token_stdin_summary_says_not_saved(wizard, monkeypatch, capsys):
