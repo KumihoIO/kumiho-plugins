@@ -221,6 +221,13 @@ performs first-meeting identity onboarding only after two definitive not-found
 lookups, recalls relevant context, reflects durable decisions and preferences,
 and asks `kumiho_code_why` before modifying unfamiliar code.
 
+Recall is deliberately bounded: the Codex skill makes one targeted,
+summarized engage call (normally up to three results), keeps only the short
+constraints and krefs relevant to the current request, and expands retrieval
+only for a missing decision or a detected conflict. It does not dump a whole
+space or transcript into the prompt. File-specific uncertainty uses
+`kumiho_code_why` instead of a second broad recall.
+
 Capture is **agent-driven by default**:
 
 - `kumiho_memory_reflect` stores decisions, preferences, facts, and

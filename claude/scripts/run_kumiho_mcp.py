@@ -219,6 +219,17 @@ _HOST_PROVISION_ENV_EXACT_SCRUB = frozenset({
     "PYTHONSTARTUP",
     "PYTHONINSPECT",
 })
+_HOST_TRUSTED_PROVISION_TRANSPORT_ENV = frozenset({
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "AWS_CA_BUNDLE",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "GRPC_PROXY",
+    "NO_GRPC_PROXY", "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+})
+_TRUSTED_SETTINGS_TRANSPORT_ENV: dict[str, str] = {}
+_TRUSTED_GLOBAL_CE_KEYS: set[str] = set()
+
+_READY_LOCK_WAIT_S = 5.0
+_READY_LOCK_BACKOFF_S = 0.05
 
 # Package managers and build backends never need host credentials. Keeping
 # these out of provisioning children prevents a dependency build hook from
@@ -540,11 +551,8 @@ def _clear_host_untrusted_environment() -> None:
     """
     if not _host_launch_isolated():
         return
+    host = (os.getenv("KUMIHO_CLAUDE_HOST", "") or "").strip().lower()
     ambient_token = (os.getenv("KUMIHO_AUTH_TOKEN", "") or "").strip()
-    keep_ambient_token = (
-        bool(ambient_token)
-        and not _looks_like_placeholder(ambient_token)
-    )
     safe_project_routes = {}
     for key in _HOST_UNTRUSTED_DATA_ROUTE_ENV:
         value = (os.getenv(key, "") or "").strip()
@@ -574,7 +582,7 @@ def _clear_host_untrusted_environment() -> None:
         os.environ["HOMEPATH"] = tail or "\\"
         os.environ["APPDATA"] = str(account_home / "AppData" / "Roaming")
         os.environ["LOCALAPPDATA"] = str(account_home / "AppData" / "Local")
-    if keep_ambient_token:
+    if host == "codex" and ambient_token and not _looks_like_placeholder(ambient_token):
         os.environ["KUMIHO_AUTH_TOKEN"] = ambient_token
     os.environ.update(safe_project_routes)
 
@@ -868,6 +876,25 @@ def _provision_subprocess_env(extra: dict[str, str] | None = None) -> dict[str, 
             )
         ):
             env.pop(key, None)
+    if _host_launch_isolated():
+        # Proxy and CA settings are useful to pip, but only when they came
+        # from the OS user's persistent environment. Rehydrate that exact
+        # source after removing host/project-injected values.
+        trusted_transport = {
+            **_TRUSTED_SETTINGS_TRANSPORT_ENV,
+            **_trusted_persisted_user_environment(),
+        }
+        for key in _HOST_TRUSTED_PROVISION_TRANSPORT_ENV:
+            value = trusted_transport.get(key)
+            # A project may overwrite a previously loaded settings value in
+            # the live environment. Do not let that overwrite inherit the
+            # stale trusted value; a missing value is safe to restore.
+            if value and (
+                key not in _TRUSTED_SETTINGS_TRANSPORT_ENV
+                or key not in os.environ
+                or os.environ.get(key) == value
+            ):
+                env[key] = value
     if extra:
         env.update(extra)
     return env
@@ -2041,6 +2068,26 @@ def _acquire_provision_lock(reservation_token: str | None = None) -> str | None:
     return None
 
 
+def _acquire_provision_lock_with_wait(
+    *, timeout_s: float = _READY_LOCK_WAIT_S,
+) -> str | None:
+    """Acquire the maintenance lock with a short bounded backoff.
+
+    A ready runtime needs only alias/attestation maintenance. It should not
+    fail an otherwise healthy MCP launch merely because a SessionEnd worker is
+    finishing that maintenance for a few moments.
+    """
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    while True:
+        token = _acquire_provision_lock()
+        if token is not None:
+            return token
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        time.sleep(min(_READY_LOCK_BACKOFF_S, remaining))
+
+
 def _adopt_provision_lock(token: str, compat_locks: list[Path]) -> bool:
     """Transfer a parent's reservation to the detached child atomically."""
     lock = _provision_lock_path()
@@ -2235,24 +2282,32 @@ def _ensure_runtime() -> Path:
             _release_provision_lock(lock_token)
 
     synchronous = _provisioning_is_synchronous()
-    if _provision_in_progress():
+    provisioning_locked = _provision_in_progress()
+    if provisioning_locked and not python_path.exists():
         raise SystemExit(
             "[kumiho-claude] Another process is provisioning this runtime. "
             "Reconnect the server, or retry once it finishes."
         )
 
-    attested_ready = python_path.exists() and _runtime_attestation_matches(
-        venv_dir, python_path, marker_path, package_spec
+    attested_ready = (
+        not provisioning_locked
+        and python_path.exists()
+        and _runtime_attestation_matches(venv_dir, python_path, marker_path, package_spec)
     )
-    runtime_ready = python_path.exists() and (
-        attested_ready
-        or not _needs_install(
-            python_path,
-            marker_path,
-            package_spec,
-            probe_timeout_s=(
-                PROBE_TIMEOUT_S if synchronous else STARTUP_PROBE_TIMEOUT_S
-            ),
+    # If a writer already owns the lock, do not inspect a mutable venv. The
+    # ready-path lock acquisition below waits briefly, then performs the
+    # definitive probe after ownership is transferred.
+    runtime_ready = python_path.exists() if provisioning_locked else (
+        python_path.exists() and (
+            attested_ready
+            or not _needs_install(
+                python_path,
+                marker_path,
+                package_spec,
+                probe_timeout_s=(
+                    PROBE_TIMEOUT_S if synchronous else STARTUP_PROBE_TIMEOUT_S
+                ),
+            )
         )
     )
     if runtime_ready:
@@ -2260,7 +2315,7 @@ def _ensure_runtime() -> Path:
         # physical venv. Hold the canonical reservation across the final
         # readiness check and that migration so the lock-set transition cannot
         # race another host beginning pip against the shared runtime.
-        maintenance_token = _acquire_provision_lock()
+        maintenance_token = _acquire_provision_lock_with_wait()
         if maintenance_token is None:
             raise SystemExit(
                 "[kumiho-claude] Another process began shared-runtime "
@@ -2696,6 +2751,8 @@ def _host_config_value_allowed(
     """Apply the host provenance policy to a config-sourced value."""
     if not _host_launch_isolated() or user_global:
         return True
+    if key == "KUMIHO_AUTH_TOKEN":
+        return False
     if key in _HOST_UNTRUSTED_DATA_ROUTE_ENV:
         if key == "KUMIHO_CLAUDE_SERVER_ENDPOINT":
             normalized = _normalize_server_target(
@@ -2928,6 +2985,7 @@ def _hydrate_shared_package_spec_from_user_settings() -> None:
 
 
 def _hydrate_env_from_claude_settings() -> None:
+    _TRUSTED_GLOBAL_CE_KEYS.clear()
     candidates = _candidate_settings_paths()
     found_any = False
     trusted_global_keys_loaded: set[str] = set()
@@ -2984,6 +3042,13 @@ def _hydrate_env_from_claude_settings() -> None:
                 if not _host_config_value_allowed(
                     key, value, user_global=user_global
                 ):
+                    if key == "KUMIHO_AUTH_TOKEN" and not user_global:
+                        print(
+                            "[kumiho-claude] Ignoring KUMIHO_AUTH_TOKEN from "
+                            "project settings; configure it in the user SDK "
+                            "store or OS/user-global environment.",
+                            file=sys.stderr,
+                        )
                     continue
                 # A trusted global remote route must beat an earlier project
                 # loopback value. settings.local.json remains higher priority
@@ -2998,6 +3063,10 @@ def _hydrate_env_from_claude_settings() -> None:
                     if key in trusted_global_keys_loaded:
                         continue
                     os.environ[key] = value
+                    if key in {"KUMIHO_CLAUDE_SERVER_ENDPOINT", "KUMIHO_CLAUDE_MODE"}:
+                        _TRUSTED_GLOBAL_CE_KEYS.add(key)
+                    if key in _HOST_TRUSTED_PROVISION_TRANSPORT_ENV:
+                        _TRUSTED_SETTINGS_TRANSPORT_ENV[key] = value
                     trusted_global_keys_loaded.add(key)
                     print(
                         f"[kumiho-claude] Loaded {key} from {settings_path}.",
@@ -3535,7 +3604,9 @@ def _normalize_server_target(raw_target: str) -> str | None:
     return f"{scheme}://{authority}" if scheme else authority
 
 
-def _ce_server_target_is_safe(target: str) -> bool:
+def _ce_server_target_is_safe(
+    target: str, *, allow_user_global_tls: bool = False
+) -> bool:
     has_scheme = "://" in target
     parsed = urllib.parse.urlsplit(target if has_scheme else f"//{target}")
     host = (parsed.hostname or "").rstrip(".").lower()
@@ -3544,7 +3615,12 @@ def _ce_server_target_is_safe(target: str) -> bool:
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
-        return False
+        if not allow_user_global_tls:
+            return False
+        scheme = urllib.parse.urlsplit(
+            target if has_scheme else f"//{target}"
+        ).scheme.lower()
+        return scheme in {"https", "grpcs"}
 
 
 def _ce_redis_url_is_safe(value: str) -> bool:
@@ -3555,8 +3631,6 @@ def _ce_redis_url_is_safe(value: str) -> bool:
     if (
         parsed.scheme.lower() not in {"redis", "rediss"}
         or not parsed.hostname
-        or parsed.username
-        or parsed.password
         or parsed.query
         or parsed.fragment
     ):
@@ -3608,10 +3682,15 @@ def _resolve_ce_endpoint() -> str | None:
     if raw and not _looks_like_placeholder(raw):
         normalized = _normalize_server_target(raw)
         if normalized:
-            if not _ce_server_target_is_safe(normalized):
+            if not _ce_server_target_is_safe(
+                normalized,
+                allow_user_global_tls=(
+                    "KUMIHO_CLAUDE_SERVER_ENDPOINT" in _TRUSTED_GLOBAL_CE_KEYS
+                ),
+            ):
                 raise SystemExit(
-                    "[kumiho-claude] Refusing a non-loopback CE endpoint; "
-                    "CE services must run on the local machine."
+                    "[kumiho-claude] Refusing a non-loopback CE endpoint unless "
+                    "it is a TLS URL from user-global settings."
                 )
             return normalized
         print(

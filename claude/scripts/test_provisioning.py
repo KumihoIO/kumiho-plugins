@@ -219,6 +219,7 @@ def test_live_writer_blocks_probe_of_existing_runtime(state, monkeypatch):
     venv_python.write_text("", encoding="utf-8")
     token = L._acquire_provision_lock()
     assert token
+    monkeypatch.setattr(L, "_acquire_provision_lock_with_wait", lambda: None)
     monkeypatch.setattr(
         L, "_needs_install", lambda *_a, **_kw: pytest.fail("mutable venv probed")
     )
@@ -226,9 +227,18 @@ def test_live_writer_blocks_probe_of_existing_runtime(state, monkeypatch):
     try:
         with pytest.raises(SystemExit) as exc:
             L._ensure_runtime()
-        assert "Another process is provisioning" in str(exc.value)
+        assert "Another process began shared-runtime maintenance" in str(exc.value)
     finally:
         L._release_provision_lock(token)
+
+
+def test_ready_path_waits_briefly_for_maintenance_lock(state, monkeypatch):
+    attempts = iter([None, "ready-token"])
+    sleeps = []
+    monkeypatch.setattr(L, "_acquire_provision_lock", lambda: next(attempts))
+    monkeypatch.setattr(L.time, "sleep", lambda delay: sleeps.append(delay))
+    assert L._acquire_provision_lock_with_wait(timeout_s=1) == "ready-token"
+    assert sleeps and sleeps[0] <= L._READY_LOCK_BACKOFF_S
 
 
 def test_detached_child_rechecks_and_skips_pip_when_race_is_already_satisfied(
