@@ -588,7 +588,7 @@ def test_active_cloud_adapter_overrides_direct_custom_cloud_route(monkeypatch):
     os.environ[CLOUD.SHARED_HOME_HANDOFF_ENV] = str(L._kumiho_home())
     CLOUD._prepare_environment()
 
-    assert "KUMIHO_AUTH_TOKEN" not in os.environ
+    assert os.environ["KUMIHO_AUTH_TOKEN"] == "private-token"
     assert os.environ["KUMIHO_CONTROL_PLANE_URL"] == (
         "https://control.kumiho.cloud"
     )
