@@ -17,15 +17,22 @@ Subcommands (the agent uses ``list`` / ``done``; the worker uses ``enqueue``):
   done <commit>              drop an entry once the agent has captured it;
                              exits 1 and says so when nothing matched
   count                      queue depth + the absolute drain command
+
+Agent-shell commands include ``--claude-host`` before the subcommand so they
+resolve the same OS-account state as hooks even though Claude does not export
+``CLAUDE_PLUGIN_ROOT`` into the shell.
 """
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bounded_proc
+import state_home  # noqa: E402
 
 #: git here only reads refs and one commit subject; anything slower is a stuck
 #: repo, not a slow one.
@@ -41,16 +48,8 @@ _MAX_QUEUE = 200
 
 
 def _state_dir() -> Path:
-    """Mirror ``run_kumiho_mcp._state_dir`` (kept in sync deliberately; this
-    helper must run standalone for the agent without importing the launcher)."""
-    override = (os.getenv("KUMIHO_CLAUDE_HOME", "") or "").strip()
-    if override:
-        return Path(override).expanduser()
-    if os.name == "nt":
-        base = os.getenv("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
-        return Path(base) / "kumiho-claude"
-    xdg = (os.getenv("XDG_CACHE_HOME", "") or "").strip()
-    return (Path(xdg) if xdg else Path.home() / ".cache") / "kumiho-claude"
+    """Use the shared, project-isolated Claude hook state root."""
+    return state_home.state_dir()
 
 
 def _queue_path() -> Path:
@@ -209,13 +208,21 @@ def count() -> dict:
         "pending": len(_read()),
         "overflow": n_over,
         "queue_path": str(_queue_path()),
-        "drain_cmd": '%s "%s" list' % (sys.executable, os.path.abspath(__file__)),
+        "drain_cmd": "%s -I %s --claude-host list" % (
+            shlex.quote(sys.executable), shlex.quote(os.path.abspath(__file__))
+        ),
+        "done_cmd": "%s -I %s --claude-host done" % (
+            shlex.quote(sys.executable), shlex.quote(os.path.abspath(__file__))
+        ),
     }
 
 
 def main(argv: list) -> int:
+    if argv and argv[0] == "--claude-host":
+        os.environ["KUMIHO_CLAUDE_HOST"] = "claude"
+        argv = argv[1:]
     if not argv:
-        print("usage: code_capture_pending.py enqueue <repo> [commit] | list | done <commit> | count")
+        print("usage: code_capture_pending.py [--claude-host] enqueue <repo> [commit] | list | done <commit> | count")
         return 2
     cmd = argv[0]
     if cmd == "enqueue" and len(argv) >= 2:

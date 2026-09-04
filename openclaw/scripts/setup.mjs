@@ -3,7 +3,7 @@
  * Kumiho Python backend setup.
  *
  * Setup flow:
- *  1. Find Python 3.9+
+ *  1. Find Python 3.10+
  *  2. Create ~/.kumiho/venv
  *  3. Ensure pip is available
  *  4. Upgrade pip + install kumiho[mcp] + kumiho-memory[all]
@@ -19,10 +19,25 @@
  * 13. Print openclaw.json config hint
  */
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
-import { homedir, platform } from "node:os";
-import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  readSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { platform, userInfo } from "node:os";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createConnection } from "node:net";
 import readline from "node:readline";
 
@@ -55,12 +70,23 @@ try {
 }
 
 const IS_WIN = platform() === "win32";
-const VENV_DIR = join(homedir(), ".kumiho", "venv");
+
+function trustedAccountHome() {
+  const home = userInfo().homedir;
+  if (typeof home !== "string" || !home.trim() || !isAbsolute(home)) {
+    throw new Error("Unable to resolve an absolute home from the OS account record");
+  }
+  return resolve(home);
+}
+
+const ACCOUNT_HOME = trustedAccountHome();
+const VENV_DIR = join(ACCOUNT_HOME, ".kumiho", "venv");
 const BIN = IS_WIN ? "Scripts" : "bin";
 const EXT = IS_WIN ? ".exe" : "";
 const VENV_PYTHON = join(VENV_DIR, BIN, `python${EXT}`);
-const PREFS_PATH = join(homedir(), ".kumiho", "preferences.json");
-const OPENCLAW_CONFIG_PATH = join(homedir(), ".openclaw", "openclaw.json");
+const PROVISION_LOCK = join(ACCOUNT_HOME, ".kumiho", "provision.lock");
+const PREFS_PATH = join(ACCOUNT_HOME, ".kumiho", "preferences.json");
+const OPENCLAW_CONFIG_PATH = join(ACCOUNT_HOME, ".openclaw", "openclaw.json");
 
 const c = {
   reset:  "\x1b[0m",
@@ -78,6 +104,438 @@ const ok   = (msg) => console.log(`${c.green}✓${c.reset} ${msg}`);
 const warn = (msg) => console.log(`${c.yellow}⚠${c.reset} ${msg}`);
 const die  = (msg) => { console.error(`${c.red}✗ ${msg}${c.reset}`); process.exit(1); };
 const hr   = () => console.log(`${c.dim}${"─".repeat(55)}${c.reset}`);
+
+let provisionLockToken = null;
+let provisionCompatLocks = [];
+const PROVISION_STALE_MS = 30 * 60 * 1000;
+const PROVISION_PROBE_TIMEOUT_MS = 10 * 1000;
+const PROVISION_VENV_TIMEOUT_MS = 2 * 60 * 1000;
+const PROVISION_PIP_TIMEOUT_MS = 15 * 60 * 1000;
+const PROVISION_SOFT_KILL_GRACE_MS = 2 * 1000;
+const PROVISION_HARD_KILL_GRACE_MS = 5 * 1000;
+const activeProvisionChildren = new Set();
+
+function provisionEnvironment() {
+  const env = { ...process.env };
+  const exact = new Set([
+    "KUMIHO_AUTH_TOKEN", "KUMIHO_FIREBASE_API_KEY", "KUMIHO_FIREBASE_ID_TOKEN",
+    "KUMIHO_FIREBASE_PROJECT_ID", "KUMIHO_USE_CONTROL_PLANE_TOKEN",
+    "KUMIHO_CONTROL_PLANE_URL", "KUMIHO_CONTROL_PLANE_API_URL",
+    "KUMIHO_TENANT_HINT", "KUMIHO_SERVER_ENDPOINT", "KUMIHO_SERVER_ADDRESS",
+    "KUMIHO_LOCAL_SERVER_ENDPOINT", "KUMIHO_CLAUDE_SERVER_ENDPOINT",
+    "KUMIHO_CODEX_CE_ENDPOINT", "KUMIHO_CODEX_CE_REDIS_URL",
+    "KUMIHO_CODEX_CE_LLM_BASE_URL", "KUMIHO_SERVER_AUTHORITY",
+    "KUMIHO_SSL_TARGET_OVERRIDE", "KUMIHO_SERVER_CA_FILE", "KUMIHO_LLM_API_KEY",
+    "KUMIHO_LLM_BASE_URL", "KUMIHO_ENV_FILE", "KUMIHO_DISCOVERY_CACHE_FILE",
+    "KUMIHO_AUTO_CONFIGURE", "KUMIHO_REQUIRE_TLS", "KUMIHO_SERVER_USE_TLS",
+    "UPSTASH_REDIS_URL", "KUMIHO_UPSTASH_REDIS_URL", "KUMIHO_LOCAL_REDIS_URL",
+    "KUMIHO_MEMORY_PROXY_URL", "KUMIHO_MCP_HOSTED", "KUMIHO_HOSTED_LOCAL_REDIS",
+    "UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN", "OPENAI_BASE_URL",
+    "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
+    "GEMINI_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AZURE_CLIENT_SECRET",
+    "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "HF_TOKEN",
+  ]);
+  const suffixes = ["_API_KEY", "_AUTH_TOKEN", "_ACCESS_TOKEN", "_SECRET_KEY", "_TOKEN"];
+  for (const key of Object.keys(env)) {
+    const normalized = key.toUpperCase();
+    if (exact.has(normalized) || suffixes.some((suffix) => normalized.endsWith(suffix))) {
+      delete env[key];
+    }
+  }
+  return env;
+}
+
+function comparablePath(path) {
+  const resolved = realpathSync(path);
+  return IS_WIN ? resolved.toLowerCase() : resolved;
+}
+
+function desktopCompatLockPaths() {
+  const home = ACCOUNT_HOME;
+  const dataDirs = [];
+  const active = (process.env.CLAUDE_PLUGIN_DATA || "").trim();
+  if (active && !active.includes("${")) dataDirs.push(active);
+  dataDirs.push(
+    join(home, ".claude", "plugins", "data", "kumiho-memory-kumiho-plugins"),
+    join(home, ".codex", "plugins", "data", "kumiho-memory-kumiho-plugins"),
+    IS_WIN
+      ? join(home, "AppData", "Local", "kumiho-claude")
+      : join(home, ".cache", "kumiho-claude"),
+  );
+
+  let shared;
+  try {
+    shared = comparablePath(VENV_DIR);
+  } catch {
+    return [];
+  }
+  const result = [];
+  const seen = new Set();
+  for (const rawDataDir of dataDirs) {
+    const dataDir = resolve(rawDataDir);
+    const alias = join(dataDir, "venv");
+    const lock = join(dataDir, "provision.lock");
+    const key = IS_WIN ? lock.toLowerCase() : lock;
+    if (key === (IS_WIN ? PROVISION_LOCK.toLowerCase() : PROVISION_LOCK) || seen.has(key)) continue;
+    try {
+      if (comparablePath(alias) !== shared) continue;
+    } catch {
+      continue;
+    }
+    seen.add(key);
+    result.push(lock);
+  }
+  return result;
+}
+
+function removeOwnedLock(lock, token) {
+  try {
+    const record = JSON.parse(readFileSync(lock, "utf8"));
+    if (record?.pid === process.pid && record?.token === token) unlinkSync(lock);
+  } catch { /* another compatible provisioner owns or already removed it */ }
+}
+
+function processIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+function removeAbandonedLock(lock) {
+  try {
+    const observed = statSync(lock);
+    const raw = readFileSync(lock, "utf8").trim();
+    let record = {};
+    if (/^\d+$/.test(raw)) record = { pid: Number(raw) };
+    else {
+      try { record = JSON.parse(raw); } catch { /* malformed fresh locks stay owned */ }
+    }
+    if (processIsAlive(record?.pid)) return false;
+    if (!Number.isInteger(record?.pid) && Date.now() - observed.mtimeMs <= PROVISION_STALE_MS) {
+      return false;
+    }
+    const current = statSync(lock);
+    if (
+      current.dev !== observed.dev || current.ino !== observed.ino ||
+      current.mtimeMs !== observed.mtimeMs || current.size !== observed.size ||
+      readFileSync(lock, "utf8").trim() !== raw
+    ) return false;
+    unlinkSync(lock);
+    return true;
+  } catch (error) {
+    return error?.code === "ENOENT";
+  }
+}
+
+function createOwnedLock(lock, record) {
+  let fd;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      fd = openSync(lock, "wx", 0o600);
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST" || !removeAbandonedLock(lock) || attempt === 1) throw error;
+    }
+  }
+  if (fd === undefined) throw new Error(`could not acquire ${lock}`);
+  const owned = fstatSync(fd);
+  let failure = null;
+  try {
+    writeFileSync(fd, record);
+  } catch (error) {
+    failure = error;
+  } finally {
+    try {
+      closeSync(fd);
+    } catch (error) {
+      failure ||= error;
+    }
+  }
+  if (!failure) return;
+  try {
+    const current = statSync(lock);
+    if (current.dev === owned.dev && current.ino === owned.ino) unlinkSync(lock);
+  } catch { /* preserve an unknown replacement */ }
+  throw failure;
+}
+
+function acquireProvisionLock() {
+  mkdirSync(join(ACCOUNT_HOME, ".kumiho"), { recursive: true });
+  const token = randomBytes(16).toString("hex");
+  const compatLocks = desktopCompatLockPaths();
+  const record = JSON.stringify({
+    pid: process.pid,
+    process_start: null,
+    token,
+    created_at: Date.now() / 1000,
+    adopted: false,
+    compat_locks: compatLocks,
+  });
+  const acquired = [];
+  try {
+    createOwnedLock(PROVISION_LOCK, record);
+    acquired.push(PROVISION_LOCK);
+    for (const lock of compatLocks) {
+      mkdirSync(dirname(lock), { recursive: true });
+      createOwnedLock(lock, record);
+      acquired.push(lock);
+    }
+  } catch (error) {
+    for (const lock of acquired.reverse()) removeOwnedLock(lock, token);
+    return false;
+  }
+  provisionLockToken = token;
+  provisionCompatLocks = compatLocks;
+  return true;
+}
+
+function releaseProvisionLock() {
+  if (!provisionLockToken) return;
+  removeOwnedLock(PROVISION_LOCK, provisionLockToken);
+  for (const lock of provisionCompatLocks) removeOwnedLock(lock, provisionLockToken);
+  provisionLockToken = null;
+  provisionCompatLocks = [];
+}
+
+function refreshProvisionLock() {
+  if (!provisionLockToken) return false;
+
+  const stableOwned = (lock) => {
+    const observed = statSync(lock);
+    const raw = readFileSync(lock, "utf8");
+    const record = JSON.parse(raw);
+    const current = statSync(lock);
+    if (
+      record?.pid !== process.pid || record?.token !== provisionLockToken ||
+      current.dev !== observed.dev || current.ino !== observed.ino ||
+      current.mtimeMs !== observed.mtimeMs || current.size !== observed.size ||
+      readFileSync(lock, "utf8") !== raw
+    ) return null;
+    return { observed, raw };
+  };
+
+  const refreshOwned = (lock, snapshot) => {
+    const current = statSync(lock);
+    if (
+      current.dev !== snapshot.observed.dev || current.ino !== snapshot.observed.ino ||
+      current.mtimeMs !== snapshot.observed.mtimeMs ||
+      current.size !== snapshot.observed.size ||
+      readFileSync(lock, "utf8") !== snapshot.raw
+    ) return false;
+    const now = new Date();
+    utimesSync(lock, now, now);
+    const refreshed = statSync(lock);
+    const afterRaw = readFileSync(lock, "utf8");
+    const after = JSON.parse(afterRaw);
+    return (
+      refreshed.dev === snapshot.observed.dev && refreshed.ino === snapshot.observed.ino &&
+      afterRaw === snapshot.raw &&
+      after?.pid === process.pid && after?.token === provisionLockToken
+    );
+  };
+
+  try {
+    const canonical = stableOwned(PROVISION_LOCK);
+    if (!canonical) return false;
+    const canonicalRecord = JSON.parse(canonical.raw);
+    if (
+      !Array.isArray(canonicalRecord.compat_locks) ||
+      canonicalRecord.compat_locks.length !== provisionCompatLocks.length ||
+      canonicalRecord.compat_locks.some((lock, index) => lock !== provisionCompatLocks[index])
+    ) return false;
+
+    const compatSnapshots = [];
+    for (const lock of provisionCompatLocks) {
+      const snapshot = stableOwned(lock);
+      if (!snapshot) return false;
+      compatSnapshots.push({ lock, snapshot });
+    }
+
+    // Compatibility aliases are the mutexes older Desktop builds observe.
+    // Refresh and then re-check all of them before the canonical mtime commits
+    // this heartbeat to newer launchers.
+    for (const { lock, snapshot } of compatSnapshots) {
+      if (!refreshOwned(lock, snapshot)) return false;
+    }
+    if (provisionCompatLocks.some((lock) => stableOwned(lock) === null)) return false;
+
+    const canonicalCommit = stableOwned(PROVISION_LOCK);
+    return canonicalCommit ? refreshOwned(PROVISION_LOCK, canonicalCommit) : false;
+  } catch {
+    return false;
+  }
+}
+
+function assertProvisionLockOwned() {
+  if (!refreshProvisionLock()) {
+    die("Lost the shared-runtime provisioning lock before a filesystem mutation.");
+  }
+}
+
+function terminateProvisionTree(child, { force = false } = {}) {
+  const pid = child?.pid;
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+
+  if (IS_WIN) {
+    // Do not resolve taskkill through PATH or an inherited SystemRoot: setup can
+    // be launched from an arbitrary checkout, and timeout cleanup runs with the
+    // user's credentials. A relocated Windows installation falls back to the
+    // direct child kill instead of executing an environment-selected binary.
+    const windowsRoot = "C:\\Windows";
+    const system32 = `${windowsRoot}\\System32`;
+    const taskkill = `${system32}\\taskkill.exe`;
+    if (existsSync(taskkill)) {
+      const taskkillArgs = ["/PID", String(pid), "/T"];
+      if (force) taskkillArgs.push("/F");
+      const result = spawnSync(taskkill, taskkillArgs, {
+        stdio: "ignore",
+        timeout: PROVISION_HARD_KILL_GRACE_MS,
+        windowsHide: true,
+        env: { SystemRoot: windowsRoot, WINDIR: windowsRoot, PATH: system32 },
+      });
+      if (!result.error && result.status === 0) return true;
+    }
+  } else {
+    // Provisioning children are process-group leaders (detached below), so a
+    // negative PID reaches pip build backends and every other descendant.
+    try {
+      process.kill(-pid, force ? "SIGKILL" : "SIGTERM");
+      return true;
+    } catch { /* fall through to the direct-child best effort */ }
+  }
+
+  try {
+    return child.kill(force ? "SIGKILL" : "SIGTERM");
+  } catch {
+    return false;
+  }
+}
+
+function runProvisionCommand(
+  command,
+  args,
+  { inherit = false, timeoutMs = PROVISION_PIP_TIMEOUT_MS } = {},
+) {
+  if (!refreshProvisionLock()) {
+    return Promise.resolve({
+      status: 1,
+      stdout: "",
+      stderr: "",
+      error: new Error("lost the shared-runtime provisioning lock before spawning a child"),
+    });
+  }
+  return new Promise((resolveResult) => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let stopStatus = null;
+    let stopError = null;
+    let child;
+    try {
+      child = spawn(command, args, {
+        env: provisionEnvironment(),
+        stdio: inherit ? "inherit" : ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        // setsid() on POSIX makes a process-tree timeout possible. Windows uses
+        // trusted taskkill /T above because Node does not expose Job Objects.
+        detached: !IS_WIN,
+      });
+    } catch (error) {
+      resolveResult({ status: null, stdout, stderr, error });
+      return;
+    }
+    activeProvisionChildren.add(child);
+    if (!inherit) {
+      child.stdout?.setEncoding("utf8");
+      child.stderr?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk) => { stdout += chunk; });
+      child.stderr?.on("data", (chunk) => { stderr += chunk; });
+    }
+    let hardKill = null;
+    let boundedFinish = null;
+    let deadline = null;
+    const heartbeat = setInterval(() => {
+      if (refreshProvisionLock()) return;
+      requestStop(1, "lost the shared-runtime provisioning lock");
+    }, 30_000);
+    const finish = (status, error = null) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(heartbeat);
+      if (deadline) clearTimeout(deadline);
+      if (hardKill) clearTimeout(hardKill);
+      if (boundedFinish) clearTimeout(boundedFinish);
+      activeProvisionChildren.delete(child);
+      resolveResult({
+        status: stopStatus ?? status,
+        stdout,
+        stderr,
+        error: stopError ?? error,
+      });
+    };
+    const requestStop = (status, message) => {
+      if (settled || stopStatus !== null) return;
+      stopStatus = status;
+      stopError = new Error(message);
+      terminateProvisionTree(child);
+      hardKill = setTimeout(() => {
+        terminateProvisionTree(child, { force: true });
+      }, PROVISION_SOFT_KILL_GRACE_MS);
+      // A descendant can keep inherited pipes open after the root dies. Never
+      // wait for ChildProcess 'close' without a bound of its own.
+      boundedFinish = setTimeout(() => {
+        terminateProvisionTree(child, { force: true });
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        child.unref();
+        finish(stopStatus, stopError);
+      }, PROVISION_HARD_KILL_GRACE_MS);
+    };
+    child.once("error", (error) => finish(null, error));
+    child.once("close", (code) => finish(stopStatus ?? code));
+    deadline = setTimeout(() => {
+      requestStop(124, `provisioning command timed out after ${timeoutMs}ms`);
+    }, timeoutMs);
+  });
+}
+
+process.once("exit", () => {
+  for (const child of activeProvisionChildren) {
+    terminateProvisionTree(child, { force: true });
+  }
+  releaseProvisionLock();
+});
+
+function hasWindowsPeHeader(path) {
+  if (!IS_WIN) return true;
+  let fd;
+  try {
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    if (size < 68) return false;
+    const header = Buffer.alloc(64);
+    if (readSync(fd, header, 0, 64, 0) !== 64) return false;
+    if (header[0] !== 0x4d || header[1] !== 0x5a) return false;
+    const peOffset = header.readUInt32LE(0x3c);
+    if (peOffset < 64 || peOffset > Math.min(size - 4, 4 * 1024 * 1024)) return false;
+    const signature = Buffer.alloc(4);
+    return (
+      readSync(fd, signature, 0, 4, peOffset) === 4 &&
+      signature.equals(Buffer.from([0x50, 0x45, 0x00, 0x00]))
+    );
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* best effort */ }
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Interactive prompt helpers (readline-based, no third-party deps)
@@ -294,27 +752,72 @@ const BACKENDS = [
   },
 ];
 
-/** Normalize "http://host:port/path" or "host:port" to "host:port" for gRPC. */
+const CE_TLS_SCHEMES = new Set(["https:", "grpcs:"]);
+const CE_PLAINTEXT_SCHEMES = new Set(["http:", "grpc:"]);
+
+function unbracketEndpointHost(hostname) {
+  return hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1)
+    : hostname;
+}
+
+function isLoopbackEndpointHost(hostname) {
+  const host = unbracketEndpointHost(hostname).toLowerCase();
+  if (host === "localhost" || host === "::1") return true;
+  const octets = host.split(".");
+  return (
+    octets.length === 4 &&
+    octets.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255) &&
+    Number(octets[0]) === 127
+  );
+}
+
+/** Preserve TLS schemes and reject every plaintext non-loopback CE target. */
 function normalizeEndpointInput(raw) {
-  let target = (raw ?? "").trim();
+  const target = (raw ?? "").trim();
   if (!target) return "";
-  if (target.includes("://")) {
-    try {
-      const url = new URL(target);
-      if (!url.hostname) return target;
-      const port =
-        url.port || (url.protocol === "http:" || url.protocol === "grpc:" ? "80" : "443");
-      target = `${url.hostname}:${port}`;
-    } catch { /* keep as typed */ }
+  const hadScheme = target.includes("://");
+  let url;
+  try {
+    url = new URL(hadScheme ? target : `grpc://${target}`);
+    void url.port;
+  } catch {
+    throw new Error(`Invalid Kumiho CE endpoint: ${raw}`);
   }
-  return target.split("/")[0];
+  if (
+    !url.hostname || url.username || url.password || url.search || url.hash ||
+    (url.pathname && url.pathname !== "/")
+  ) {
+    throw new Error(`Invalid Kumiho CE endpoint: ${raw}`);
+  }
+  if (!CE_TLS_SCHEMES.has(url.protocol) && !CE_PLAINTEXT_SCHEMES.has(url.protocol)) {
+    throw new Error("CE endpoint scheme must be grpc, http, grpcs, or https");
+  }
+  const tls = CE_TLS_SCHEMES.has(url.protocol);
+  if (!isLoopbackEndpointHost(url.hostname) && (!hadScheme || !tls)) {
+    throw new Error("Remote CE endpoints require an explicit grpcs:// or https:// TLS URL");
+  }
+  const host = unbracketEndpointHost(url.hostname);
+  const formattedHost = host.includes(":") ? `[${host}]` : host;
+  const defaultPort = tls ? "443" : hadScheme ? "80" : "";
+  const port = url.port || defaultPort;
+  const authority = `${formattedHost}${port ? `:${port}` : ""}`;
+  return tls ? `${url.protocol}//${authority}` : authority;
 }
 
 /** Best-effort TCP reachability probe for the CE gRPC endpoint. Never fatal. */
 function probeTcp(endpoint, timeoutMs = 1500) {
-  const [host, portRaw] = endpoint.split(":");
-  const port = parseInt(portRaw, 10);
-  if (!host || !port) return Promise.resolve(null); // unparseable — skip probe
+  let host;
+  let port;
+  try {
+    const hadScheme = endpoint.includes("://");
+    const url = new URL(hadScheme ? endpoint : `grpc://${endpoint}`);
+    host = unbracketEndpointHost(url.hostname);
+    port = Number(url.port || (hadScheme ? (CE_TLS_SCHEMES.has(url.protocol) ? 443 : 80) : 9190));
+  } catch {
+    return Promise.resolve(null); // unparseable — skip probe
+  }
+  if (!host || !port) return Promise.resolve(null);
   return new Promise((resolve) => {
     let settled = false;
     const done = (up) => {
@@ -366,23 +869,95 @@ function showConsolidationCostTable() {
 }
 
 // ---------------------------------------------------------------------------
-// Find a usable base Python (3.9+) on PATH
+// Find a usable base Python (3.10+) without Windows App Execution Aliases
 // ---------------------------------------------------------------------------
 
-function findBasePython() {
-  for (const cmd of ["python3", "python"]) {
-    const r = spawnSync(cmd, ["--version"], { encoding: "utf8" });
-    if (r.status !== 0) continue;
+const PYTHON_PROBE_NONCE = "kumiho-openclaw-python-v1";
 
-    const ver = (r.stdout || r.stderr).trim();
-    const m = ver.match(/Python (\d+)\.(\d+)/);
-    if (!m) continue;
+function isWindowsAppExecutionAlias(path) {
+  const normalized = path.replaceAll("/", "\\").toLowerCase();
+  return normalized.includes("\\windowsapps\\");
+}
 
-    const [, major, minor] = m.map(Number);
-    if (major > 3 || (major === 3 && minor >= 9)) {
-      return { cmd, ver };
+function findWindowsPythonLauncher() {
+  const pathValue = Object.entries(process.env).find(
+    ([key]) => key.toUpperCase() === "PATH",
+  )?.[1] ?? "";
+  const seen = new Set();
+  for (const rawEntry of pathValue.split(delimiter)) {
+    let entry = rawEntry.trim();
+    if (entry.startsWith('"') && entry.endsWith('"')) entry = entry.slice(1, -1).trim();
+    if (!entry || !isAbsolute(entry)) continue;
+    const candidate = resolve(entry, "py.exe");
+    const key = candidate.toLowerCase();
+    if (seen.has(key) || isWindowsAppExecutionAlias(candidate)) continue;
+    seen.add(key);
+    try {
+      const executable = realpathSync(candidate);
+      if (
+        !isAbsolute(executable) || isWindowsAppExecutionAlias(executable) ||
+        !statSync(executable).isFile() || !hasWindowsPeHeader(executable)
+      ) continue;
+      return executable;
+    } catch { /* not an existing, readable native launcher */ }
+  }
+  return null;
+}
+
+function inspectPython(command, args = [], expectedVenv = "") {
+  if (IS_WIN) {
+    let resolvedCommand = "";
+    try { resolvedCommand = realpathSync(command); } catch { /* rejected below */ }
+    if (
+      !isAbsolute(command) || !command.toLowerCase().endsWith(".exe") ||
+      isWindowsAppExecutionAlias(command) || !isAbsolute(resolvedCommand) ||
+      isWindowsAppExecutionAlias(resolvedCommand) ||
+      !resolvedCommand.toLowerCase().endsWith(".exe") ||
+      !hasWindowsPeHeader(resolvedCommand)
+    ) {
+      return { ok: false, version: "unknown" };
     }
-    warn(`Found ${ver} but Python 3.9+ is required — skipping.`);
+  }
+  const code = [
+    "import os,sys",
+    `nonce=${JSON.stringify(PYTHON_PROBE_NONCE)}`,
+    "expected=os.path.normcase(os.path.realpath(sys.argv[1])) if sys.argv[1] else ''",
+    "prefix=os.path.normcase(os.path.realpath(sys.prefix))",
+    "base=os.path.normcase(os.path.realpath(sys.base_prefix))",
+    "venv_ok=(not expected) or (prefix == expected and prefix != base)",
+    "print(nonce+'|'+str(sys.version_info[0])+'.'+str(sys.version_info[1])+'|'+('1' if venv_ok else '0'))",
+    "raise SystemExit(3 if sys.version_info < (3,10) else (0 if venv_ok else 4))",
+  ].join("; ");
+  // site.py performs pyvenv.cfg discovery and switches sys.prefix. `-S`
+  // disables that machinery and makes every healthy venv look like base
+  // Python, so isolation is kept while normal site initialization is allowed.
+  const result = spawnSync(command, [...args, "-I", "-c", code, expectedVenv], {
+    encoding: "utf8",
+    env: provisionEnvironment(),
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  const match = (result.stdout || "").trim().match(
+    new RegExp(`^${PYTHON_PROBE_NONCE}\\|(\\d+)\\.(\\d+)\\|([01])$`),
+  );
+  return {
+    ok: !result.error && result.status === 0 && match?.[3] === "1",
+    version: match ? `Python ${match[1]}.${match[2]}` : "unknown",
+  };
+}
+
+function findBasePython() {
+  const windowsLauncher = IS_WIN ? findWindowsPythonLauncher() : null;
+  const candidates = IS_WIN
+    ? windowsLauncher ? [{ cmd: windowsLauncher, args: ["-3"] }] : []
+    : [
+        { cmd: "python3", args: [] },
+        { cmd: "python", args: [] },
+      ];
+  for (const candidate of candidates) {
+    const probe = inspectPython(candidate.cmd, candidate.args);
+    if (probe.ok) return { ...candidate, ver: probe.version };
   }
   return null;
 }
@@ -395,29 +970,61 @@ log("Setting up Kumiho Python backend...");
 log(`Target venv: ${VENV_DIR}`);
 console.log();
 
-// 1. Locate base Python -------------------------------------------------------
-const base = findBasePython();
-if (!base) {
+if (!acquireProvisionLock()) {
   die(
-    "Python 3.9+ not found on PATH.\n\n" +
-    "  Windows : https://www.python.org/downloads/\n" +
-    "  macOS   : brew install python3\n" +
-    "  Linux   : sudo apt install python3 python3-venv\n"
+    "Another Kumiho host is provisioning ~/.kumiho/venv. " +
+    "Wait for it to finish, then rerun setup."
   );
 }
-ok(`Base Python: ${base.ver}  (${base.cmd})`);
+
+let sharedProbe = null;
+if (existsSync(VENV_PYTHON) && hasWindowsPeHeader(VENV_PYTHON)) {
+  sharedProbe = inspectPython(VENV_PYTHON, [], VENV_DIR);
+}
+if (existsSync(VENV_PYTHON) && !sharedProbe?.ok) {
+  const backup = `${VENV_DIR}.broken-${process.pid}-${Date.now()}`;
+  try {
+    assertProvisionLockOwned();
+    renameSync(VENV_DIR, backup);
+    warn(`Preserved an invalid shared runtime at ${backup}; rebuilding it.`);
+  } catch {
+    die("The shared Kumiho runtime is invalid and could not be preserved for repair.");
+  }
+}
+
+// 1. Locate base Python only when a fresh venv must be created. An existing
+// Desktop/Claude/Codex runtime is self-contained and needs no PATH interpreter.
+let base = null;
+if (!existsSync(VENV_PYTHON)) {
+  base = findBasePython();
+  if (!base) {
+    die(
+      "Python 3.10+ not found on PATH.\n\n" +
+      "  Windows : https://www.python.org/downloads/\n" +
+      "  macOS   : brew install python3\n" +
+      "  Linux   : sudo apt install python3 python3-venv\n"
+    );
+  }
+  ok(`Base Python: ${base.ver}  (${base.cmd})`);
+} else {
+  ok(`Shared Python: ${sharedProbe.version}  (${VENV_PYTHON})`);
+}
 
 // 2. Create virtualenv --------------------------------------------------------
 if (!existsSync(VENV_PYTHON)) {
   log("Creating virtualenv...");
-  mkdirSync(join(homedir(), ".kumiho"), { recursive: true });
+  mkdirSync(join(ACCOUNT_HOME, ".kumiho"), { recursive: true });
 
-  const r = spawnSync(base.cmd, ["-m", "venv", VENV_DIR], { stdio: "inherit" });
+  const r = await runProvisionCommand(
+    base.cmd,
+    [...base.args, "-m", "venv", VENV_DIR],
+    { inherit: true, timeoutMs: PROVISION_VENV_TIMEOUT_MS },
+  );
   if (r.status !== 0) {
     die(
       "Failed to create virtualenv.\n\n" +
       "  Linux fix : sudo apt install python3-venv\n" +
-      `  Manual    : ${base.cmd} -m venv ${VENV_DIR}\n`
+      `  Manual    : ${[base.cmd, ...base.args].join(" ")} -m venv ${VENV_DIR}\n`
     );
   }
   ok("Virtualenv created.");
@@ -425,17 +1032,30 @@ if (!existsSync(VENV_PYTHON)) {
   ok("Virtualenv already exists — reusing.");
 }
 
+const createdProbe = inspectPython(VENV_PYTHON, [], VENV_DIR);
+if (!hasWindowsPeHeader(VENV_PYTHON) || !createdProbe.ok) {
+  die("The shared runtime is not a valid Python 3.10+ virtual environment.");
+}
+
 // 3. Ensure pip is available (some distros create venvs without it) -----------
 {
-  const pipCheck = spawnSync(VENV_PYTHON, ["-m", "pip", "--version"], { encoding: "utf8" });
+  const pipCheck = await runProvisionCommand(
+    VENV_PYTHON,
+    ["-m", "pip", "--version"],
+    { timeoutMs: PROVISION_PROBE_TIMEOUT_MS },
+  );
   if (pipCheck.status !== 0) {
     log("pip not found in venv — trying ensurepip...");
-    const ensurePip = spawnSync(VENV_PYTHON, ["-m", "ensurepip", "--upgrade"], { stdio: "inherit" });
+    const ensurePip = await runProvisionCommand(
+      VENV_PYTHON,
+      ["-m", "ensurepip", "--upgrade"],
+      { inherit: true, timeoutMs: PROVISION_VENV_TIMEOUT_MS },
+    );
     if (ensurePip.status !== 0) {
-      // ensurepip also missing — download get-pip.py using the base Python
+      // ensurepip also missing — use this verified venv's stdlib to bootstrap pip.
       log("ensurepip unavailable — downloading get-pip.py...");
-      const getPip = spawnSync(
-        base.cmd,
+      const getPip = await runProvisionCommand(
+        VENV_PYTHON,
         [
           "-c",
           [
@@ -448,7 +1068,7 @@ if (!existsSync(VENV_PYTHON)) {
           ].join("; "),
           VENV_PYTHON,
         ],
-        { stdio: "inherit" }
+        { inherit: true, timeoutMs: PROVISION_PIP_TIMEOUT_MS },
       );
       if (getPip.status !== 0) {
         die(
@@ -466,21 +1086,22 @@ if (!existsSync(VENV_PYTHON)) {
 
 // 4a. Upgrade pip -------------------------------------------------------------
 log("Upgrading pip...");
-spawnSync(
+const pipUpgrade = await runProvisionCommand(
   VENV_PYTHON,
   ["-m", "pip", "install", "--quiet", "--upgrade", "pip"],
-  { stdio: "inherit" }
+  { inherit: true, timeoutMs: PROVISION_PIP_TIMEOUT_MS },
 );
+if (pipUpgrade.status !== 0) die("pip upgrade failed. See output above.");
 
 // 4b. Install packages --------------------------------------------------------
-const PACKAGES = ["kumiho[mcp]", "kumiho-memory[all]"];
+const PACKAGES = ["kumiho[mcp]>=0.12.2", "kumiho-memory[all]>=1.4.0"];
 log(`Installing: ${PACKAGES.join("  ")} ...`);
 console.log();
 
-const install = spawnSync(
+const install = await runProvisionCommand(
   VENV_PYTHON,
   ["-m", "pip", "install", "--upgrade", ...PACKAGES],
-  { stdio: "inherit" }
+  { inherit: true, timeoutMs: PROVISION_PIP_TIMEOUT_MS },
 );
 if (install.status !== 0) {
   die("pip install failed. See output above.");
@@ -490,15 +1111,16 @@ ok(`Installed: ${PACKAGES.join(", ")}`);
 
 // 5. Verify kumiho.mcp_server -------------------------------------------------
 log("Verifying kumiho.mcp_server...");
-const verify = spawnSync(
+const verify = await runProvisionCommand(
   VENV_PYTHON,
   ["-c", "from kumiho.mcp_server import main; print('ok')"],
-  { encoding: "utf8" }
+  { timeoutMs: PROVISION_PROBE_TIMEOUT_MS },
 );
 if (verify.status !== 0 || !verify.stdout.includes("ok")) {
   die(`Verification failed:\n${verify.stderr || verify.stdout}`);
 }
 ok("kumiho.mcp_server verified.");
+releaseProvisionLock();
 
 // 6. Choose backend, then authenticate ----------------------------------------
 // A temporary readline asks the backend question and is closed BEFORE the
@@ -518,10 +1140,19 @@ let ceSelection = null; // { endpoint, redisUrl } when CE is chosen
     console.log(`  CE runs tokenless against your own kumiho-server deployment.`);
     console.log(`  ${c.dim}Deploy it first: https://github.com/kumihoclouds/kumiho-server${c.reset}`);
     console.log();
-    const ceEndpoint =
-      normalizeEndpointInput(
-        await askFreeText(backendRl, "CE gRPC endpoint (host:port)", CE_DEFAULT_ENDPOINT),
-      ) || CE_DEFAULT_ENDPOINT;
+    let ceEndpoint = "";
+    while (!ceEndpoint) {
+      const entered = await askFreeText(
+        backendRl,
+        "CE gRPC endpoint (local host:port or remote grpcs/https URL)",
+        CE_DEFAULT_ENDPOINT,
+      );
+      try {
+        ceEndpoint = normalizeEndpointInput(entered) || CE_DEFAULT_ENDPOINT;
+      } catch (error) {
+        warn(error instanceof Error ? error.message : String(error));
+      }
+    }
     const ceRedisUrl = await askFreeText(backendRl, "CE working-memory Redis URL", CE_DEFAULT_REDIS_URL);
     ceSelection = { endpoint: ceEndpoint, redisUrl: ceRedisUrl };
 
@@ -541,6 +1172,9 @@ let ceSelection = null; // { endpoint, redisUrl } when CE is chosen
 if (ceSelection) {
   ok("CE backend selected — Kumiho Cloud login skipped (CE runs tokenless).");
 } else {
+if (!existsSync(VENV_PYTHON) || !hasWindowsPeHeader(VENV_PYTHON)) {
+  die("The shared Kumiho Python became invalid before authentication; rerun setup.");
+}
 const checkAuth = spawnSync(
   VENV_PYTHON,
   ["-c", `
@@ -564,7 +1198,7 @@ try:
 except Exception:
     print("not_logged_in")
 `],
-  { encoding: "utf8" }
+  { encoding: "utf8", timeout: PROVISION_PROBE_TIMEOUT_MS, windowsHide: true }
 );
 
 const authStatus = (checkAuth.stdout ?? "").trim();
@@ -579,10 +1213,13 @@ if (authStatus.startsWith("logged_in:")) {
   console.log("  Don't have an account? Sign up at https://kumiho.io");
   console.log();
 
+  if (!existsSync(VENV_PYTHON) || !hasWindowsPeHeader(VENV_PYTHON)) {
+    die("The shared Kumiho Python became invalid before login; rerun setup.");
+  }
   const loginResult = spawnSync(
     VENV_PYTHON,
     ["-m", "kumiho.auth_cli", "login"],
-    { stdio: "inherit" }
+    { stdio: "inherit", windowsHide: true }
   );
 
   if (loginResult.status !== 0) {
@@ -883,7 +1520,7 @@ const prefs = forceExplicitMemoryProvider && selectedMemoryProvider
       },
     };
 
-mkdirSync(join(homedir(), ".kumiho"), { recursive: true });
+mkdirSync(join(ACCOUNT_HOME, ".kumiho"), { recursive: true });
 writeFileSync(PREFS_PATH, JSON.stringify(prefs, null, 2), "utf8");
 ok(`Preferences saved to ~/.kumiho/preferences.json`);
 

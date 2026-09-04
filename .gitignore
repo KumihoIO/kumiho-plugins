@@ -1,5 +1,6 @@
 __pycache__/
 .pytest_cache/
+.codex-tmp-*/
 
 # Scratch state materialized by codex/claude/pip test runs — these can capture
 # real config (and, with a different flow, real tokens) and must never be committed.

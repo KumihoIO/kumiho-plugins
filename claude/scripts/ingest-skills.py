@@ -18,6 +18,8 @@ Usage:
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -35,9 +37,34 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PLUGIN_DIR = SCRIPT_DIR.parent  # kumiho-plugins/claude/
 SKILL_MD = PLUGIN_DIR / "skills" / "kumiho-memory" / "SKILL.md"
 REFS_DIR = PLUGIN_DIR / "skills" / "kumiho-memory" / "references"
+_KUMIHO_ADAPTER_BOUND = globals().get("_KUMIHO_ADAPTER_BOUND", False) is True
+
+
+def _ce_mode_enabled() -> bool:
+    mode = (os.getenv("KUMIHO_CLAUDE_MODE", "") or "").strip().lower()
+    return mode in {"ce", "community", "self-hosted", "self_hosted", "local"}
+
+
+def _dispatch_through_backend_adapter() -> int | None:
+    """Re-enter a documented direct invocation through the safe adapter."""
+    if _KUMIHO_ADAPTER_BOUND is True:
+        return None
+    adapter_name = "run_kumiho_ce.py" if _ce_mode_enabled() else "run_kumiho_cloud.py"
+    adapter = SCRIPT_DIR / adapter_name
+    if not adapter.is_file():
+        print(f"ERROR: backend adapter not found at {adapter}", file=sys.stderr)
+        return 1
+    result = subprocess.run(
+        [sys.executable, "-I", str(adapter), "--script", str(Path(__file__).resolve()),
+         *sys.argv[1:]],
+    )
+    return result.returncode
 
 
 def main() -> int:
+    dispatched = _dispatch_through_backend_adapter()
+    if dispatched is not None:
+        return dispatched
     try:
         from kumiho_memory.skill_ingest import ingest_batch, ingest_skill, parse_skill
     except ImportError:
