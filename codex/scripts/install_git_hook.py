@@ -59,7 +59,7 @@ def main() -> int:
     python = sys.executable.replace("\\", "/")
     snippet = (
         f"{MARKER}\n"
-        f'"{python}" "{worker}" "$(git rev-parse --show-toplevel)" '
+        f'"{python}" -I "{worker}" "$(git rev-parse --show-toplevel)" '
         f">/dev/null 2>&1 &\n"
     )
 

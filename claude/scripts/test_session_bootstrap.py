@@ -25,7 +25,6 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -38,6 +37,10 @@ def _run_hook(script: str, payload: dict, env_extra: dict | None = None):
     # No PYTHONIOENCODING, raw UTF-8 bytes -- production conditions.
     env = {k: v for k, v in os.environ.items()
            if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+    # Hook-envelope tests do not exercise the detached Desktop repair.  Pin an
+    # unresolved plugin root so a developer's ambient Claude environment can
+    # never make these tests spawn a child against the real profile.
+    env["CLAUDE_PLUGIN_ROOT"] = "${CLAUDE_PLUGIN_ROOT}"
     env.update(env_extra or {})
     r = subprocess.run(
         [sys.executable, str(SCRIPTS / script)],
@@ -73,7 +76,8 @@ def test_emits_the_exact_injection_envelope(tmp_path):
 def test_survives_empty_stdin(tmp_path):
     """SessionStart must never fail a session."""
     env = {**os.environ, "PYTHONIOENCODING": "utf-8",
-           "KUMIHO_CLAUDE_HOME": str(tmp_path)}
+           "KUMIHO_CLAUDE_HOME": str(tmp_path),
+           "CLAUDE_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}"}
     r = subprocess.run([sys.executable, str(SCRIPTS / "session-bootstrap.py")],
                        input="", capture_output=True, text=True,
                        encoding="utf-8", env=env, timeout=30)
@@ -84,7 +88,8 @@ def test_survives_empty_stdin(tmp_path):
 
 def test_survives_garbage_stdin(tmp_path):
     env = {**os.environ, "PYTHONIOENCODING": "utf-8",
-           "KUMIHO_CLAUDE_HOME": str(tmp_path)}
+           "KUMIHO_CLAUDE_HOME": str(tmp_path),
+           "CLAUDE_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}"}
     r = subprocess.run([sys.executable, str(SCRIPTS / "session-bootstrap.py")],
                        input="not json at all {{{", capture_output=True, text=True,
                        encoding="utf-8", env=env, timeout=30)
@@ -200,12 +205,9 @@ def test_the_rule_placeholder_never_reaches_the_model(tmp_path, payload):
 def _drifted_desktop(tmp_path, pinned_to=None):
     """A Desktop config pinned to some other plugin version that still exists.
 
-    Returns ``(config_path, plugin_root, env_extra)``. The location and the env
-    var that redirects it are platform-specific, exactly as
-    ``session-bootstrap._desktop_config_paths`` reads them -- an earlier version
-    of this helper set only APPDATA, which is Windows-only, so the test passed
-    on the author's machine and failed on Linux CI where the hook looks under
-    ``$HOME/.config``.
+    Returns ``(config_path, plugin_root, env_extra)``. Every account/config path
+    is rooted below ``tmp_path`` so running the staged launcher directly cannot
+    inspect or rewrite the developer's real Claude Desktop profile.
     """
     # Stage the plugin into an INSTALLED-looking layout inside tmp_path. The
     # launcher refuses to manage Desktop configs from a working copy (see
@@ -215,23 +217,24 @@ def _drifted_desktop(tmp_path, pinned_to=None):
     plugin_root = (tmp_path / "plugins" / "cache" / "kumiho-plugins"
                    / "kumiho-memory" / "9.9.9")
     (plugin_root / "scripts").mkdir(parents=True)
-    for name in ("run_kumiho_mcp.py", "bounded_proc.py", "session-bootstrap.py"):
+    for name in ("run_kumiho_mcp.py", "bounded_proc.py"):
         shutil.copy2(SCRIPTS / name, plugin_root / "scripts" / name)
+    env_extra = {
+        "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),
+        "XDG_CONFIG_HOME": str(tmp_path / ".config"),
+        "XDG_CACHE_HOME": str(tmp_path / ".cache"),
+        "APPDATA": str(tmp_path / "AppData" / "Roaming"),
+        "LOCALAPPDATA": str(tmp_path / "AppData" / "Local"),
+        "KUMIHO_CONFIG_DIR": str(tmp_path / ".kumiho"),
+        "KUMIHO_CLAUDE_HOME": str(tmp_path / "state"),
+        "CLAUDE_PLUGIN_ROOT": str(plugin_root),
+    }
     if os.name == "nt":
-        home = tmp_path / "AppData" / "Roaming"
-        cfg = home / "Claude" / "claude_desktop_config.json"
-        # LOCALAPPDATA as well as APPDATA: the launcher looks for the MSIX
-        # (Microsoft Store) Claude Desktop config under LocalAppData\Packages,
-        # and leaving that pointed at the real profile is how this suite once
-        # rewrote the machine's actual Desktop config.
-        env_extra = {"APPDATA": str(home), "LOCALAPPDATA": str(tmp_path / "Local")}
+        cfg = Path(env_extra["APPDATA"]) / "Claude" / "claude_desktop_config.json"
     else:
         cfg = tmp_path / ".config" / "Claude" / "claude_desktop_config.json"
-        env_extra = {"HOME": str(tmp_path), "XDG_CONFIG_HOME": str(tmp_path / ".config"),
-                     "LOCALAPPDATA": str(tmp_path / "Local")}
     cfg.parent.mkdir(parents=True)
-    env_extra["KUMIHO_CLAUDE_HOME"] = str(tmp_path / "state")
-    env_extra["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
     if pinned_to is None:
         # A stand-in for "some other version's script that still exists".
         # It is fabricated INSIDE tmp_path and only ever written there.
@@ -244,10 +247,40 @@ def _drifted_desktop(tmp_path, pinned_to=None):
         # 1605-line source out of the working tree on every test run.
         old = pinned_to
         assert old.is_file(), old
+    entry_env = {"SENTINEL": "keep"}
+    if pinned_to is not None:
+        entry_env.update({
+            "CLAUDE_PLUGIN_ROOT": str(plugin_root),
+            "KUMIHO_CLAUDE_HOST": "claude",
+        })
+    entry_args = ["-I", str(old)] if pinned_to is not None else [str(old)]
     cfg.write_text(json.dumps({"mcpServers": {"kumiho-memory": {
-        "command": sys.executable, "args": [str(old)], "env": {"SENTINEL": "keep"}}}}),
+        "command": sys.executable, "args": entry_args, "env": entry_env}}}),
         encoding="utf-8")
     return cfg, plugin_root, env_extra
+
+
+def _run_staged_repair(plugin_root: Path, env_extra: dict):
+    """Exercise only the launcher's synchronous repair path in a temp profile."""
+    env = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith(("KUMIHO_", "CLAUDE_"))
+    }
+    env.update(env_extra)
+    env.pop("KUMIHO_CLAUDE_HOST", None)
+    return subprocess.run(
+        [
+            sys.executable,
+            str(plugin_root / "scripts" / "run_kumiho_mcp.py"),
+            "--repair-desktop-entry",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        cwd=str(plugin_root.parent),
+        timeout=30,
+    )
 
 
 def test_a_working_copy_never_writes_a_desktop_config(tmp_path, monkeypatch):
@@ -290,28 +323,44 @@ def test_an_installed_layout_is_allowed_to_manage_configs(tmp_path, monkeypatch)
 
 
 def test_a_version_drifted_desktop_entry_is_repaired(tmp_path):
-    """The launcher self-heals this config, but that check runs inside whichever
-    launcher the config already points at -- so a stale entry can only be fixed
-    by the stale code, and a later fix never runs. Observed four times on one
-    machine in a day. The hook is the way out: the host substitutes
-    CLAUDE_PLUGIN_ROOT from the INSTALLED plugin, so it is always current."""
+    """The current launcher rewrites a config pinned to an older version.
+
+    The SessionStart hook supplies this current path in production; its detached
+    handoff and root validation are unit-tested separately. This test invokes
+    the repair synchronously so every writable profile path stays under tmp.
+    """
     cfg, plugin_root, env = _drifted_desktop(tmp_path)
-    r = _run_hook("session-bootstrap.py", {"session_id": "s1", "source": "startup"}, env)
-    assert r.returncode == 0, "SessionStart must never fail a session"
-    time.sleep(4)  # the repair is a detached child
-    got = json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]["kumiho-memory"]["args"][0]
-    assert Path(got) == plugin_root / "scripts" / "run_kumiho_mcp.py"
+    r = _run_staged_repair(plugin_root, env)
+    assert r.returncode == 0, r.stderr
+    got = json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]["kumiho-memory"]["args"]
+    assert got == ["-I", str(plugin_root / "scripts" / "run_kumiho_mcp.py")]
 
 
 def test_a_current_desktop_entry_is_left_alone(tmp_path):
     """The common case must cost one small JSON read and nothing else."""
     staged = (tmp_path / "plugins" / "cache" / "kumiho-plugins" / "kumiho-memory"
               / "9.9.9" / "scripts" / "run_kumiho_mcp.py")
-    cfg, _root, env = _drifted_desktop(tmp_path, pinned_to=staged)
-    _run_hook("session-bootstrap.py", {"session_id": "s1", "source": "startup"}, env)
-    time.sleep(3)
+    cfg, root, env = _drifted_desktop(tmp_path, pinned_to=staged)
+    r = _run_staged_repair(root, env)
+    assert r.returncode == 0, r.stderr
     entry = json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]["kumiho-memory"]
     assert entry["env"].get("SENTINEL") == "keep", "an up-to-date entry must not be rewritten"
+
+
+def test_a_current_legacy_entry_without_isolated_mode_is_rewritten(tmp_path):
+    staged = (tmp_path / "plugins" / "cache" / "kumiho-plugins" / "kumiho-memory"
+              / "9.9.9" / "scripts" / "run_kumiho_mcp.py")
+    cfg, root, env = _drifted_desktop(tmp_path, pinned_to=staged)
+    body = json.loads(cfg.read_text(encoding="utf-8"))
+    body["mcpServers"]["kumiho-memory"]["args"] = [str(staged)]
+    cfg.write_text(json.dumps(body), encoding="utf-8")
+
+    r = _run_staged_repair(root, env)
+
+    assert r.returncode == 0, r.stderr
+    entry = json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]["kumiho-memory"]
+    assert entry["args"] == ["-I", str(staged)]
+    assert entry["env"]["SENTINEL"] == "keep"
 
 
 def test_repair_does_nothing_without_a_plugin_root(tmp_path):
@@ -320,7 +369,6 @@ def test_repair_does_nothing_without_a_plugin_root(tmp_path):
     before = cfg.read_text(encoding="utf-8")
     _run_hook("session-bootstrap.py", {"session_id": "s1", "source": "startup"},
               {**env, "CLAUDE_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}"})
-    time.sleep(2)
     assert cfg.read_text(encoding="utf-8") == before
 
 

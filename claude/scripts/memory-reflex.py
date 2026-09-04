@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -269,12 +270,17 @@ def main(argv: list) -> int:
                 # Absolute paths, because $CLAUDE_PLUGIN_ROOT is empty in the
                 # agent's shell -- which is why the drain command documented in
                 # SKILL.md never actually ran.
-                drain = '%s "%s" list' % (
-                    sys.executable,
-                    str(Path(__file__).resolve().parent / "code_capture_pending.py"))
+                queue_cmd = "%s -I %s --claude-host" % (
+                    shlex.quote(sys.executable),
+                    shlex.quote(str(
+                        Path(__file__).resolve().parent / "code_capture_pending.py"
+                    )))
                 parts.append(
                     "%d commits are queued for keyless Decision Memory capture. "
-                    "To drain: %s" % (pending, drain))
+                    "To drain: %s list. After each captured or intentionally "
+                    "skipped entry: %s done <commit>" % (
+                        pending, queue_cmd, queue_cmd
+                    ))
                 turn["last_queue_turn"] = n_turn
 
         # Print FIRST. Bookkeeping below must never cost the injection.

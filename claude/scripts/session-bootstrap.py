@@ -31,6 +31,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import state_home  # noqa: E402
+
 CONTEXT = (
     "SESSION-START INSTRUCTION (kumiho-memory plugin)\n"
     "\n"
@@ -173,17 +176,8 @@ def _context(session_id: str) -> str:
     return CONTEXT.replace("__SESSION_ID_RULE__", rule)
 
 def _state_dir() -> Path:
-    """Mirror ``run_kumiho_mcp._state_dir`` -- duplicated, like
-    ``code_capture_pending._state_dir``, so this hook stays import-free and fast
-    on the session-start critical path."""
-    override = (os.getenv("KUMIHO_CLAUDE_HOME", "") or "").strip()
-    if override:
-        return Path(override).expanduser()
-    if os.name == "nt":
-        base = os.getenv("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
-        return Path(base) / "kumiho-claude"
-    xdg = (os.getenv("XDG_CACHE_HOME", "") or "").strip()
-    return (Path(xdg) if xdg else Path.home() / ".cache") / "kumiho-claude"
+    """Use the shared, project-isolated Claude hook state root."""
+    return state_home.state_dir()
 
 
 def _read_hook_input() -> dict:
@@ -275,18 +269,27 @@ def _repair_stale_desktop_entry() -> None:
     root = (os.getenv("CLAUDE_PLUGIN_ROOT", "") or "").strip()
     if not root or "${" in root:
         return
-    launcher = Path(root) / "scripts" / "run_kumiho_mcp.py"
+    actual_root = Path(__file__).resolve().parent.parent
+    try:
+        if Path(root).resolve() != actual_root:
+            return
+    except (OSError, RuntimeError, ValueError):
+        return
+    launcher = actual_root / "scripts" / "run_kumiho_mcp.py"
     if not launcher.is_file():
         return
     kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
-              "stderr": subprocess.DEVNULL}
+              "stderr": subprocess.DEVNULL,
+              "env": state_home.secured_hook_child_env()}
     if os.name == "nt":
         kwargs["creationflags"] = 0x00000008 | 0x00000200
     else:
         kwargs["start_new_session"] = True
     try:
-        subprocess.Popen([sys.executable, str(launcher), "--repair-desktop-entry"],
-                         **kwargs)
+        subprocess.Popen(
+            [sys.executable, "-I", str(launcher), "--repair-desktop-entry"],
+            **kwargs,
+        )
     except OSError:
         pass  # best-effort; SessionStart must never fail a session
 

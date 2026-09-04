@@ -46,17 +46,23 @@ def _pin_keyless_env(env: dict) -> None:
 def main() -> int:
     launcher = _load_launcher()
 
-    launcher._sanitize_placeholder_env_vars()
     launcher._hydrate_env_from_local_config()
-    if not launcher._ce_mode_enabled():
-        launcher._validate_auth_token()
-    try:
-        launcher._bootstrap_server_endpoint()
-    except RuntimeError as exc:
-        print(f"[backfill-ingest] endpoint bootstrap failed: {exc}", file=sys.stderr)
-        print("[backfill-ingest] run /kumiho-onboard first (auth + venv), then retry.",
-              file=sys.stderr)
-        return 1
+    launcher._sanitize_placeholder_env_vars()
+    ce_mode = launcher._ce_mode_enabled()
+    if ce_mode:
+        try:
+            ce_endpoint = launcher._resolve_ce_endpoint()
+            if ce_endpoint is None:
+                raise RuntimeError("CE mode has no configured endpoint")
+            launcher._bootstrap_ce_endpoint(ce_endpoint)
+        except RuntimeError as exc:
+            print(f"[backfill-ingest] CE endpoint bootstrap failed: {exc}", file=sys.stderr)
+            print("[backfill-ingest] run /kumiho-onboard first, then retry.",
+                  file=sys.stderr)
+            return 1
+    else:
+        # Auth, refresh, discovery, and regional routing are SDK responsibilities.
+        os.environ["KUMIHO_PLUGIN_SHARED_HOME"] = str(launcher._kumiho_home())
 
     python_path = launcher._ensure_runtime()
     env = dict(os.environ)
@@ -66,7 +72,12 @@ def main() -> int:
     argv = sys.argv[1:]
     if "--log-file" not in argv:
         argv += ["--log-file", str(launcher._state_dir() / "backfill-ingest.log")]
-    proc = subprocess.run([str(python_path), str(runner), *argv], env=env)
+    adapter_name = "run_kumiho_ce.py" if ce_mode else "run_kumiho_cloud.py"
+    adapter = Path(__file__).resolve().parent / adapter_name
+    command = [
+        str(python_path), "-I", str(adapter), "--script", str(runner), *argv
+    ]
+    proc = subprocess.run(command, env=env)
     return proc.returncode
 
 

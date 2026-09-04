@@ -460,6 +460,67 @@ def test_wrapper_env_pinning() -> bool:
     return ok
 
 
+def test_wrapper_cloud_launch_uses_the_sdk_adapter() -> bool:
+    path = Path(__file__).resolve().parent / "backfill_ingest.py"
+    spec = importlib.util.spec_from_file_location("backfill_cloud_adapter_mod", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    shared_home = Path(tempfile.mkdtemp(prefix="backfill-cloud-home-"))
+    state_dir = shared_home / "state"
+    python_path = shared_home / "venv" / "python"
+    launcher = types.SimpleNamespace(
+        _hydrate_env_from_local_config=lambda: None,
+        _sanitize_placeholder_env_vars=lambda: None,
+        _ce_mode_enabled=lambda: False,
+        _kumiho_home=lambda: shared_home,
+        _ensure_runtime=lambda: python_path,
+        _state_dir=lambda: state_dir,
+    )
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = [str(part) for part in command]
+        captured["env"] = kwargs["env"]
+        return types.SimpleNamespace(returncode=0)
+
+    module._load_launcher = lambda: launcher
+    module.subprocess = types.SimpleNamespace(run=fake_run)
+    old_argv = sys.argv
+    old_token = os.environ.get("KUMIHO_AUTH_TOKEN")
+    old_handoff = os.environ.get("KUMIHO_PLUGIN_SHARED_HOME")
+    try:
+        os.environ["KUMIHO_AUTH_TOKEN"] = "explicit-cloud-token"
+        os.environ.pop("KUMIHO_PLUGIN_SHARED_HOME", None)
+        sys.argv = ["backfill_ingest.py", "--staging", "captures.json", "--yes"]
+        rc = module.main()
+    finally:
+        sys.argv = old_argv
+        for key, value in (
+            ("KUMIHO_AUTH_TOKEN", old_token),
+            ("KUMIHO_PLUGIN_SHARED_HOME", old_handoff),
+        ):
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    command = captured.get("command", [])
+    env = captured.get("env", {})
+    ok = _check("Cloud wrapper returns the adapter status", rc == 0)
+    ok &= _check(
+        "Cloud wrapper enters the SDK adapter in isolated mode",
+        command[:3] == [str(python_path), "-I", str(path.with_name("run_kumiho_cloud.py"))]
+        and command[3:5] == ["--script", str(path.parent / "backfill" / "ingest_runner.py")],
+    )
+    ok &= _check(
+        "explicit token and shared home reach the adapter",
+        env.get("KUMIHO_AUTH_TOKEN") == "explicit-cloud-token"
+        and env.get("KUMIHO_PLUGIN_SHARED_HOME") == str(shared_home),
+    )
+    return ok
+
+
 def test_main_full_run_writes_log() -> bool:
     tmp = Path(tempfile.mkdtemp(prefix="backfill-ing-test-"))
     staging_file = make_staging(tmp)
@@ -515,6 +576,7 @@ def main() -> int:
         ("batch_partial_failure_resumes", test_batch_partial_failure_resumes),
         ("decompose_resume_window", test_decompose_resume_window),
         ("wrapper_env_pinning", test_wrapper_env_pinning),
+        ("wrapper_cloud_adapter", test_wrapper_cloud_launch_uses_the_sdk_adapter),
         ("main_full_run_writes_log", test_main_full_run_writes_log),
         ("main_consent_paths", test_main_consent_paths),
     )
