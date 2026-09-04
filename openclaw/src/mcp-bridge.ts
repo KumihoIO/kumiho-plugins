@@ -18,7 +18,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 
-import { resolvePythonPath, verifiedPythonForLaunch } from "./python-setup.js";
+import { resolvePythonPath } from "./python-setup.js";
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -103,8 +103,6 @@ export interface McpBridgeOptions {
   pythonPath?: string;
   /** MCP server module or command. Default: "kumiho-mcp" */
   command?: string;
-  /** Bundled Python bootstrap that replaces the MCP command after Python detection. */
-  pythonBootstrapScript?: string;
   /** Extra args passed to the MCP server process. */
   args?: string[];
   /** Environment variables merged into the child process env. */
@@ -132,7 +130,6 @@ export class McpBridge extends EventEmitter {
 
   private readonly pythonPath: string;
   private readonly command: string;
-  private readonly pythonBootstrapScript: string | undefined;
   private readonly args: string[];
   private readonly childEnv: Record<string, string>;
   private readonly cwd: string | undefined;
@@ -145,7 +142,6 @@ export class McpBridge extends EventEmitter {
     super();
     this.pythonPath = opts.pythonPath ?? "python";
     this.command = opts.command ?? "kumiho-mcp";
-    this.pythonBootstrapScript = opts.pythonBootstrapScript;
     this.args = opts.args ?? [];
     this.childEnv = opts.env ?? {};
     this.cwd = opts.cwd;
@@ -181,17 +177,11 @@ export class McpBridge extends EventEmitter {
     // resolvePythonPath probes ~/.kumiho/venv and other known locations, caches
     // the result, and falls back gracefully so the spawn error remains readable.
     const resolved = resolvePythonPath(
-      {
-        pythonPath: this.pythonPath,
-        // A Python bootstrap still needs normal shared-venv detection. Do not
-        // let its absolute script path make resolvePythonPath treat it as an
-        // independently executable custom command.
-        command: this.pythonBootstrapScript ? "kumiho-mcp" : this.command,
-      },
+      { pythonPath: this.pythonPath, command: this.command },
       this.log
     );
     const effectivePythonPath = resolved.pythonPath;
-    const effectiveCommand = this.pythonBootstrapScript ?? resolved.command;
+    const effectiveCommand    = resolved.command;
 
     // Determine how to launch:
     //   .py script  → python <script> [args]
@@ -200,10 +190,7 @@ export class McpBridge extends EventEmitter {
     const hasPathSep = effectiveCommand.includes("/") || effectiveCommand.includes("\\");
     const isScript = effectiveCommand.endsWith(".py");
     const isModule = !isScript && !hasPathSep && effectiveCommand.includes(".");
-    const spawnCmd =
-      isScript || isModule
-        ? verifiedPythonForLaunch(effectivePythonPath)
-        : effectiveCommand;
+    const spawnCmd = isScript || isModule ? effectivePythonPath : effectiveCommand;
     const spawnArgs = isScript
       ? [effectiveCommand, ...this.args]
       : isModule
@@ -218,7 +205,6 @@ export class McpBridge extends EventEmitter {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, ...this.childEnv, ...this.extraEnv },
       cwd: this.cwd,
-      windowsHide: true,
       // Prevent the child from inheriting the parent's signal handlers
       detached: false,
     });

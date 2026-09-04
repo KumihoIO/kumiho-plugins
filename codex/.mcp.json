@@ -1,15 +1,21 @@
 {
   "mcpServers": {
     "kumiho-memory": {
-      "command": "node",
+      "command": "python",
       "args": [
-        "scripts/run_kumiho_mcp.mjs"
+        "${CLAUDE_PLUGIN_ROOT}/scripts/run_kumiho_mcp.py"
       ],
-      "cwd": ".",
       "env": {
+        "KUMIHO_AUTH_TOKEN": "${KUMIHO_AUTH_TOKEN}",
+        "KUMIHO_CONTROL_PLANE_URL": "${KUMIHO_CONTROL_PLANE_URL:-https://control.kumiho.cloud}",
+        "KUMIHO_CLAUDE_DISCOVERY_USER_AGENT": "${KUMIHO_CLAUDE_DISCOVERY_USER_AGENT:-kumiho-codex/0.1.0}",
+        "KUMIHO_MCP_LOG_LEVEL": "${KUMIHO_MCP_LOG_LEVEL:-INFO}",
+        "KUMIHO_CLAUDE_PACKAGE_SPEC": "${KUMIHO_CLAUDE_PACKAGE_SPEC:-kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.4.0}",
+        "KUMIHO_CLAUDE_DISABLE_LLM_FALLBACK": "${KUMIHO_CLAUDE_DISABLE_LLM_FALLBACK:-}",
+        "KUMIHO_CLAUDE_MODE": "${KUMIHO_CLAUDE_MODE:-}",
+        "KUMIHO_CLAUDE_SERVER_ENDPOINT": "${KUMIHO_CLAUDE_SERVER_ENDPOINT:-}",
         "KUMIHO_CLAUDE_HOST": "codex",
-        "KUMIHO_CLAUDE_PACKAGE_SPEC": "kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.4.0",
-        "KUMIHO_MEMORY_DECISIONS": "1",
+        "KUMIHO_MEMORY_CODE": "1",
         "KUMIHO_AUTO_ASSESS": "1"
       }
     }

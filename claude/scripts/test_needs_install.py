@@ -129,21 +129,15 @@ def test_absent_distribution_needs_install(bare_venv, tmp_path):
 
 
 def test_probe_of_a_broken_interpreter_falls_back_to_install(tmp_path):
-    """Unknowable satisfaction must reinstall, never silently skip.
-
-    A text file named ``python.exe`` makes Windows open a modal "16-bit
-    application" dialog instead of simply returning a subprocess error.  A
-    directory is equally non-executable and fails without involving the GUI.
-    """
-    fake = tmp_path / "broken-python"
-    fake.mkdir()
+    """Unknowable satisfaction must reinstall, never silently skip."""
+    fake = tmp_path / ("python.exe" if sys.platform == "win32" else "python")
+    fake.write_text("not an interpreter", encoding="utf-8")
     assert L._needs_install(fake, tmp_path / "marker", "kumiho>=1.0")
 
 
 def test_installed_versions_reports_absent_as_none(bare_venv):
     got = L._installed_versions(bare_venv, ["kumiho-memory"])
     assert got.get("kumiho-memory") is None
-    assert got.get("__python_ok__") is True
     assert got.get("__modules__") is False
 
 
@@ -161,18 +155,7 @@ def _venv_at_current_floors(modules_ok=True):
         installed[name] = floor or ("1" if not ceiling else str(int(
             L._version_key(ceiling)[0][0]) - 1))
     installed["__modules__"] = modules_ok
-    installed["__extras__"] = True
-    installed["__python_ok__"] = True
     return lambda *_, **__: installed
-
-
-def test_a_non_venv_or_old_python_always_needs_repair(monkeypatch, tmp_path):
-    installed = _venv_at_current_floors()()
-    installed["__python_ok__"] = False
-    monkeypatch.setattr(L, "_installed_versions", lambda *_, **__: installed)
-    py = tmp_path / "python"
-    py.write_text("", encoding="utf-8")
-    assert L._needs_install(py, tmp_path / "marker", L.DEFAULT_PACKAGE_SPEC)
 
 
 def _bumped(spec):
@@ -250,80 +233,6 @@ def test_importable_modules_are_required_even_at_a_good_version(monkeypatch, tmp
     py = tmp_path / "python"
     py.write_text("", encoding="utf-8")
     assert L._needs_install(py, tmp_path / "marker", L.DEFAULT_PACKAGE_SPEC)
-
-
-def test_unmarked_desktop_venv_must_prove_requested_extras(monkeypatch, tmp_path):
-    installed = _venv_at_current_floors()()
-    installed["__extras__"] = False
-    monkeypatch.setattr(L, "_installed_versions", lambda *_, **__: installed)
-    py = tmp_path / "python"
-    py.write_text("", encoding="utf-8")
-    assert L._needs_install(py, tmp_path / "shared-marker", L.DEFAULT_PACKAGE_SPEC)
-
-
-def test_marked_shared_venv_reinstalls_when_an_extra_dependency_breaks(
-    monkeypatch, tmp_path
-):
-    """A marker states intent, not current health of transitive extra deps."""
-    installed = _venv_at_current_floors()()
-    installed["__extras__"] = False
-    monkeypatch.setattr(L, "_installed_versions", lambda *_, **__: installed)
-    py = tmp_path / "python"
-    py.write_text("", encoding="utf-8")
-    marker = tmp_path / "shared-marker"
-    marker.write_text(L.DEFAULT_PACKAGE_SPEC, encoding="utf-8")
-
-    assert L._needs_install(py, marker, L.DEFAULT_PACKAGE_SPEC)
-
-
-def test_unmarked_desktop_venv_without_standalone_packaging_is_reused(tmp_path):
-    """Desktop's venv has pip's vendored packaging, not a top-level package.
-
-    That normal layout must still prove the requested extras; otherwise every
-    Claude/Codex start tries an unnecessary network upgrade of a healthy shared
-    runtime.
-    """
-    root = tmp_path / "desktop-runtime"
-    venv.create(root, with_pip=True)
-    py = root / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
-    site_dir = Path(subprocess.check_output(
-        [str(py), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
-        text=True,
-    ).strip())
-    assert subprocess.run(
-        [str(py), "-c", "import packaging"], capture_output=True
-    ).returncode != 0, "fixture unexpectedly has standalone packaging"
-
-    (site_dir / "kumiho").mkdir()
-    (site_dir / "kumiho" / "__init__.py").write_text("", encoding="utf-8")
-    (site_dir / "kumiho" / "mcp_server.py").write_text("", encoding="utf-8")
-    (site_dir / "kumiho_memory").mkdir()
-    (site_dir / "kumiho_memory" / "__init__.py").write_text("", encoding="utf-8")
-
-    metadata = {
-        "kumiho-9.0.dist-info": (
-            "Metadata-Version: 2.1\nName: kumiho\nVersion: 9.0\n"
-            "Provides-Extra: mcp\nRequires-Dist: mcp>=1; extra == 'mcp'\n"
-        ),
-        "kumiho_memory-9.0.dist-info": (
-            "Metadata-Version: 2.1\nName: kumiho-memory\nVersion: 9.0\n"
-            "Provides-Extra: all\nRequires-Dist: helper>=1; extra == 'all'\n"
-        ),
-        "mcp-1.0.dist-info": "Metadata-Version: 2.1\nName: mcp\nVersion: 1.0\n",
-        "helper-1.0.dist-info": (
-            "Metadata-Version: 2.1\nName: helper\nVersion: 1.0\n"
-        ),
-    }
-    for directory, body in metadata.items():
-        dist_info = site_dir / directory
-        dist_info.mkdir()
-        (dist_info / "METADATA").write_text(body + "\n", encoding="utf-8")
-
-    assert not L._needs_install(
-        py,
-        tmp_path / "absent-marker",
-        "kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.4.0",
-    )
 
 
 if __name__ == "__main__":

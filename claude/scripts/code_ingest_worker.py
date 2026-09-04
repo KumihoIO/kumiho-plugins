@@ -9,7 +9,7 @@ environment hydration + venv provisioning + LLM mining pass:
    CE-mode endpoint bootstrap / LLM fallback) by importing
    ``run_kumiho_mcp`` from this directory — the worker connects to exactly
    the same server the MCP tools use, cloud or self-hosted CE alike.
-2. Ensures the shared Kumiho venv (same one Desktop, Claude, and Codex use).
+2. Ensures the plugin venv (same one the MCP server runs in).
 3. Runs ``python -m kumiho_memory code-ingest <repo>`` in incremental
    mode: already-captured commits are marker-skipped at zero LLM cost, so
    over-triggering costs nothing.
@@ -27,7 +27,6 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bounded_proc
 
 MAX_COMMITS = 20
@@ -59,10 +58,6 @@ def main() -> int:
     repo_dir = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
 
     launcher = _load_launcher()
-    # Sanitize host provenance before _state_dir can create a log/lock under
-    # a project-controlled path. Hydration itself performs the host clear.
-    launcher._hydrate_env_from_local_config()
-    launcher._sanitize_placeholder_env_vars()
     state_dir = launcher._state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
     log_path = state_dir / "code-ingest.log"
@@ -96,20 +91,16 @@ def main() -> int:
         pass  # lock is best-effort
 
     try:
-        # The plugin chooses only the backend. Cloud auth, token refresh,
-        # discovery, and regional routing belong to the Python SDK adapter.
-        ce_mode = launcher._ce_mode_enabled()
-        if ce_mode:
-            try:
-                ce_endpoint = launcher._resolve_ce_endpoint()
-                if ce_endpoint is None:
-                    raise RuntimeError("CE mode has no configured endpoint")
-                launcher._bootstrap_ce_endpoint(ce_endpoint)
-            except RuntimeError as exc:
-                log(f"skip: CE endpoint bootstrap failed ({exc})")
-                return 0
-        else:
-            os.environ["KUMIHO_PLUGIN_SHARED_HOME"] = str(launcher._kumiho_home())
+        # Same environment pipeline as the MCP server (CE mode included).
+        launcher._sanitize_placeholder_env_vars()
+        launcher._hydrate_env_from_local_config()
+        if not launcher._ce_mode_enabled():
+            launcher._validate_auth_token()
+        try:
+            launcher._bootstrap_server_endpoint()
+        except RuntimeError as exc:
+            log(f"skip: endpoint bootstrap failed ({exc})")
+            return 0
         launcher._configure_llm_fallback()
         if (os.getenv("KUMIHO_LLM_BASE_URL", "") or "").startswith("http://127.0.0.1:9"):
             # No real model here (fail-fast fallback) and no agent in the loop,
@@ -129,14 +120,9 @@ def main() -> int:
         env = dict(os.environ)
         env["KUMIHO_MEMORY_CODE"] = "1"
         log(f"ingest start: repo={repo_dir} (newest {MAX_COMMITS}, incremental)")
-        adapter_name = "run_kumiho_ce.py" if ce_mode else "run_kumiho_cloud.py"
-        adapter = Path(__file__).resolve().parent / adapter_name
-        command = [
-            str(python_path), "-I", str(adapter), "--module", "kumiho_memory",
-            "code-ingest", repo_dir, "--max-commits", str(MAX_COMMITS),
-        ]
         proc = bounded_proc.run(
-            command,
+            [str(python_path), "-m", "kumiho_memory", "code-ingest", repo_dir,
+             "--max-commits", str(MAX_COMMITS)],
             env=env, timeout=INGEST_TIMEOUT_S,
         )
         tail = (proc.stdout or "").strip().splitlines()[-12:]

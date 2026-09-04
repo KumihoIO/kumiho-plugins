@@ -12,17 +12,21 @@ The query text is NEVER passed in argv: process command lines are captured by
 EDR agents, so the prompt is read from ``<sid>.turn.json`` instead and only the
 cwd + session id travel on the command line.
 
-Deliberately does NOT reuse the launcher's runtime provisioning step:
+Deliberately does NOT reuse two launcher steps the sibling workers call:
 
 * ``_ensure_runtime()`` -- it can run ``venv.create`` + ``pip install`` and
   spawns a probe subprocess even when warm.  A per-turn worker must never
   provision anything, so the venv is probed directly (interpreter + marker
   file) and a cold state dir is a skip, not an install.
+* ``_bootstrap_server_endpoint()`` per invocation -- control-plane discovery is
+  an HTTPS round trip.  The resolved endpoint is cached in
+  ``<reflex>/endpoint.json`` for 15 minutes and the cache is dropped on any
+  transport error so a moved region self-heals.
 
-Cloud calls go through ``run_kumiho_cloud.py``.  That adapter pins the official
-control plane while the Python SDK owns authentication, refresh, discovery,
-regional routing, and its discovery cache.  CE remains an explicit loopback
-route prepared by the launcher.
+The auth sentinel is the load-bearing bail: with no token that bootstrap does
+NOT raise, it pins ``needs-auth.kumiho.invalid:443`` (RFC 6761, never
+resolves).  Without the explicit check every single turn would fire a doomed
+gRPC call at a host that cannot exist, forever.
 
 Run: python reflex_prefetch_worker.py <cwd> <session_id>  (detached; prints nothing)
 """
@@ -46,8 +50,10 @@ import reflex_state as rs  # noqa: E402
 # Global, not per-session: the venv and the endpoint cache are global state, so
 # two sessions prefetching at once would contend over the same files.
 LOCK_STALE_S = 300
+ENDPOINT_TTL_S = 900
 ENGAGE_TIMEOUT_S = 45
 MARKER_FILE = ".installed-packages.txt"
+AUTH_SENTINEL = "needs-auth.kumiho.invalid"
 
 DEFAULT_MIN_INTERVAL_S = 45
 DEFAULT_LIMIT = 5
@@ -137,6 +143,10 @@ def _state_path(session_id: str) -> Path:
     return rs.reflex_dir() / ("%s.state" % session_id)
 
 
+def _endpoint_path() -> Path:
+    return rs.reflex_dir() / "endpoint.json"
+
+
 def _env_int(name: str, default: int) -> int:
     raw = (os.getenv(name, "") or "").strip()
     try:
@@ -155,13 +165,45 @@ def _venv_ready(launcher) -> Path | None:
     mid-session, which is minutes of CPU for a prefetch nobody is waiting on.
     A missing runtime is a skip: onboarding provisions it, not this worker.
     """
-    # Ask the launcher for the authoritative shared path rather than rebuilding
-    # it here. Claude's plugin-data hook path is only a compatibility alias; a
-    # stale copy of the old expression silently disabled this worker entirely.
+    # Ask the launcher where the venv is rather than rebuilding the path here:
+    # it moved under the plugin data dir so exec-form hooks could name it, and
+    # a stale copy of that expression silently disabled this worker entirely.
     python_path = launcher._venv_python(launcher._venv_dir())
-    if not python_path.exists() or not launcher._marker_path().exists():
+    if not python_path.exists() or not (rs.state_dir() / MARKER_FILE).exists():
         return None
     return python_path
+
+
+def _resolve_endpoint(launcher) -> str:
+    """Endpoint with a 15-minute cache; CE always goes through the launcher."""
+    if launcher._ce_mode_enabled():
+        launcher._bootstrap_server_endpoint()  # local, no discovery round trip
+        return (os.getenv("KUMIHO_LOCAL_SERVER_ENDPOINT", "") or "").strip()
+
+    cached = rs.read_json(_endpoint_path(), None)
+    if isinstance(cached, dict):
+        endpoint = str(cached.get("endpoint") or "").strip()
+        ts = cached.get("ts")
+        if endpoint and isinstance(ts, (int, float)) and (time.time() - ts) < ENDPOINT_TTL_S:
+            os.environ["KUMIHO_SERVER_ENDPOINT"] = endpoint
+            os.environ.pop("KUMIHO_SERVER_ADDRESS", None)
+            return endpoint
+
+    launcher._bootstrap_server_endpoint()  # may raise RuntimeError
+    endpoint = (os.getenv("KUMIHO_SERVER_ENDPOINT", "") or "").strip()
+    # Never cache the auth sentinel: it costs nothing to re-derive (the
+    # no-token path short-circuits before any network call) and caching it
+    # would keep the reflex dark for 15 minutes after a token finally lands.
+    if endpoint and AUTH_SENTINEL not in endpoint:
+        rs.write_json_atomic(_endpoint_path(), {"endpoint": endpoint, "ts": int(time.time())})
+    return endpoint
+
+
+def _drop_endpoint_cache() -> None:
+    try:
+        _endpoint_path().unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 # --------------------------------------------------------------------- query
@@ -423,7 +465,7 @@ def _format_recalled(memories: list, max_chars: int) -> tuple:
 
 # ------------------------------------------------------------------- engage
 
-def _call_engage(python_path, args: dict, *, ce_mode: bool = False) -> tuple:
+def _call_engage(python_path, args: dict) -> tuple:
     """One subprocess, args on stdin.  Returns ``(payload, error)``.
 
     ``PYTHONIOENCODING=utf-8`` is not optional: the default piped encoding on a
@@ -432,12 +474,9 @@ def _call_engage(python_path, args: dict, *, ce_mode: bool = False) -> tuple:
     """
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
-    adapter_name = "run_kumiho_ce.py" if ce_mode else "run_kumiho_cloud.py"
-    adapter = Path(__file__).resolve().parent / adapter_name
-    command = [str(python_path), "-I", str(adapter), "--code", _ENGAGE_SNIPPET]
     try:
         proc = subprocess.run(
-            command,
+            [str(python_path), "-c", _ENGAGE_SNIPPET],
             input=json.dumps(args, ensure_ascii=True),
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             env=env, timeout=ENGAGE_TIMEOUT_S, creationflags=_NO_WINDOW,
@@ -474,9 +513,10 @@ def _prefetch(session_id: str, cwd_arg: str) -> int:
     launcher = _load_launcher()
 
     # Same environment pipeline as the MCP server, minus provisioning.
-    launcher._hydrate_env_from_local_config()
     launcher._sanitize_placeholder_env_vars()
-    ce_mode = launcher._ce_mode_enabled()
+    launcher._hydrate_env_from_local_config()
+    if not launcher._ce_mode_enabled():
+        launcher._validate_auth_token()
     launcher._configure_llm_fallback()
     # NOTE: no keyless bail here, unlike code_ingest_worker.  Commit mining
     # needs an LLM; engage in summarized mode does not.  Keyless is fine.
@@ -495,19 +535,15 @@ def _prefetch(session_id: str, cwd_arg: str) -> int:
             rs.log("skip: venv not provisioned")
         return 0
 
-    if ce_mode:
-        try:
-            ce_endpoint = launcher._resolve_ce_endpoint()
-            if ce_endpoint is None:
-                raise RuntimeError("CE mode has no configured endpoint")
-            launcher._bootstrap_ce_endpoint(ce_endpoint)
-        except RuntimeError as exc:
-            rs.log("skip: CE endpoint bootstrap failed (%s)" % exc)
-            return 0
-    else:
-        # The child adapter consumes this one-shot, validated handoff. It leaves
-        # any explicit KUMIHO_AUTH_TOKEN untouched for the SDK to interpret.
-        os.environ["KUMIHO_PLUGIN_SHARED_HOME"] = str(launcher._kumiho_home())
+    try:
+        endpoint = _resolve_endpoint(launcher)
+    except RuntimeError as exc:
+        _drop_endpoint_cache()
+        rs.log("skip: endpoint bootstrap failed (%s)" % exc)
+        return 0
+    if AUTH_SENTINEL in endpoint:
+        rs.log("skip: no auth token")
+        return 0
 
     session = rs.read_json(_session_path(session_id), None) or {}
     turn = rs.read_json(_turn_path(session_id), None) or {}
@@ -546,12 +582,13 @@ def _prefetch(session_id: str, cwd_arg: str) -> int:
 
     limit = _env_int("KUMIHO_REFLEX_LIMIT", DEFAULT_LIMIT)
     rs.log("prefetch start: session=%s limit=%d qlen=%d" % (session_id, limit, len(query)))
-    data, error = _call_engage(
-        python_path,
-        {"query": query, "limit": limit, "recall_mode": "summarized"},
-        ce_mode=ce_mode,
-    )
+    data, error = _call_engage(python_path, {
+        "query": query, "limit": limit, "recall_mode": "summarized",
+    })
     if data is None:
+        # Any failure invalidates the cached endpoint: a moved region or a dead
+        # cache entry must not keep failing for the rest of its 15-minute TTL.
+        _drop_endpoint_cache()
         if _is_unknown_tool_error(error):
             state["engage_unsupported"] = True
             rs.write_json_atomic(_state_path(session_id), state)

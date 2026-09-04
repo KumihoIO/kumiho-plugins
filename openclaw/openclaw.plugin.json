@@ -270,7 +270,7 @@
           "endpoint": {
             "type": "string",
             "default": "127.0.0.1:9190",
-            "description": "CE gRPC endpoint. Loopback may use host:port; remote CE requires an explicit grpcs:// or https:// TLS URL. Setting this alone enables CE mode."
+            "description": "CE gRPC endpoint (host:port). Setting this alone enables CE mode."
           },
           "redisUrl": {
             "type": "string",

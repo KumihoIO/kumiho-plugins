@@ -42,7 +42,7 @@ export interface KumihoPrivacyConfig {
 export interface KumihoCEConfig {
   /** Route the local Python SDK at a self-hosted CE server. Default: false. */
   enabled?: boolean;
-  /** Local host:port or remote grpcs/https CE endpoint. Remote plaintext is rejected. */
+  /** CE gRPC endpoint (host:port). Setting this alone also enables CE. Default: "127.0.0.1:9190". */
   endpoint?: string;
   /** Local Redis URL for CE working memory. Default: "redis://127.0.0.1:6379". */
   redisUrl?: string;

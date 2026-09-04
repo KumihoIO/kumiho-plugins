@@ -1,31 +1,27 @@
 #!/usr/bin/env python3
-"""Legacy source-checkout setup for the OpenAI Codex CLI.
+"""One-shot setup: register Kumiho memory with the OpenAI Codex CLI.
 
-Uses ``codex mcp`` to register the portable Node launcher in this directory.
-The CLI owns TOML parsing and serialization, including quoted table names and
-comments; this helper never edits ``config.toml`` as raw text.
-
-Normal users should install the plugin from the repository marketplace
-instead. This script remains for source checkouts and older Codex releases.
+Adds an ``[mcp_servers.kumiho-memory]`` block to ``~/.codex/config.toml``
+(idempotent — an existing block is left untouched), pointing at the shim
+launcher in this directory.  Codex does not expand ``${VAR}`` placeholders
+in config values, so auth/mode values are materialized at setup time from
+the current environment and the cached ``kumiho-auth`` login.
 
 Usage::
 
     python codex/scripts/setup_codex.py            # cloud (uses cached auth)
-    KUMIHO_CLAUDE_MODE=ce KUMIHO_CLAUDE_SERVER_ENDPOINT=127.0.0.1:9190 \
+    KUMIHO_CLAUDE_MODE=ce KUMIHO_CLAUDE_SERVER_ENDPOINT=127.0.0.1:50051 \
         python codex/scripts/setup_codex.py        # self-hosted CE
 
 Afterwards: append ``codex/AGENTS.md`` to your project's ``AGENTS.md`` so
-the agent follows the memory protocol. From a full checkout you may also
-install the optional decision-capture git hook::
+the agent follows the memory protocol, and (recommended) install the
+decision auto-capture git hook::
 
     python codex/scripts/install_git_hook.py /path/to/your/repo
 """
 
-import argparse
-import json
+import importlib.util
 import os
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -40,155 +36,85 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-SERVER_NAME = "kumiho-memory"
+SECTION = "mcp_servers.kumiho-memory"
 
 
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Register Kumiho Memory directly from this checkout. "
-            "Prefer the native Codex plugin for normal installs."
-        )
+def _load_launcher_module():
+    path = (
+        Path(__file__).resolve().parent.parent.parent
+        / "claude" / "scripts" / "run_kumiho_mcp.py"
     )
-    return parser.parse_args(argv)
+    spec = importlib.util.spec_from_file_location("kumiho_claude_launcher", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-def _checked_value(value: str) -> str:
-    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
-        raise ValueError("configuration values must not contain control characters")
-    return value
+def _toml_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _child_env() -> dict[str, str]:
-    env = os.environ.copy()
-    # An empty CODEX_HOME means "use the default" to Codex; leaving an empty
-    # string in place has historically redirected helpers to the working tree.
-    if not (env.get("CODEX_HOME", "") or "").strip():
-        env.pop("CODEX_HOME", None)
-    return env
+def main() -> int:
+    config_path = Path(os.getenv("CODEX_HOME", str(Path.home() / ".codex"))) / "config.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
 
+    if f"[{SECTION}]" in existing:
+        print(f"[kumiho-codex] {config_path} already has [{SECTION}] — leaving it untouched.")
+        return 0
 
-def _codex_executable(env: dict[str, str]) -> str | None:
-    explicit = (env.get("CODEX_CLI_PATH", "") or "").strip()
-    if explicit and Path(explicit).is_file():
-        return explicit
-    return shutil.which("codex", path=env.get("PATH"))
+    shim = Path(__file__).resolve().parent / "run_kumiho_mcp.py"
 
-
-def _configured_servers(codex: str, env: dict[str, str]) -> list[dict] | None:
-    result = subprocess.run(
-        [codex, "mcp", "list", "--json"],
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-    if result.returncode != 0:
-        return None
-    try:
-        body = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return None
-    return body if isinstance(body, list) else None
-
-
-def _is_current(server: dict, shim: Path) -> bool:
-    transport = server.get("transport")
-    if not isinstance(transport, dict):
-        return False
-    args = transport.get("args")
-    if transport.get("command") != "node" or not isinstance(args, list):
-        return False
-    return len(args) == 1 and Path(str(args[0])).resolve() == shim.resolve()
-
-
-def main(argv: list[str] | None = None) -> int:
-    _parse_args(argv)
-    shim = Path(__file__).resolve().parent / "run_kumiho_mcp.mjs"
-    child_env = _child_env()
-    codex = _codex_executable(child_env)
-    if codex is None:
-        print("[kumiho-codex] Codex CLI was not found on PATH.", file=sys.stderr)
-        return 1
-
-    servers = _configured_servers(codex, child_env)
-    if servers is None:
-        print(
-            "[kumiho-codex] Codex could not parse the MCP configuration; "
-            "no changes were made.",
-            file=sys.stderr,
-        )
-        return 2
-    existing = next(
-        (server for server in servers if server.get("name") == SERVER_NAME),
-        None,
-    )
-    if existing is not None:
-        if _is_current(existing, shim):
-            print(f"[kumiho-codex] {SERVER_NAME} is already registered and current.")
-            return 0
-        print(
-            f"[kumiho-codex] {SERVER_NAME} is already registered with a different "
-            "command. Run `codex mcp remove kumiho-memory`, then rerun this helper.",
-            file=sys.stderr,
-        )
-        return 2
-
-    env: dict = {
-        "KUMIHO_CLAUDE_HOST": "codex",
-        "KUMIHO_MEMORY_DECISIONS": "1",
-        "KUMIHO_AUTO_ASSESS": "1",
-        "KUMIHO_CLAUDE_PACKAGE_SPEC": (
-            "kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.4.0"
-        ),
-    }
+    env: dict = {"KUMIHO_MEMORY_CODE": "1", "KUMIHO_AUTO_ASSESS": "1"}
 
     mode = (os.getenv("KUMIHO_CLAUDE_MODE", "") or "").strip()
     endpoint = (os.getenv("KUMIHO_CLAUDE_SERVER_ENDPOINT", "") or "").strip()
-    if mode and mode.lower() != "ce":
-        print("[kumiho-codex] Legacy mode must be `ce` when set.", file=sys.stderr)
-        return 2
-    if mode or endpoint:
-        env["KUMIHO_CODEX_BACKEND"] = "ce"
-        env["KUMIHO_CODEX_CE_ENDPOINT"] = endpoint or "127.0.0.1:9190"
-    else:
-        env["KUMIHO_CODEX_BACKEND"] = "cloud"
+    if mode:
+        env["KUMIHO_CLAUDE_MODE"] = mode
+    if endpoint:
+        env["KUMIHO_CLAUDE_SERVER_ENDPOINT"] = endpoint
 
-    try:
-        checked = {key: _checked_value(str(value)) for key, value in env.items()}
-        shim_arg = _checked_value(str(shim))
-    except ValueError as exc:
-        print(f"[kumiho-codex] Refusing unsafe configuration value: {exc}", file=sys.stderr)
-        return 2
+    if not mode and not endpoint:
+        # Cloud mode: materialize the auth token (Codex cannot expand ${...}).
+        launcher = _load_launcher_module()
+        token = ""
+        try:
+            token = launcher._load_bearer_token() or ""
+        except Exception:  # noqa: BLE001
+            token = ""
+        if not token:
+            print(
+                "[kumiho-codex] No auth token found (env or cached login). "
+                "Run `kumiho-auth login` first, or set KUMIHO_CLAUDE_MODE=ce "
+                "with KUMIHO_CLAUDE_SERVER_ENDPOINT for a self-hosted CE.",
+                file=sys.stderr,
+            )
+            return 1
+        env["KUMIHO_AUTH_TOKEN"] = token
 
-    command = [codex, "mcp", "add"]
-    for key, value in sorted(checked.items()):
-        command.extend(["--env", f"{key}={value}"])
-    command.extend([SERVER_NAME, "--", "node", shim_arg])
-    result = subprocess.run(
-        command,
-        env=child_env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
+    for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "KUMIHO_LLM_API_KEY",
+                "KUMIHO_LLM_BASE_URL", "KUMIHO_LLM_MODEL"):
+        val = (os.getenv(key, "") or "").strip()
+        if val:
+            env[key] = val
+
+    env_toml = ", ".join(f'{k} = "{_toml_escape(v)}"' for k, v in env.items())
+    block = (
+        f"\n[{SECTION}]\n"
+        f'command = "python"\n'
+        f'args = ["{_toml_escape(str(shim))}"]\n'
+        f"env = {{ {env_toml} }}\n"
     )
-    if result.returncode != 0:
-        print(
-            "[kumiho-codex] Codex did not register the MCP server; no manual "
-            "TOML fallback was attempted.",
-            file=sys.stderr,
-        )
-        return 2
 
-    print(f"[kumiho-codex] Registered {SERVER_NAME} through `codex mcp add`.")
+    with open(config_path, "a", encoding="utf-8") as fh:
+        if existing and not existing.endswith("\n"):
+            fh.write("\n")
+        fh.write(block)
+
+    print(f"[kumiho-codex] Registered [{SECTION}] in {config_path}")
     print("[kumiho-codex] Next steps:")
-    print("  1. Start a new Codex session so the MCP tool catalog is refreshed")
-    print("  2. Append codex/AGENTS.md to your project's AGENTS.md")
-    print("  3. Optionally install codex/scripts/install_git_hook.py for commit backfill")
+    print("  1. Append codex/AGENTS.md to your project's AGENTS.md")
+    print("  2. python codex/scripts/install_git_hook.py <your-repo>   # decision auto-capture")
     return 0
 
 
