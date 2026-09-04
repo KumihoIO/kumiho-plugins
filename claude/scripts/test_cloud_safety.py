@@ -319,7 +319,7 @@ def test_cloud_adapter_still_starts_mcp_tools_with_a_fail_closed_guard(
     "route_key",
     ["KUMIHO_CONTROL_PLANE_URL", "KUMIHO_CONTROL_PLANE_API_URL"],
 )
-def test_project_settings_preserve_explicit_token_and_loopback_ce_but_drop_route(
+def test_project_settings_reject_project_token_and_preserve_loopback_ce_but_drop_route(
     tmp_path, monkeypatch, route_key
 ):
     monkeypatch.setenv("KUMIHO_CLAUDE_HOST", "claude")
@@ -360,7 +360,7 @@ def test_project_settings_preserve_explicit_token_and_loopback_ce_but_drop_route
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(L, "_candidate_settings_paths", lambda: [project_settings])
     L._hydrate_env_from_claude_settings()
-    assert os.environ["KUMIHO_AUTH_TOKEN"] == "project-token"
+    assert "KUMIHO_AUTH_TOKEN" not in os.environ
     assert os.environ["KUMIHO_CLAUDE_MODE"] == "ce"
     assert os.environ["KUMIHO_CLAUDE_SERVER_ENDPOINT"] == (
         "grpcs://127.0.0.1:7443"
@@ -452,7 +452,7 @@ def test_hostile_ambient_routes_are_removed_without_replacing_explicit_token(
     monkeypatch.setattr(L, "_hydrate_env_from_plugin_mcp", lambda: None)
     L._hydrate_env_from_local_config()
 
-    assert os.environ["KUMIHO_AUTH_TOKEN"] == "custom-route-token"
+    assert "KUMIHO_AUTH_TOKEN" not in os.environ
     restored = {"HOME", "USERPROFILE"}
     if os.name == "nt":
         restored.update({"HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA"})
@@ -479,7 +479,7 @@ def test_hostile_ambient_routes_are_removed_without_replacing_explicit_token(
     )
 
 
-def test_official_ambient_token_survives_host_isolation(tmp_path, monkeypatch):
+def test_official_ambient_token_is_not_trusted_in_claude_host_isolation(tmp_path, monkeypatch):
     account_home = tmp_path / "os-account-home"
     monkeypatch.setenv("KUMIHO_CLAUDE_HOST", "claude")
     monkeypatch.setenv("KUMIHO_AUTH_TOKEN", "official-cloud-token")
@@ -495,7 +495,7 @@ def test_official_ambient_token_survives_host_isolation(tmp_path, monkeypatch):
     monkeypatch.setattr(L, "_hydrate_env_from_plugin_mcp", lambda: None)
     L._hydrate_env_from_local_config()
 
-    assert os.environ["KUMIHO_AUTH_TOKEN"] == "official-cloud-token"
+    assert "KUMIHO_AUTH_TOKEN" not in os.environ
     assert "KUMIHO_CONTROL_PLANE_URL" not in os.environ
     assert "KUMIHO_CONTROL_PLANE_API_URL" not in os.environ
 
@@ -527,7 +527,7 @@ def test_dotenv_explicit_token_survives_while_custom_route_is_dropped(
 
     L._read_dotenv_file(dotenv)
 
-    assert os.environ["KUMIHO_AUTH_TOKEN"] == "custom-route-token"
+    assert "KUMIHO_AUTH_TOKEN" not in os.environ
     assert route_key not in os.environ
 
 
@@ -567,7 +567,7 @@ def test_plugin_mcp_explicit_token_survives_while_custom_route_is_dropped(
 
     L._hydrate_env_from_plugin_mcp()
 
-    assert os.environ["KUMIHO_AUTH_TOKEN"] == "custom-route-token"
+    assert "KUMIHO_AUTH_TOKEN" not in os.environ
     assert route_key not in os.environ
 
 
@@ -858,7 +858,7 @@ def test_project_and_user_global_settings_compose_per_key(tmp_path, monkeypatch)
     os.environ[CLOUD.SHARED_HOME_HANDOFF_ENV] = str(L._kumiho_home())
     CLOUD._prepare_environment()
 
-    assert os.environ["KUMIHO_AUTH_TOKEN"] == "project-token"
+    assert "KUMIHO_AUTH_TOKEN" not in os.environ
     assert os.environ["KUMIHO_CONTROL_PLANE_URL"] == (
         "https://control.kumiho.cloud"
     )

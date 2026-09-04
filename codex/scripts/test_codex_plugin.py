@@ -150,6 +150,22 @@ def test_native_plugin_manifest_contract():
     assert launcher._codex_user_agent() == f"kumiho-codex/{body['version']}"
 
 
+def test_memory_skill_pins_bounded_recall_contract():
+    source = MEMORY_SKILL.read_text(encoding="utf-8")
+    for marker in (
+        "## Bounded recall — Codex only",
+        "limit=3",
+        "recall_mode=\"summarized\"",
+        "1,200 characters or three items",
+        "Do not fetch whole spaces",
+        "kumiho_code_why",
+        "discard the receipt",
+    ):
+        assert marker in source, (
+            f"Codex memory skill lost bounded-recall guard: {marker!r}"
+        )
+
+
 def test_native_mcp_uses_node_launcher_without_placeholders():
     body = _load_json(MCP_CONFIG)
     server = body.get("mcpServers", {}).get("kumiho-memory")
@@ -1897,6 +1913,7 @@ def test_isolated_codex_plugin_add_and_mcp_get():
 TESTS = (
     test_native_marketplace_schema,
     test_native_plugin_manifest_contract,
+    test_memory_skill_pins_bounded_recall_contract,
     test_native_mcp_uses_node_launcher_without_placeholders,
     test_node_launcher_source_contract,
     test_codex_thread_context_contract,

@@ -183,10 +183,10 @@ python -I ./claude/scripts/setup.py --ce --yes \
 | `--ce-redis-url` | working-memory Redis | `redis://127.0.0.1:6379` |
 | `--ce-llm-base-url` | OpenAI-compatible LLM for the LLM-backed paths: summarizer-written consolidation, Dream State (`/dream-state`), LLM edge discovery (Ollama, llama.cpp, vLLM, …) | fail-fast (reflect and keyless consolidation, i.e. `kumiho_memory_consolidate` with `summary`, need none) |
 
-The CE server, Redis, and optional CE LLM must all use loopback hosts such as
-`127.0.0.1`, `::1`, or `localhost`. TLS-bearing `https://`, `grpcs://`, and
-`rediss://` forms are accepted only when their host is still loopback; TLS does
-not make a remote CE service eligible.
+Project-provided CE routes are restricted to loopback hosts. A CE endpoint in
+user-global Claude settings may instead use a remote `https://` or `grpcs://`
+host; plaintext remote endpoints remain rejected. Redis stays local, and its
+URL may include credentials for password-protected local Redis.
 
 No API token is involved in CE mode. Full CE environment details are in
 [Self-hosted (Community Edition)](#self-hosted-community-edition) below.
@@ -258,6 +258,21 @@ never re-litigate a decision the graph already explains.
 
 ## Runtime model
 
+### Shared runtime ownership contract
+
+`~/.kumiho/venv` is the single shared runtime for Kumiho Desktop, Claude, and
+Codex. Desktop owns initial creation and its platform Python. The plugins may
+verify the interpreter, repair only the `CLAUDE_PLUGIN_DATA` compatibility
+alias, and install the declared Kumiho package set while holding the shared
+provision lock. Neither side replaces a healthy runtime or silently changes
+its Python major/minor version. If it is unusable, a dated `venv.broken-*`
+backup is created before replacement, and Desktop re-reads the runtime on its
+next launch. Plugin data never becomes a second package runtime.
+
+The shared install marker is the package-identity authority. A lock holder
+wins concurrent writes; the other host waits briefly or reconnects. This
+contract is required for Desktop upgrades and plugin upgrades to coexist.
+
 The bootstrap script (`scripts/run_kumiho_mcp.py`) reuses or creates the shared
 `~/.kumiho/venv` and installs required Python packages only when its current
 versions do not satisfy the plugin. In Cloud mode it launches the narrow Cloud
@@ -325,12 +340,13 @@ In CE mode the launcher:
   `kumiho-auth login` and no `KUMIHO_AUTH_TOKEN` are required (any inherited
   token is cleared so it cannot flip routing back to cloud). The CE server
   enforces its own auth.
-- Builds an explicit tokenless CE client for the configured loopback endpoint
-  (default `127.0.0.1:9190`) without entering Cloud discovery. A TLS-bearing
-  scheme is preserved, but its host must still be loopback.
+- Builds an explicit tokenless CE client for the configured endpoint (default
+  `127.0.0.1:9190`) without entering Cloud discovery. Project routes are
+  loopback-only; user-global TLS CE endpoints may be remote.
 - Provides a local working-memory Redis URL (`UPSTASH_REDIS_URL`, default
   `redis://127.0.0.1:6379`) — cloud gets this via the control-plane proxy; CE
-  does not. Both `redis://` and `rediss://` must name a loopback host.
+  does not. `redis://` and `rediss://` must name a loopback host, with optional
+  username/password credentials.
 - Logs the selected mode and resolved endpoint on startup so
   "why is my memory empty / not connecting" is answerable at a glance.
 
@@ -506,8 +522,8 @@ and SDK choose the serving region.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `KUMIHO_CLAUDE_MODE` | *(unset)* | Set to `ce` (or `community` / `self-hosted` / `local`) to target a self-hosted CE server instead of cloud discovery |
-| `KUMIHO_CLAUDE_SERVER_ENDPOINT` | `127.0.0.1:9190` | CE gRPC endpoint; setting it also enables CE mode. The host must be loopback even for `grpcs://` or `https://`. |
-| `UPSTASH_REDIS_URL` | `redis://127.0.0.1:6379` | CE working-memory Redis URL; both `redis://` and `rediss://` must use a loopback host |
+| `KUMIHO_CLAUDE_SERVER_ENDPOINT` | `127.0.0.1:9190` | CE gRPC endpoint; project values must be loopback. A user-global `https://`/`grpcs://` endpoint may be remote. |
+| `UPSTASH_REDIS_URL` | `redis://127.0.0.1:6379` | CE working-memory Redis URL; loopback only, with optional credentials for password-protected local Redis |
 | `KUMIHO_WORKING_MEMORY_TTL` | `86400` | Working-memory idle TTL in CE mode. A local Redis holds a day of buffer for nothing, and the package's one-hour default lost the buffer whenever a turn or a pause ran past an hour |
 | `KUMIHO_LLM_BASE_URL` | *(unset)* | OpenAI-compatible LLM endpoint for the LLM-backed paths: summarizer-written consolidation (calls without `summary`), Dream State (`/dream-state`) and LLM edge discovery; reflect and keyless consolidation need none. In CE mode its host must be loopback regardless of scheme. |
 

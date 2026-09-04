@@ -226,6 +226,7 @@ _HOST_TRUSTED_PROVISION_TRANSPORT_ENV = frozenset({
     "NO_GRPC_PROXY", "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
 })
 _TRUSTED_SETTINGS_TRANSPORT_ENV: dict[str, str] = {}
+_TRUSTED_GLOBAL_CE_KEYS: set[str] = set()
 
 _READY_LOCK_WAIT_S = 5.0
 _READY_LOCK_BACKOFF_S = 0.05
@@ -550,11 +551,8 @@ def _clear_host_untrusted_environment() -> None:
     """
     if not _host_launch_isolated():
         return
+    host = (os.getenv("KUMIHO_CLAUDE_HOST", "") or "").strip().lower()
     ambient_token = (os.getenv("KUMIHO_AUTH_TOKEN", "") or "").strip()
-    keep_ambient_token = (
-        bool(ambient_token)
-        and not _looks_like_placeholder(ambient_token)
-    )
     safe_project_routes = {}
     for key in _HOST_UNTRUSTED_DATA_ROUTE_ENV:
         value = (os.getenv(key, "") or "").strip()
@@ -584,7 +582,7 @@ def _clear_host_untrusted_environment() -> None:
         os.environ["HOMEPATH"] = tail or "\\"
         os.environ["APPDATA"] = str(account_home / "AppData" / "Roaming")
         os.environ["LOCALAPPDATA"] = str(account_home / "AppData" / "Local")
-    if keep_ambient_token:
+    if host == "codex" and ambient_token and not _looks_like_placeholder(ambient_token):
         os.environ["KUMIHO_AUTH_TOKEN"] = ambient_token
     os.environ.update(safe_project_routes)
 
@@ -2753,6 +2751,8 @@ def _host_config_value_allowed(
     """Apply the host provenance policy to a config-sourced value."""
     if not _host_launch_isolated() or user_global:
         return True
+    if key == "KUMIHO_AUTH_TOKEN":
+        return False
     if key in _HOST_UNTRUSTED_DATA_ROUTE_ENV:
         if key == "KUMIHO_CLAUDE_SERVER_ENDPOINT":
             normalized = _normalize_server_target(
@@ -2985,6 +2985,7 @@ def _hydrate_shared_package_spec_from_user_settings() -> None:
 
 
 def _hydrate_env_from_claude_settings() -> None:
+    _TRUSTED_GLOBAL_CE_KEYS.clear()
     candidates = _candidate_settings_paths()
     found_any = False
     trusted_global_keys_loaded: set[str] = set()
@@ -3041,6 +3042,13 @@ def _hydrate_env_from_claude_settings() -> None:
                 if not _host_config_value_allowed(
                     key, value, user_global=user_global
                 ):
+                    if key == "KUMIHO_AUTH_TOKEN" and not user_global:
+                        print(
+                            "[kumiho-claude] Ignoring KUMIHO_AUTH_TOKEN from "
+                            "project settings; configure it in the user SDK "
+                            "store or OS/user-global environment.",
+                            file=sys.stderr,
+                        )
                     continue
                 # A trusted global remote route must beat an earlier project
                 # loopback value. settings.local.json remains higher priority
@@ -3055,6 +3063,8 @@ def _hydrate_env_from_claude_settings() -> None:
                     if key in trusted_global_keys_loaded:
                         continue
                     os.environ[key] = value
+                    if key in {"KUMIHO_CLAUDE_SERVER_ENDPOINT", "KUMIHO_CLAUDE_MODE"}:
+                        _TRUSTED_GLOBAL_CE_KEYS.add(key)
                     if key in _HOST_TRUSTED_PROVISION_TRANSPORT_ENV:
                         _TRUSTED_SETTINGS_TRANSPORT_ENV[key] = value
                     trusted_global_keys_loaded.add(key)
@@ -3594,7 +3604,9 @@ def _normalize_server_target(raw_target: str) -> str | None:
     return f"{scheme}://{authority}" if scheme else authority
 
 
-def _ce_server_target_is_safe(target: str) -> bool:
+def _ce_server_target_is_safe(
+    target: str, *, allow_user_global_tls: bool = False
+) -> bool:
     has_scheme = "://" in target
     parsed = urllib.parse.urlsplit(target if has_scheme else f"//{target}")
     host = (parsed.hostname or "").rstrip(".").lower()
@@ -3603,7 +3615,12 @@ def _ce_server_target_is_safe(target: str) -> bool:
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
-        return False
+        if not allow_user_global_tls:
+            return False
+        scheme = urllib.parse.urlsplit(
+            target if has_scheme else f"//{target}"
+        ).scheme.lower()
+        return scheme in {"https", "grpcs"}
 
 
 def _ce_redis_url_is_safe(value: str) -> bool:
@@ -3614,8 +3631,6 @@ def _ce_redis_url_is_safe(value: str) -> bool:
     if (
         parsed.scheme.lower() not in {"redis", "rediss"}
         or not parsed.hostname
-        or parsed.username
-        or parsed.password
         or parsed.query
         or parsed.fragment
     ):
@@ -3667,10 +3682,15 @@ def _resolve_ce_endpoint() -> str | None:
     if raw and not _looks_like_placeholder(raw):
         normalized = _normalize_server_target(raw)
         if normalized:
-            if not _ce_server_target_is_safe(normalized):
+            if not _ce_server_target_is_safe(
+                normalized,
+                allow_user_global_tls=(
+                    "KUMIHO_CLAUDE_SERVER_ENDPOINT" in _TRUSTED_GLOBAL_CE_KEYS
+                ),
+            ):
                 raise SystemExit(
-                    "[kumiho-claude] Refusing a non-loopback CE endpoint; "
-                    "CE services must run on the local machine."
+                    "[kumiho-claude] Refusing a non-loopback CE endpoint unless "
+                    "it is a TLS URL from user-global settings."
                 )
             return normalized
         print(
