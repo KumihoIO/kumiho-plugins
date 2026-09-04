@@ -29,6 +29,7 @@ _MANAGED_KEYS = (
     "KUMIHO_TENANT_HINT",
     "KUMIHO_CONTROL_PLANE_URL",
     "UPSTASH_REDIS_URL",
+    "KUMIHO_WORKING_MEMORY_TTL",
     "KUMIHO_LLM_BASE_URL",
     "KUMIHO_LLM_PROVIDER",
     "KUMIHO_LLM_API_KEY",
@@ -143,16 +144,27 @@ def test_ce_env_wiring() -> bool:
         os.environ.get("UPSTASH_REDIS_URL") == bootstrap.DEFAULT_CE_REDIS_URL,
         f"got {os.environ.get('UPSTASH_REDIS_URL')!r}",
     )
+    ok &= _check(
+        "default working-memory TTL supplied",
+        os.environ.get("KUMIHO_WORKING_MEMORY_TTL") == bootstrap.DEFAULT_CE_WORKING_MEMORY_TTL,
+        f"got {os.environ.get('KUMIHO_WORKING_MEMORY_TTL')!r}",
+    )
 
     # A user-provided Redis URL must win over the default.
     _reset_env()
     os.environ["KUMIHO_CLAUDE_MODE"] = "ce"
     os.environ["UPSTASH_REDIS_URL"] = "redis://10.0.0.5:6380"
+    os.environ["KUMIHO_WORKING_MEMORY_TTL"] = "7200"
     bootstrap._bootstrap_server_endpoint()
     ok &= _check(
         "user Redis URL preserved",
         os.environ.get("UPSTASH_REDIS_URL") == "redis://10.0.0.5:6380",
         f"got {os.environ.get('UPSTASH_REDIS_URL')!r}",
+    )
+    ok &= _check(
+        "user working-memory TTL preserved",
+        os.environ.get("KUMIHO_WORKING_MEMORY_TTL") == "7200",
+        f"got {os.environ.get('KUMIHO_WORKING_MEMORY_TTL')!r}",
     )
 
     return ok

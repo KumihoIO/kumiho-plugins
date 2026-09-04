@@ -23,6 +23,7 @@ import getpass
 import importlib.util
 import json
 import os
+import shutil
 import platform
 import shlex
 import subprocess
@@ -394,12 +395,31 @@ def find_python() -> str | None:
     return None
 
 
+def _link_posix_pythonw(venv_dir: Path) -> None:
+    """Mirror ``run_kumiho_mcp._ensure_hook_interpreter``: hooks name
+    ``bin/pythonw`` (Windows' console-less interpreter); on POSIX that is a
+    symlink to ``bin/python``."""
+    bin_dir = venv_dir / "bin"
+    target, link = bin_dir / "python", bin_dir / "pythonw"
+    if link.exists() or not target.exists():
+        return
+    try:
+        os.symlink("python", link)
+    except OSError:
+        try:
+            shutil.copy2(target, link)
+        except OSError:
+            warn("Could not create %s; hooks may not fire" % link)
+
+
 def link_windows_bin(venv_dir: Path) -> None:
     """Mirror ``run_kumiho_mcp._link_windows_bin``: give a Windows venv a
-    POSIX-shaped ``bin/python`` so one literal hook command works everywhere.
-    The junction must live inside the venv it serves -- pointing it at an
-    external venv's Scripts makes sys.prefix wrong and site-packages empty."""
+    POSIX-shaped ``bin/`` (``python`` and ``pythonw``) so one literal hook
+    command works everywhere. The junction must live inside the venv it
+    serves -- pointing it at an external venv's Scripts makes sys.prefix wrong
+    and site-packages empty."""
     if not IS_WIN:
+        _link_posix_pythonw(venv_dir)
         return
     bin_dir, scripts = venv_dir / "bin", venv_dir / "Scripts"
     if bin_dir.exists() or not scripts.is_dir():
@@ -407,7 +427,7 @@ def link_windows_bin(venv_dir: Path) -> None:
     try:
         subprocess.run(["cmd", "/c", "mklink", "/J", str(bin_dir), str(scripts)],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       timeout=30, check=False)
+                       timeout=30, check=False, creationflags=0x08000000)
     except (OSError, subprocess.SubprocessError):
         warn("Could not create the venv bin junction; hooks may not fire")
 

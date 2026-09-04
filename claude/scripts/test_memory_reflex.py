@@ -285,5 +285,19 @@ def test_consolidate_floor_honours_a_cooldown_and_can_be_disabled(tmp_path):
     assert "last consolidated" not in r.stdout
 
 
+def test_consolidate_line_names_the_configured_working_memory_ttl(tmp_path):
+    """The idle warning used to hard-code "an hour". The launcher now resolves
+    KUMIHO_WORKING_MEMORY_TTL into the reflex snapshot (86400 in CE mode), and
+    the line must say what is actually configured."""
+    _ledger(tmp_path, "cf07", [{"kind": "stop", "tool_only": False}] * 20)
+    assert "expires after an hour idle" in _run(_ups("cf07"), tmp_path).stdout
+    _ledger(tmp_path, "cf08", [{"kind": "stop", "tool_only": False}] * 20)
+    r = _run(_ups("cf08"), tmp_path, env_extra={"KUMIHO_WORKING_MEMORY_TTL": "86400"})
+    assert "expires after 24 hours idle" in r.stdout
+    _ledger(tmp_path, "cf09", [{"kind": "stop", "tool_only": False}] * 20)
+    r = _run(_ups("cf09"), tmp_path, env_extra={"KUMIHO_WORKING_MEMORY_TTL": "5400"})
+    assert "expires after 90 minutes idle" in r.stdout
+
+
 if __name__ == "__main__":
     sys.exit(subprocess.call([sys.executable, "-m", "pytest", __file__, "-q"]))

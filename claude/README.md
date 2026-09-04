@@ -171,6 +171,8 @@ The plugin registers these hooks; all run automatically:
 | `SessionEnd` | `save-session-artifact.py`, `code-capture-hook.py` | Saves the conversation as a local Markdown artifact; drains queued commit captures |
 | `PermissionRequest` | `auto-approve-memory.py` | Auto-approves Kumiho memory MCP tool calls (`kumiho_*`) |
 
+Every hook runs under `${CLAUDE_PLUGIN_DATA}/venv/bin/pythonw`: on Windows that is the venv's console-less `pythonw.exe` (through the `bin` junction), so a hook never flashes a console window, even under Desktop where `claude.exe` has no console of its own; on POSIX the launcher symlinks `bin/pythonw` to `bin/python`. Background workers spawn their children with a hidden console for the same reason.
+
 ## Slash commands
 
 | Command | Description |
@@ -400,6 +402,7 @@ YAML frontmatter (session_id, date, topics, summary) and structured
 | `KUMIHO_CLAUDE_HOME` | *(platform default)* | Override the runtime state directory (logs, markers, reflex state). Since 0.18.2 the **venv** lives under the plugin data directory instead, so hooks can name its interpreter — this variable no longer moves it. |
 | `KUMIHO_CLAUDE_PACKAGE_SPEC` | *(see above)* | Override pip install spec |
 | `KUMIHO_REFLEX_CONSOLIDATE_FLOOR` | `20` | Completed turns after which the UserPromptSubmit hook asks the agent to consolidate the session (keyless: the agent or a subagent writes the summary). `0` disables the nudge. |
+| `KUMIHO_WORKING_MEMORY_TTL` | `3600` (CE mode: `86400`) | Idle TTL in seconds of the Redis session buffer (working memory). kumiho-memory re-arms it on every write **and** read, so a live session keeps its buffer; a pause longer than this loses it and the next reflect reports `created_bucket: true`. |
 | `KUMIHO_CLAUDE_DISABLE_LLM_FALLBACK` | *(unset)* | Set to `1` to disable local no-key LLM fallback |
 | `KUMIHO_CLAUDE_DISCOVERY_USER_AGENT` | `kumiho-claude/<plugin version>` | Override discovery HTTP User-Agent. The default is derived from `.claude-plugin/plugin.json` at startup, so it always reports the running version — there is no pinned copy to bump. |
 | `KUMIHO_ARTIFACT_DIR` | `~/.kumiho/artifacts/` | Override conversation artifact directory |
@@ -411,6 +414,7 @@ YAML frontmatter (session_id, date, topics, summary) and structured
 | `KUMIHO_CLAUDE_MODE` | *(unset)* | Set to `ce` (or `community` / `self-hosted` / `local`) to target a self-hosted CE server instead of cloud discovery |
 | `KUMIHO_CLAUDE_SERVER_ENDPOINT` | `127.0.0.1:9190` | CE gRPC endpoint; setting it also enables CE mode |
 | `UPSTASH_REDIS_URL` | `redis://127.0.0.1:6379` | CE working-memory Redis URL (CE only) |
+| `KUMIHO_WORKING_MEMORY_TTL` | `86400` | Working-memory idle TTL in CE mode. A local Redis holds a day of buffer for nothing, and the package's one-hour default lost the buffer whenever a turn or a pause ran past an hour |
 | `KUMIHO_LLM_BASE_URL` | *(unset)* | OpenAI-compatible LLM endpoint for the LLM-backed paths: summarizer-written consolidation (calls without `summary`), Dream State (`/dream-state`) and LLM edge discovery; reflect and keyless consolidation need none. When set, replaces the fail-fast dead-port fallback |
 
 `KUMIHO_SERVER_ENDPOINT` and `KUMIHO_SERVER_ADDRESS` are intentionally
