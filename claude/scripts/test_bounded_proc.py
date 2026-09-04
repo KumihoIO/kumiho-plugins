@@ -88,3 +88,33 @@ def test_missing_executable_raises_oserror_not_timeout():
     'timed out'; Popen must keep surfacing it."""
     with pytest.raises(OSError):
         bounded_proc.run(["kumiho-no-such-binary-xyz"], timeout=5)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="console windows are a Windows concept")
+def test_windows_children_start_with_a_hidden_console(monkeypatch):
+    """A detached worker has no console, so a console-subsystem child would pop
+    a visible one for as long as it runs. The child must be started with an
+    SW_HIDE STARTUPINFO -- a STARTUPINFO, not CREATE_NO_WINDOW, so that the
+    child's own children (git under kumiho_memory) inherit the hidden console
+    instead of allocating a visible one of their own."""
+    seen = {}
+
+    class FakeProc:
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            return b"", b""
+
+        def kill(self):
+            pass
+
+    def fake_popen(argv, **kwargs):
+        seen.update(kwargs)
+        return FakeProc()
+
+    monkeypatch.setattr(bounded_proc.subprocess, "Popen", fake_popen)
+    bounded_proc.run(["x"], timeout=1)
+    info = seen["startupinfo"]
+    assert info.dwFlags & subprocess.STARTF_USESHOWWINDOW
+    assert info.wShowWindow == subprocess.SW_HIDE
+    assert "creationflags" not in seen

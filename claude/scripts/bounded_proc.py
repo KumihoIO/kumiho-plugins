@@ -36,8 +36,28 @@ raises inside subprocess's reader thread (the drop mechanism documented in
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from typing import Optional, Sequence
+
+def _hidden_console_kwargs() -> dict:
+    """Keep a console-subsystem child off the screen when WE have no console.
+
+    Detached workers (and the launcher when Desktop spawns it) run without a
+    console, so every console child -- pip, git, a ``python -m`` run -- would
+    allocate a NEW, visible one: the console window that flashed on Windows
+    for the duration of each background job.  SW_HIDE on the STARTUPINFO hides
+    that window and, unlike CREATE_NO_WINDOW, the hidden console is inherited
+    by the child's own children, so git spawned by kumiho_memory stays hidden
+    too.  No-op when a console is inherited, and on POSIX.
+    """
+    if os.name != "nt":
+        return {}
+    info = subprocess.STARTUPINFO()
+    info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    info.wShowWindow = subprocess.SW_HIDE
+    return {"startupinfo": info}
+
 
 #: Grace given to a killed child to release its pipes before we stop waiting.
 #: Small on purpose -- past it, waiting longer is the bug this module exists to
@@ -66,6 +86,7 @@ def run(
     argv = [str(c) for c in cmd]
     proc = subprocess.Popen(
         argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=cwd,
+        **_hidden_console_kwargs(),
     )
     try:
         out, err = proc.communicate(timeout=timeout)

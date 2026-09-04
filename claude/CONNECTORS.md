@@ -39,6 +39,7 @@ Cloud behavior is unchanged unless one of these is set:
 - `KUMIHO_CLAUDE_MODE` = `ce` (or `community` / `self-hosted` / `local`) — enable CE mode
 - `KUMIHO_CLAUDE_SERVER_ENDPOINT` (default `127.0.0.1:9190`) — CE gRPC endpoint; setting it also enables CE mode
 - `UPSTASH_REDIS_URL` (default `redis://127.0.0.1:6379`) — CE working-memory Redis
+- `KUMIHO_WORKING_MEMORY_TTL` (default `86400` in CE mode, `3600` otherwise) — idle TTL of the working-memory buffer, re-armed on every read and write
 - `KUMIHO_LLM_BASE_URL` — OpenAI-compatible LLM endpoint for summarization (replaces the dead-port fallback)
 
 In CE mode the launcher skips control-plane discovery and cloud auth (no

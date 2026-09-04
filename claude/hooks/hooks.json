@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/pythonw",
             "timeout": 5,
             "statusMessage": "Bootstrapping Kumiho memory...",
             "args": [
@@ -22,7 +22,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/pythonw",
             "timeout": 5,
             "statusMessage": "kumiho",
             "args": [
@@ -36,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/pythonw",
             "timeout": 10,
             "async": true,
             "statusMessage": "kumiho",
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/pythonw",
             "timeout": 10,
             "statusMessage": "Saving session artifact...",
             "args": [
@@ -61,7 +61,7 @@
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/pythonw",
             "timeout": 5,
             "statusMessage": "Capturing code decisions...",
             "args": [
@@ -77,7 +77,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/pythonw",
             "timeout": 5,
             "statusMessage": "kumiho",
             "args": [
@@ -92,7 +92,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/pythonw",
             "timeout": 10,
             "async": true,
             "statusMessage": "kumiho",
@@ -108,7 +108,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/pythonw",
             "timeout": 5,
             "statusMessage": "kumiho",
             "args": [
@@ -123,7 +123,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
+            "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/pythonw",
             "timeout": 5,
             "statusMessage": "kumiho",
             "args": [

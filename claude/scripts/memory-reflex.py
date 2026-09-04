@@ -121,6 +121,23 @@ def _turns_since_consolidate(ledger_path) -> int:
     return n
 
 
+def _idle_expiry_phrase() -> str:
+    """'an hour', '24 hours', '90 minutes': the buffer idle TTL as configured.
+
+    The launcher resolves KUMIHO_WORKING_MEMORY_TTL into the reflex snapshot
+    (86400 in CE mode), and the consolidation line must name that, not a
+    hard-coded hour."""
+    ttl = _int_env("KUMIHO_WORKING_MEMORY_TTL", 3600)
+    if ttl <= 0:
+        ttl = 3600
+    if ttl % 3600 == 0:
+        hours = ttl // 3600
+        return "an hour" if hours == 1 else "%d hours" % hours
+    if ttl % 60 == 0:
+        return "%d minutes" % (ttl // 60)
+    return "%d seconds" % ttl
+
+
 def _consolidate_line(n: int, floor: int, session_id: str) -> str:
     """The keyless consolidation instruction.
 
@@ -140,9 +157,9 @@ def _consolidate_line(n: int, floor: int, session_id: str) -> str:
         "events, knowledge: {facts, decisions, actions, open_questions}, "
         "classification: {topics, entities}}, implications=[...]) -- only "
         "summary is required. Never call it without summary: that path needs an "
-        "external LLM and fails keyless. The working memory expires after an "
-        "hour idle, so do not defer this past a long pause."
-        % (n, floor, session_id, session_id)
+        "external LLM and fails keyless. The working memory expires after %s "
+        "idle, so do not defer this past a long pause."
+        % (n, floor, session_id, session_id, _idle_expiry_phrase())
     )
 
 

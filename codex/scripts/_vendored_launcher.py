@@ -47,7 +47,37 @@ DISCOVERY_USER_AGENT_UNKNOWN_VERSION = "unknown"
 # URL backing CE working memory (cloud gets Redis via the control-plane proxy).
 DEFAULT_CE_ENDPOINT = "127.0.0.1:9190"
 DEFAULT_CE_REDIS_URL = "redis://127.0.0.1:6379"
+#: Idle TTL (seconds) of the CE working-memory buffer. kumiho-memory's own
+#: default is 3600, tuned for shared Upstash; a local Redis holds a day of
+#: session buffer for nothing, and an hour lost the buffer mid-session whenever
+#: one turn or one pause ran longer than that (diagnosed 2026-09-04: every
+#: mid-session bucket re-creation was a >60 min gap or a consolidate).
+DEFAULT_CE_WORKING_MEMORY_TTL = "86400"
 CE_MODE_VALUES = {"ce", "community", "self-hosted", "self_hosted", "selfhosted", "local"}
+
+#: CREATE_NO_WINDOW: for a child whose output we capture and that spawns nothing
+#: itself (mklink). A child that may spawn console processes of its own gets
+#: _hidden_console_kwargs() instead, so its descendants inherit a hidden console.
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+
+def _hidden_console_kwargs() -> dict:
+    """Keep a console-subsystem child off the screen when WE have no console.
+
+    Detached workers (and the launcher when Desktop spawns it) run without a
+    console, so every console child -- pip, git, a ``python -m`` run -- would
+    allocate a NEW, visible one: the console window that flashed on Windows
+    for the duration of each background job.  SW_HIDE on the STARTUPINFO hides
+    that window and, unlike CREATE_NO_WINDOW, the hidden console is inherited
+    by the child's own children, so git spawned by kumiho_memory stays hidden
+    too.  No-op when a console is inherited, and on POSIX.
+    """
+    if os.name != "nt":
+        return {}
+    info = subprocess.STARTUPINFO()
+    info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    info.wShowWindow = subprocess.SW_HIDE
+    return {"startupinfo": info}
 
 
 def _state_dir() -> Path:
@@ -133,25 +163,60 @@ def _link_windows_bin(venv_dir: Path) -> None:
         return
     try:
         r = subprocess.run(["cmd", "/c", "mklink", "/J", str(bin_dir), str(scripts)],
-                           capture_output=True, text=True, timeout=30, check=False)
+                           capture_output=True, text=True, timeout=30, check=False,
+                           creationflags=_NO_WINDOW)
     except (OSError, subprocess.SubprocessError) as exc:
         r = None
         print("[kumiho-claude] Could not link %s (%s)" % (bin_dir, exc), file=sys.stderr)
     # Report rather than fail silently: without this junction every hook is
     # unstartable, and a hook that never fires looks like a plugin that does
     # nothing rather than one that is broken.
-    if not _venv_python(venv_dir).exists() or (r is not None and r.returncode != 0):
+    hook_python = bin_dir / "pythonw.exe"
+    if not hook_python.exists() or (r is not None and r.returncode != 0):
         print("[kumiho-claude] Hook interpreter %s is missing; hooks will not "
               "fire until this is repaired (mklink said: %s)"
-              % (bin_dir / "python", ((r.stderr or r.stdout).strip()[:120] if r else "n/a")),
+              % (hook_python, ((r.stderr or r.stdout).strip()[:120] if r else "n/a")),
               file=sys.stderr)
+
+
+def _ensure_hook_interpreter(venv_dir: Path) -> None:
+    """Make ``<venv>/bin/pythonw`` resolvable on every platform.
+
+    hooks.json names ONE literal interpreter, ``${CLAUDE_PLUGIN_DATA}/venv/bin/pythonw``.
+    On Windows that is the venv's real ``pythonw.exe`` through the bin junction:
+    a GUI-subsystem binary never allocates a console, which is what stopped a
+    console window from flashing on every hook under Desktop, where claude.exe
+    has no console for its children to inherit.  On POSIX no such binary
+    exists, so a symlink to ``bin/python`` provides the same name.
+    """
+    _link_windows_bin(venv_dir)
+    if os.name != "nt":
+        _link_posix_pythonw(venv_dir)
+
+
+def _link_posix_pythonw(venv_dir: Path) -> None:
+    """``bin/pythonw`` -> ``python`` inside a POSIX venv, a copy where the
+    filesystem refuses symlinks. Idempotent and never raises: a hook that
+    cannot start is reported, not turned into a launcher failure."""
+    bin_dir = venv_dir / "bin"
+    target, link = bin_dir / "python", bin_dir / "pythonw"
+    if link.exists() or not target.exists():
+        return
+    try:
+        os.symlink("python", link)
+    except OSError:
+        try:
+            shutil.copy2(target, link)
+        except OSError as exc:
+            print("[kumiho-claude] Could not create %s (%s); hooks will not fire "
+                  "until it exists" % (link, exc), file=sys.stderr)
 
 
 def _run(cmd: list[str], *, check: bool = True) -> int:
     # Redirect stdout → stderr so pip/venv output never pollutes the MCP
     # stdio channel.  Claude Desktop connects stdout directly to its
     # JSON-RPC parser, so any stray text there hangs the connection.
-    proc = subprocess.run(cmd, stdout=sys.stderr, check=check)
+    proc = subprocess.run(cmd, stdout=sys.stderr, check=check, **_hidden_console_kwargs())
     return proc.returncode
 
 
@@ -543,7 +608,7 @@ def _provision(venv_dir: Path, python_path: Path, marker_path: Path,
 
     # Unconditionally, not only on the creation branch: a venv provisioned by an
     # older version has no junction, and nothing else would ever add one.
-    _link_windows_bin(venv_dir)
+    _ensure_hook_interpreter(venv_dir)
 
     if _needs_install(python_path, marker_path, package_spec):
         print("[kumiho-claude] Installing dependencies (first run downloads "
@@ -1306,6 +1371,9 @@ def _bootstrap_ce_endpoint(endpoint: str) -> None:
     # tokenless and enforces its own auth at the server.
     os.environ["KUMIHO_AUTH_TOKEN"] = ""
     os.environ.setdefault("UPSTASH_REDIS_URL", DEFAULT_CE_REDIS_URL)
+    # Empty counts as unset: on Desktop the ${VAR:-} placeholder resolves to "".
+    if not (os.environ.get("KUMIHO_WORKING_MEMORY_TTL", "") or "").strip():
+        os.environ["KUMIHO_WORKING_MEMORY_TTL"] = DEFAULT_CE_WORKING_MEMORY_TTL
     print(
         f"[kumiho-claude] CE mode: routing to self-hosted endpoint {endpoint} "
         "(control-plane discovery and cloud auth skipped).",
@@ -1468,6 +1536,7 @@ def _sanitize_placeholder_env_vars() -> None:
         "KUMIHO_CLAUDE_MODE",
         "KUMIHO_CLAUDE_SERVER_ENDPOINT",
         "KUMIHO_LLM_BASE_URL",
+        "KUMIHO_WORKING_MEMORY_TTL",
         "KUMIHO_MEMORY_CODE",
         "KUMIHO_MEMORY_CODE_AUTOMINE",
         # Memory-reflex knobs. Declaring a name in .mcp.json is only half the
@@ -1517,6 +1586,9 @@ _REFLEX_CONFIG_KEYS = (
     "KUMIHO_REFLEX_SESSION_BUDGET_CHARS",
     "KUMIHO_REFLEX_STORE_PROMPT",
     "KUMIHO_ARTIFACT_MAX_BYTES",
+    # Not a reflex knob, but memory-reflex.py names the buffer idle expiry in
+    # its consolidation line and must say what is actually configured.
+    "KUMIHO_WORKING_MEMORY_TTL",
 )
 
 
@@ -1628,6 +1700,18 @@ def main() -> int:
              "provisioner, which is not on the host's MCP startup clock.",
     )
     args, passthrough = parser.parse_known_args()
+
+    # Before anything that can take time (env hydration, discovery, auth): the
+    # hooks name <venv>/bin/pythonw, which on POSIX exists only once this link
+    # does, and SessionStart fires in parallel with this server's start. Cheap
+    # and idempotent; a venv that does not exist yet is _ensure_runtime's job.
+    try:
+        _early_venv = _venv_dir()
+        if _early_venv.exists():
+            _ensure_hook_interpreter(_early_venv)
+    except Exception as exc:  # noqa: BLE001 -- never fail the server for this
+        print("[kumiho-claude] Hook interpreter check skipped: %s" % exc,
+              file=sys.stderr)
 
     # Both flags mean "do the work here"; neither is on a startup clock, so
     # neither may hand provisioning off to yet another detached child.
