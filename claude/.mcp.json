@@ -1,11 +1,13 @@
 {
   "mcpServers": {
     "kumiho-memory": {
-      "command": "${KUMIHO_PYTHON:-python}",
+      "command": "python",
       "args": [
+        "-I",
         "${CLAUDE_PLUGIN_ROOT}/scripts/run_kumiho_mcp.py"
       ],
       "env": {
+        "KUMIHO_CLAUDE_HOST": "claude",
         "KUMIHO_AUTH_TOKEN": "${KUMIHO_AUTH_TOKEN}",
         "KUMIHO_CONTROL_PLANE_URL": "${KUMIHO_CONTROL_PLANE_URL:-https://control.kumiho.cloud}",
         "KUMIHO_CLAUDE_DISCOVERY_USER_AGENT": "${KUMIHO_CLAUDE_DISCOVERY_USER_AGENT}",

@@ -33,6 +33,7 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bounded_proc
 
 LOCK_STALE_S = 900
@@ -67,6 +68,10 @@ def main() -> int:
     transcript = sys.argv[3] if len(sys.argv) > 3 else ""
 
     launcher = _load_launcher()
+    # Hydration clears host-provided path/route values before the worker writes
+    # its log or lock. Trusted user-global values are restored in that pass.
+    launcher._hydrate_env_from_local_config()
+    launcher._sanitize_placeholder_env_vars()
     state_dir = launcher._state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
     log_path = state_dir / "session-mine.log"
@@ -105,8 +110,6 @@ def main() -> int:
         pass  # lock is best-effort
 
     try:
-        launcher._sanitize_placeholder_env_vars()
-        launcher._hydrate_env_from_local_config()
         # Gate AFTER hydration, not before. Evaluated earlier, the flag could only
         # ever be read from a real process env var, so declaring
         # KUMIHO_MEMORY_CODE_AUTOMINE in .mcp.json was inert and this worker was
@@ -114,13 +117,20 @@ def main() -> int:
         if not _automine_enabled():
             log("skip: AUTOMINE off (set KUMIHO_MEMORY_CODE_AUTOMINE=1 to enable)")
             return 0
-        if not launcher._ce_mode_enabled():
-            launcher._validate_auth_token()
-        try:
-            launcher._bootstrap_server_endpoint()
-        except RuntimeError as exc:
-            log(f"skip: endpoint bootstrap failed ({exc})")
-            return 0
+        # The plugin chooses only the backend. Cloud auth, token refresh,
+        # discovery, and regional routing belong to the Python SDK adapter.
+        ce_mode = launcher._ce_mode_enabled()
+        if ce_mode:
+            try:
+                ce_endpoint = launcher._resolve_ce_endpoint()
+                if ce_endpoint is None:
+                    raise RuntimeError("CE mode has no configured endpoint")
+                launcher._bootstrap_ce_endpoint(ce_endpoint)
+            except RuntimeError as exc:
+                log(f"skip: CE endpoint bootstrap failed ({exc})")
+                return 0
+        else:
+            os.environ["KUMIHO_PLUGIN_SHARED_HOME"] = str(launcher._kumiho_home())
         launcher._configure_llm_fallback()
         if (os.getenv("KUMIHO_LLM_BASE_URL", "") or "").startswith("http://127.0.0.1:9"):
             log("skip: no LLM configured (fail-fast fallback active)")
@@ -130,9 +140,15 @@ def main() -> int:
         env = dict(os.environ)
         env["KUMIHO_MEMORY_CODE"] = "1"
         log(f"session mine start: session={session_id} repo={repo_dir}")
+        adapter_name = "run_kumiho_ce.py" if ce_mode else "run_kumiho_cloud.py"
+        adapter = Path(__file__).resolve().parent / adapter_name
+        command = [
+            str(python_path), "-I", str(adapter), "--module", "kumiho_memory",
+            "code-mine-session", session_id, "--transcript", transcript,
+            "--repo", repo_dir,
+        ]
         proc = bounded_proc.run(
-            [str(python_path), "-m", "kumiho_memory", "code-mine-session",
-             session_id, "--transcript", transcript, "--repo", repo_dir],
+            command,
             env=env, timeout=MINE_TIMEOUT_S,
         )
         tail = (proc.stdout or "").strip().splitlines()[-14:]

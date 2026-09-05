@@ -218,7 +218,7 @@ Run everything offline against a [kumiho-server CE](https://github.com/kumihoclo
 }
 ```
 
-The `kumiho-setup` wizard asks **Cloud vs CE** up front — choosing CE skips the cloud login entirely and writes this `ce` block into openclaw.json for you. Setting `ce.endpoint` alone also enables CE, and env-var opt-in works too (parity with the Claude plugin): `KUMIHO_OPENCLAW_MODE=ce`, or just set `KUMIHO_OPENCLAW_SERVER_ENDPOINT=host:9190`. The SDK-generic `KUMIHO_LOCAL_SERVER_ENDPOINT` is honored as the endpoint *value* once CE is enabled, but deliberately does **not** enable CE by itself — a leftover export from another tool's CE setup must not silently reroute a cloud-backed gateway.
+The `kumiho-setup` wizard asks **Cloud vs CE** up front — choosing CE skips the cloud login entirely and writes this `ce` block into openclaw.json for you. Setting `ce.endpoint` alone also enables CE, and env-var opt-in works too (parity with the Claude plugin): `KUMIHO_OPENCLAW_MODE=ce`, or just set `KUMIHO_OPENCLAW_SERVER_ENDPOINT=127.0.0.1:9190`. Remote CE is supported only with an explicit TLS-bearing URL such as `grpcs://ce.example.com:9190` or `https://ce.example.com`; scheme-less and `grpc://`/`http://` remote endpoints are rejected. The SDK-generic `KUMIHO_LOCAL_SERVER_ENDPOINT` is honored as the endpoint *value* once CE is enabled, but deliberately does **not** enable CE by itself — a leftover export from another tool's CE setup must not silently reroute a cloud-backed gateway.
 
 > CE applies to local mode only — it routes the spawned Python SDK at your server. Deploy kumiho-server CE first; point summarization at a local LLM with `KUMIHO_LLM_BASE_URL` (e.g. Ollama) or the keyless core tools work without one.
 
@@ -252,6 +252,7 @@ export KUMIHO_API_TOKEN="kh_live_abc123..."
 # Self-hosted CE (local mode) — either enables CE without touching openclaw.json
 export KUMIHO_OPENCLAW_MODE=ce
 export KUMIHO_OPENCLAW_SERVER_ENDPOINT=127.0.0.1:9190
+# Remote alternative (TLS is mandatory): grpcs://ce.example.com:9190
 
 # LLM keys — set by OpenClaw during onboarding; forwarded to the Python process automatically
 
@@ -305,7 +306,7 @@ export KUMIHO_MEMORY_ARTIFACT_ROOT="~/.kumiho/artifacts"
           // Self-hosted Community Edition (local mode only)
           "ce": {
             "enabled": false,                      // Route Python SDK at a local CE server
-            "endpoint": "127.0.0.1:9190",          // CE gRPC endpoint
+            "endpoint": "127.0.0.1:9190",          // loopback, or remote grpcs/https URL
             "redisUrl": "redis://127.0.0.1:6379"   // CE working memory Redis
           },
 
@@ -476,7 +477,12 @@ await memory.close();
 
 ## Cross-Agent Compatibility
 
-The Kumiho plugins share the same Neo4j + Redis backend, `CognitiveMemory` graph, and skill-ingestion pipeline. Memories stored by one agent are recallable by any other. Cross-agent parity exists at the data model and discoverable-skill layer; host-side automation still differs by platform.
+When Kumiho plugins are configured for the same backend and Cloud tenant (or
+the same CE deployment), they share the `CognitiveMemory` graph and
+skill-ingestion pipeline, so memories stored by one agent are recallable by
+another. Hosts configured for different backends or tenants remain isolated.
+Cross-agent parity exists at the data model and discoverable-skill layer;
+host-side automation still differs by platform.
 
 | Capability        | Claude Code                                 | OpenClaw                                      |
 | ----------------- | ------------------------------------------- | --------------------------------------------- |

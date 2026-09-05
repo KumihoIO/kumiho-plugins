@@ -1,12 +1,30 @@
 ---
 name: kumiho-memory
-description: Persistent graph-native memory protocol — engage before responding, reflect after, Decision Memory for code work, typed-ontology decomposition, session consolidation. Applies to every session; trigger whenever the user's topic might have history.
+description: Persistent graph-native memory protocol — identity bootstrap, engage before responding, reflect after, Decision Memory for code work, typed-ontology decomposition, and session consolidation. Applies to every session; trigger whenever the user's topic might have history.
 ---
 
 # Kumiho Memory Protocol (Codex)
 
 You have persistent graph-native memory via the `kumiho-memory` MCP server.
 You remember across sessions. Follow this protocol every session.
+
+## Session bootstrap — once
+
+On the first user message of a new session, follow
+[references/bootstrap.md](references/bootstrap.md) before the normal reflexes.
+It loads the published identity or, only when both supported identity krefs are
+not found, runs the first-meeting flow in
+[references/onboarding.md](references/onboarding.md). Authentication and
+connection failures are not a first meeting.
+
+## Absolute secret exclusion
+
+Never store, reflect, decompose, ingest, or repeat passwords, API tokens,
+refresh tokens, private keys, session cookies, connection strings containing
+credentials, or raw secret-bearing environment/config values. This overrides
+every capture rule below, including “every answer you had to ask for.” Never
+ask for a secret in chat. If one appears, omit it from all memory calls and
+recommend rotating it.
 
 ## Two reflexes
 
@@ -32,13 +50,38 @@ copied exactly: reflect forwards the hint as a space path verbatim, so
 Fall back to the capture type (`decisions`, `facts`, `preferences`,
 `corrections`) when none fits.
 
+## Bounded recall — Codex only
+
+Recall is a working context, not a transcript dump. For a substantive request
+whose topic may have history, make one targeted `kumiho_memory_engage` call
+derived from the current user message. The normal call shape is
+`kumiho_memory_engage(query=<current request>, limit=3, recall_mode="summarized")`;
+keep the query short and specific. Do not fetch whole spaces,
+session transcripts, or old artifacts just to be safe.
+
+Keep only the few returned memories that constrain the current answer (their
+short title/summary and krefs). Treat roughly 1,200 characters or three items
+as the normal working-context budget. If the result is empty, continue from
+the code, docs, and git history instead of asking the user to repeat context.
+
+Broaden retrieval only when a relevant decision is missing or two memories
+conflict. Resolve a code-specific question with `kumiho_code_why` for the
+affected file rather than issuing another broad engage call. Never repeat an
+identical query in the same turn, and do not engage for trivial acknowledgements.
+
+Before a material change, keep a small internal receipt containing: the
+relevant decision(s), the constraint(s) that must not be violated, the files
+in scope, and the source krefs. This is a checkpoint for reasoning, not text to
+repeat to the user. If the user corrects any premise, discard the receipt and
+rebuild it from the correction before continuing.
+
 ## Every answer you had to ask for gets stored
 
 If you had to ask the user, the answer was not in the code, the docs or
 the git history — which makes it the most valuable thing in the session
 and the most expensive to lose. So:
 
-**Capture it, always.** Every question you put to the user — a structured
+**Capture it, always, except secrets.** Every non-secret question you put to the user — a structured
 prompt or a line of prose — gets its answer stored via
 `kumiho_memory_reflect` as `type: "decision"`, in the same turn you
 receive it. Not "if it seems substantive": you asked because you could
@@ -62,20 +105,24 @@ path") — rather than asking again. Confirm a stale or uncertain answer
 instead of re-opening it from scratch; re-asking a question the graph
 already answers is a memory failure, not diligence.
 
-## Session id — you must supply it (Codex)
+## Session id — owned by Codex, never invented by the agent
 
-Codex publishes no session identity to MCP servers, so `kumiho-memory`
->=1.2.0 cannot resolve an omitted `session_id` and **refuses the call**
-rather than guessing. Derive ONE stable id at the start of the session —
-`{repo}-{YYYY-MM-DD}` is a good shape — and pass that same value on every
-memory call that accepts it (`kumiho_memory_engage`,
-`kumiho_memory_reflect`, `kumiho_memory_consolidate`, `kumiho_chat_*`).
+Codex attaches its stable thread id to every MCP tool request in per-call
+`_meta`. The plugin's stdio bridge recognizes the supported Codex metadata
+spellings and carries that value into a
+request-scoped Kumiho host context for session-aware tools.
+This per-call route stays correct even when one MCP process outlives a thread;
+`CODEX_THREAD_ID` / `CODEX_SESSION_ID` are only compatibility fallbacks for
+hosts that explicitly export them. Omit `session_id` in normal calls. Results
+report the id and normally show `session_id_source: "codex-thread-meta"`.
 
-Reuse is the whole point: a fresh id per call scatters one conversation
-across as many working-memory buckets as you invent, and consolidation
-then summarizes fragments. If a result reports `created_bucket=true` on a
-turn that is not the first, you changed the id — go back to the one you
-started with.
+Never derive an id from the repository, date, process, or turn. Such ids
+either merge separate conversations or split one conversation into several
+working-memory buckets. A non-empty explicit id remains available only for a
+deliberate historical/backfill target. If the server reports that no session
+identity is available, first update or reinstall the Kumiho Memory plugin and
+start a new Codex thread so its MCP process reloads. If it still fails,
+update/restart Codex; do not guess one.
 
 ## Typed ontology (keyless)
 
@@ -133,7 +180,7 @@ skip captured commits at zero LLM cost).
 - Compare each memory's `created_at` to today's date; prefer recent
   memories when they conflict with stale ones.
 - After 20+ exchanges or at session end, call
-  `kumiho_memory_consolidate` with the session id you have been using all
-  along (see "Session id" above) and a `summary` you wrote yourself from
-  the conversation (keyless — without `summary` the call needs an external
-  LLM and fails).
+  `kumiho_memory_consolidate` with a `summary` you wrote yourself from the
+  conversation. Omit `session_id`; the bridge supplies the Codex thread id as
+  above. This is keyless — without `summary` the call needs an external LLM
+  and fails.

@@ -36,6 +36,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import state_home  # noqa: E402
+
 _COMMIT_RE = re.compile(r"\bgit\b[^|;&]*\bcommit\b")
 
 
@@ -56,13 +59,14 @@ def _spawn(worker_name: str, args: list) -> None:
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "cwd": repo_dir,
+        "env": state_home.secured_hook_child_env(),
     }
     if os.name == "nt":
         # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — survives hook exit.
         kwargs["creationflags"] = 0x00000008 | 0x00000200
     else:
         kwargs["start_new_session"] = True
-    subprocess.Popen([sys.executable, str(worker), *args], **kwargs)
+    subprocess.Popen([sys.executable, "-I", str(worker), *args], **kwargs)
 
 
 def main() -> None:

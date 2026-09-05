@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -29,7 +30,11 @@ def _run(payload: dict, home: Path, args=(), env_extra: dict | None = None):
     # No PYTHONIOENCODING, raw UTF-8 bytes -- production conditions. See the
     # note in test_reflex_observe._run_hook.
     env = {k: v for k, v in os.environ.items()
-           if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+           if k not in (
+               "PYTHONIOENCODING",
+               "PYTHONUTF8",
+               "KUMIHO_WORKING_MEMORY_TTL",
+           )}
     env["KUMIHO_CLAUDE_HOME"] = str(home)
     env.update(env_extra or {})
     r = subprocess.run(
@@ -204,8 +209,12 @@ def test_pending_queue_line_uses_a_runnable_absolute_drain_cmd(tmp_path):
     r = _run(_ups("qqqq"), tmp_path)
     assert "12 commits are queued" in r.stdout
     ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
-    script = ctx.split('"')[1]
-    assert Path(script).is_absolute() and Path(script).exists()
+    command = ctx.split("To drain: ", 1)[1].split(" list.", 1)[0] + " list"
+    argv = shlex.split(command)
+    assert Path(argv[0]).is_absolute()
+    assert argv[1] == "-I"
+    assert Path(argv[2]).is_absolute() and Path(argv[2]).exists()
+    assert argv[3:] == ["--claude-host", "list"]
 
 
 def test_pending_queue_line_silent_below_threshold(tmp_path):

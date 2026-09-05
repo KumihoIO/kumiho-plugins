@@ -3,9 +3,8 @@
 
 Stdlib only, and deliberately does NOT import ``run_kumiho_mcp.py``: this module
 runs on the per-turn critical path, where the launcher's env hydration, auth
-validation and runtime probing would cost far more than the work itself. It
-duplicates ``_state_dir`` for the same reason ``code_capture_pending.py`` already
-does.
+validation and runtime probing would cost far more than the work itself. The
+small ``state_home`` helper owns the shared path and child-environment policy.
 
 Single-writer discipline -- every file has exactly one writer, so ``os.replace``
 only ever contends with a reader:
@@ -22,23 +21,25 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import state_home  # noqa: E402
 
 _LEDGER_MAX_BYTES = 2 * 1024 * 1024
 _SAFE_ID_REJECT = '\\/:*?"<>|'
 
 
 def state_dir() -> Path:
-    """Mirror ``run_kumiho_mcp._state_dir`` (kept in sync deliberately)."""
-    override = (os.getenv("KUMIHO_CLAUDE_HOME", "") or "").strip()
-    if override:
-        return Path(override).expanduser()
-    if os.name == "nt":
-        base = os.getenv("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
-        return Path(base) / "kumiho-claude"
-    xdg = (os.getenv("XDG_CACHE_HOME", "") or "").strip()
-    return (Path(xdg) if xdg else Path.home() / ".cache") / "kumiho-claude"
+    """Resolve the same trusted state root as the MCP host integration."""
+    return state_home.state_dir()
+
+
+def secured_hook_child_env() -> dict[str, str]:
+    """Environment for detached reflex workers spawned by a Claude hook."""
+    return state_home.secured_hook_child_env()
 
 
 def reflex_dir() -> Path:
