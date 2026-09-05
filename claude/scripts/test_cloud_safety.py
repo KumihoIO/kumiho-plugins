@@ -65,14 +65,34 @@ def test_claude_manifest_marks_the_host_for_environment_isolation():
     assert env["KUMIHO_CLAUDE_HOST"] == "claude"
 
 
-def test_claude_manifest_bootstraps_from_persisted_python_or_system_python():
+def test_claude_manifest_launches_from_the_plugin_data_venv_alias():
+    """The MCP command must be an absolute interpreter, never PATH-resolved.
+
+    0.21.0 shipped ``"command": "python"``; on Windows hosts without ``python``
+    on PATH (the common case -- the App Execution Alias directory is not on
+    PATH for every account) the server never started, while every hook in
+    hooks.json already launched from the ``${CLAUDE_PLUGIN_DATA}/venv``
+    alias. CONNECTORS.md documents that alias as the command; this keeps the
+    manifest at it.
+    """
     manifest = json.loads(
         (Path(__file__).parents[1] / ".mcp.json").read_text(encoding="utf-8")
     )
     server = manifest["mcpServers"]["kumiho-memory"]
-    assert server["command"] == "python"
+    assert server["command"] == "${CLAUDE_PLUGIN_DATA}/venv/bin/python"
     assert server["args"][:1] == ["-I"]
     assert "KUMIHO_PYTHON" not in server["command"]
+
+    hooks = json.loads(
+        (Path(__file__).parents[1] / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    )
+    hook_commands = {
+        h["command"]
+        for group in hooks["hooks"].values()
+        for entry in group
+        for h in entry["hooks"]
+    }
+    assert hook_commands == {"${CLAUDE_PLUGIN_DATA}/venv/bin/pythonw"}
 
 
 def test_plugin_local_env_example_does_not_own_cloud_auth_or_routing():
