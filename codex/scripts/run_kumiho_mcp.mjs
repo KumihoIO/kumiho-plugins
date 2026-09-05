@@ -16,6 +16,7 @@ import { CodexThreadIdBridge } from "./thread_id_bridge.mjs";
 
 const SCRIPT_PATH = fileURLToPath(new URL("./run_kumiho_mcp.py", import.meta.url));
 const ONBOARD_PATH = fileURLToPath(new URL("./onboard_kumiho.py", import.meta.url));
+const BACKFILL_PATH = fileURLToPath(new URL("./backfill_codex.py", import.meta.url));
 const PROBE_NONCE = "kumiho-python-probe-v1";
 const PROBE_CODE =
   "import os,platform,sys; " +
@@ -484,4 +485,5 @@ function startOnboarding(args) {
 const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === "--doctor") doctor();
 else if (args[0] === "--onboard") startOnboarding(args.slice(1));
+else if (args[0] === "--backfill") startPython(BACKFILL_PATH, args.slice(1), "backfill");
 else startMcp(args);
