@@ -14,7 +14,7 @@ description: Explicitly save one user-provided fact, preference, or decision to 
    Keep only relevant source krefs; do not retrieve a whole space.
 3. Call `kumiho_memory_reflect` once with:
    - `response`: a brief description of the requested manual capture.
-   - `captures`: one object containing `type` (`fact`, `preference`, or
+   - `captures`: an array containing one object (`captures: [{...}]`) with `type` (`fact`, `preference`, or
      `decision`), a short dated `title`, faithful `content`,
      `tags: ["manual-capture"]`, and `space_hint`.
    - `source_krefs`: the relevant krefs from step 2.

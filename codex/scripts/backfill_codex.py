@@ -23,6 +23,47 @@ def inventory(argv: list[str]) -> int:
     # Honor Codex's history root without changing HOME or Claude discovery.
     codex_root = Path(os.getenv("CODEX_HOME") or Path.home() / ".codex").expanduser()
     engine.discover_codex_files = lambda: sorted((codex_root / "sessions").glob("**/*.jsonl"))
+    original_manifest = engine.cmd_manifest
+    original_packetize = engine.cmd_packetize
+    original_reparse = engine._reparse_session
+
+    def scoped_manifest(args):
+        scope = {"source": args.source, "since": args.since,
+                 "projects": sorted(args.projects or []),
+                 "chatgpt_export": str(Path(args.chatgpt_export).expanduser().resolve())
+                 if args.chatgpt_export else "",
+                 "codex_root": str(codex_root.resolve())}
+        state = engine.load_staging()
+        if state.get("sessions") and state.get("codex_scope") != scope:
+            print("[kumiho-codex] This batch has a different or unknown history scope. "
+                  "Use a fresh --state-dir before manifest.", file=sys.stderr)
+            return 2
+        result = original_manifest(args)
+        if result == 0:
+            state = engine.load_staging()
+            state["codex_scope"] = scope
+            engine.save_staging(state)
+        return result
+
+    def bounded_packetize(args):
+        if args.top < 1:
+            print("[kumiho-codex] --top must be positive.", file=sys.stderr)
+            return 2
+        remaining = args.top
+
+        def reparse(session):
+            nonlocal remaining
+            if remaining <= 0:
+                return None
+            remaining -= 1
+            return original_reparse(session)
+
+        # Returning None leaves excess refresh sessions untouched. Keep the
+        # full staging document so limiting reads never erases pending work.
+        if args.refresh:
+            engine._reparse_session = reparse
+        return original_packetize(args)
+
     if argv[:1] in (["scan"], ["manifest"]) and not any(
         arg == "--source" or arg.startswith("--source=") for arg in argv
     ):
@@ -32,7 +73,14 @@ def inventory(argv: list[str]) -> int:
     ):
         argv = [*argv, "--top", "5"]
     sys.argv = [str(SCRIPT_DIR / "backfill" / "inventory.py"), *argv]
-    return engine.main()
+    engine.cmd_manifest = scoped_manifest
+    engine.cmd_packetize = bounded_packetize
+    try:
+        return engine.main()
+    finally:
+        engine.cmd_manifest = original_manifest
+        engine.cmd_packetize = original_packetize
+        engine._reparse_session = original_reparse
 
 
 def _pin_keyless_env() -> None:
