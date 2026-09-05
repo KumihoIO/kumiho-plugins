@@ -1296,7 +1296,9 @@ def test_ingestion_configures_an_explicit_backend_client():
         assert len(results) == len(ingested_documents) >= 3
         names = [kwargs["item_name"] for _path, kwargs in ingested_documents]
         assert len(names) == len(set(names))
-        assert all(name.startswith("codex-kumiho-memory") for name in names)
+        assert all(name.startswith("codex-") for name in names)
+        assert "codex-kumiho-memory" in names
+        assert "codex-kumiho-memory-ref-bootstrap" in names
         for _path, kwargs in ingested_documents:
             assert kwargs["project"] == "CognitiveMemory"
             assert kwargs["space_name"] == "Skills"

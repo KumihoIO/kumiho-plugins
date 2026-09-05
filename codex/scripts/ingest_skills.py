@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ingest the native Codex memory skill and its references into Kumiho."""
+"""Ingest all bundled Codex skills and references into Codex-owned graph items."""
 
 from __future__ import annotations
 
@@ -287,11 +287,15 @@ def _enable_codex_agent_compat(skill_ingest) -> None:
 
 
 def _ingest_documents(skill_ingest, *, dry_run: bool) -> list:
-    documents = [(SKILL_MD, CODEX_ITEM_PREFIX)]
-    if REFS_DIR.is_dir():
+    documents = []
+    for skill_md in sorted((PLUGIN_DIR / "skills").glob("*/SKILL.md")):
+        skill_name = skill_md.parent.name
+        # Preserve existing memory/ref item names and Claude's published tags.
+        prefix = CODEX_ITEM_PREFIX if skill_name == "kumiho-memory" else f"codex-{skill_name}"
+        documents.append((skill_md, prefix))
         documents.extend(
-            (path, f"{CODEX_ITEM_PREFIX}-ref-{path.stem}")
-            for path in sorted(REFS_DIR.glob("*.md"))
+            (path, f"{prefix}-ref-{path.stem}")
+            for path in sorted((skill_md.parent / "references").glob("*.md"))
         )
     return [
         skill_ingest.ingest_file(

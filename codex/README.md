@@ -90,6 +90,49 @@ $kumihoPython = Join-Path $HOME ".kumiho\venv\Scripts\python.exe"
 codex plugin add kumiho-memory@kumiho-plugins
 ```
 
+## User-facing skills
+
+The Claude command workflows are available as native Codex skills:
+
+| Skill | Purpose |
+| --- | --- |
+| `$kumiho-onboard` | Configure or repair the existing CE/Cloud backend |
+| `$kumiho-backfill` | Extract and review past conversation memories |
+| `$kumiho-personalize` | Update the shared published identity preferences |
+| `$memory-capture` | Save one explicitly requested fact, preference, or decision |
+| `$dream-state` | Preview or run stored-memory maintenance |
+
+The core `kumiho-memory` skill routes to graph traversal, artifacts, deliverable
+tracking, and privacy references only when relevant. It does not load every
+reference each turn. Onboarding registers all bundled skills/references under
+Codex-prefixed items in `CognitiveMemory/Skills`, preserving Claude's items.
+Existing `codex-kumiho-memory` and reference item names remain unchanged.
+
+Dream State assessment may use a configured LLM, including in dry-run mode;
+it is distinct from keyless session consolidation. Adding the skill does not
+schedule maintenance. Claude-only hooks and Cowork paths are not installed in
+Codex. Personalization updates the shared identity, not a host-only config.
+
+## Backfill past conversations
+
+Invoke `$kumiho-backfill` to extract useful memories from past Codex sessions.
+It uses Claude's existing backfill engine, bundled inside the Codex plugin;
+Claude does not need to be installed. Extraction reads bounded packets (five
+sessions by default), stages at `~/.kumiho/backfill/codex/`, and requires
+approval of the full payload before ingest. This is conversation history,
+not git history; use `kumiho_code_ingest` for commits.
+
+The Node entry uses the shared Desktop runtime and Codex's existing CE/Cloud
+selection. No separate LLM API key is needed. Claude transcripts and ChatGPT
+exports are opt-in. Codex reads `CODEX_HOME/sessions` or `~/.codex/sessions`.
+For a checkout, preview an already extracted batch with:
+
+```bash
+node codex/scripts/run_kumiho_mcp.mjs --backfill ingest --dry-run --limit 5
+```
+
+Start a new Codex thread after updating the plugin to load the new skill.
+
 ## Automatic backend setup
 
 Start Codex and invoke `$kumiho-onboard`, or ask Codex to set up Kumiho Memory.
