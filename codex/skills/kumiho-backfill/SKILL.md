@@ -21,10 +21,14 @@ node <entrypoint> --backfill inventory scan
 ```
 
 Default source: `CODEX_HOME/sessions`, otherwise `~/.codex/sessions`.
-Local state: `~/.kumiho/backfill/codex/staging.json` and sibling `packets/`,
-separate from Claude. For a separate batch, pass `--state-dir <absolute-dir>`
-**before** `inventory` or `ingest` and reuse it for every step.
-Never hand-edit staging.
+The CLI's legacy default is `~/.kumiho/backfill/codex/`, separate from Claude.
+For each new extraction request, choose a fresh batch directory beneath that
+root and pass `--state-dir <absolute-dir>` **before** `inventory` or `ingest`
+for every step. Reuse an existing directory only for explicit continuation of
+that same batch and source/date scope, never silently resume the legacy queue.
+The adapter rejects a manifest scope change on non-empty staging, including
+legacy staging with unknown scope. Use a fresh directory, do not clear or
+hand-edit old staging to bypass the refusal.
 
 ## Extract
 
@@ -70,8 +74,11 @@ Never hand-edit staging.
    `relations:[{subject,predicate,object}]`; otherwise leave it empty.
 5. Show counts, a short teaser, and the staging path. Extraction does not
    authorize ingest. Previously extracted/ingested sessions are skipped;
-   `packetize --refresh` revisits grown sessions only when requested. Stage
-   merges novel captures instead of erasing previous ingestion progress.
+   `packetize --refresh --top 5` revisits at most the first five previously
+   extracted/ingested sessions in that batch, only when requested. A repeated
+   refresh checks that same prefix, not a new page; increase the limit only
+   with an explicitly expanded scope. Stage merges novel captures instead of
+   erasing previous ingestion progress.
 
 ## Review and ingest
 

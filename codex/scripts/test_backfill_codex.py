@@ -1,6 +1,7 @@
 """Offline backfill integration tests: only synthetic histories and fake writes.
 
 Run with the shared runtime: python -I codex/scripts/test_backfill_codex.py
+Set KUMIHO_TEST_REAL_SDK=1 to also exercise SDK-dependent preview/refusal.
 """
 
 import contextlib
@@ -19,10 +20,65 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import backfill_codex as host
 import run_kumiho_mcp as codex
+from backfill import inventory as inventory_engine
 from backfill import ingest_runner as runner
 
 
 class BackfillTests(unittest.TestCase):
+    def test_manifest_scope_change_refuses_before_reading_history(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.dict(os.environ, {"KUMIHO_BACKFILL_HOME": tmp}), \
+             patch.object(sys, "argv", ["test"]), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            meta = {"source": "codex", "source_session_id": "scoped-fixture",
+                    "source_path": str(Path(tmp) / "fixture.jsonl"), "project_dir": "fixture",
+                    "title": "Fixture", "started_at": "2026-09-01T00:00:00Z",
+                    "ended_at": "2026-09-01T00:00:01Z", "human_msgs": 1,
+                    "messages": [("2026-09-01T00:00:01Z", "user", "Fixture decision")],
+                    "dropped": {}}
+            with patch.object(inventory_engine, "gather_source_metas", return_value=([meta], 1, 0)) as gather:
+                self.assertEqual(host.inventory(["manifest", "--since", "2026-09-01"]), 0)
+                self.assertEqual(host.inventory(["manifest", "--since", "2026-09-01"]), 0)
+                self.assertEqual(gather.call_count, 2)
+                before = (Path(tmp) / "staging.json").read_bytes()
+                for changed in (["--since", "2026-09-02"], ["--since", "2026-09-01", "--source", "all"]):
+                    self.assertEqual(host.inventory(["manifest", *changed]), 2)
+                self.assertEqual(gather.call_count, 2)
+                self.assertEqual((Path(tmp) / "staging.json").read_bytes(), before)
+            # Unknown legacy scope also fails closed; a new batch does not.
+            legacy = json.loads(before)
+            legacy.pop("codex_scope")
+            inventory_engine.save_staging(legacy)
+            with patch.object(inventory_engine, "gather_source_metas", return_value=([], 0, 0)) as gather:
+                self.assertEqual(host.inventory(["manifest"]), 2)
+                gather.assert_not_called()
+                with patch.dict(os.environ, {"KUMIHO_BACKFILL_HOME": str(Path(tmp) / "new-batch")}):
+                    self.assertEqual(host.inventory(["manifest", "--source", "all"]), 0)
+                self.assertEqual(gather.call_count, 1)
+
+    def test_refresh_respects_top_and_preserves_unread_sessions(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.dict(os.environ, {"KUMIHO_BACKFILL_HOME": tmp}), \
+             patch.object(sys, "argv", ["test"]), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            sessions = [{"source_session_id": f"fixture-{i}", "status": "extracted",
+                         "score": i, "packet_sha256": "old", "captures": [{"title": f"keep-{i}"}]}
+                        for i in range(7)]
+            inventory_engine.save_staging({"schema": 1, "sessions": sessions})
+            with patch.object(inventory_engine, "_reparse_session", return_value={}) as reparse, \
+                 patch.object(inventory_engine, "build_packet", return_value="synthetic refreshed packet"):
+                self.assertEqual(host.inventory(["packetize", "--refresh", "--top", "2"]), 0)
+                self.assertEqual(reparse.call_count, 2)
+                self.assertEqual(len(list((Path(tmp) / "packets").glob("*.md"))), 2)
+                saved = inventory_engine.load_staging()["sessions"]
+                self.assertEqual(len(saved), 7)
+                self.assertEqual(saved[2:], sessions[2:])
+                self.assertIs(inventory_engine._reparse_session, reparse)
+                self.assertEqual(host.inventory(["packetize", "--refresh", "--top", "0"]), 2)
+                self.assertEqual(reparse.call_count, 2)
+
     def test_vendored_engine_parity(self):
         canonical = HERE.parent.parent / "claude" / "scripts"
         if not canonical.exists():
@@ -99,6 +155,10 @@ class BackfillTests(unittest.TestCase):
             selected = next(s for s in staged["sessions"] if s["source_session_id"] == packet.stem)
             self.assertEqual(len(selected["captures"]), 1)
             before = staging_file.read_bytes()
+            # Extraction/staging remains covered in the stdlib-only CI job.
+            # SDK preview/refusal runs in the real-sdk jobs on both platforms.
+            if os.getenv("KUMIHO_TEST_REAL_SDK") != "1":
+                return
             preview = run("ingest", "--dry-run", "--limit", "5")
             self.assertIn("A synthetic session selected SQLite", preview)
             self.assertNotIn("LOCAL_ONLY_EVIDENCE", preview)

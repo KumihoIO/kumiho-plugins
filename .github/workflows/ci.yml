@@ -135,6 +135,8 @@ jobs:
           KUMIHO_REAL_SDK_HOME="$KUMIHO_CI_HOME" \
           KUMIHO_REAL_SDK_PYTHON="$KUMIHO_CI_HOME/.kumiho/venv/bin/python" \
             python codex/scripts/real_sdk_stdio_smoke.py
+          KUMIHO_TEST_REAL_SDK=1 "$KUMIHO_CI_HOME/.kumiho/venv/bin/python" -I codex/scripts/test_backfill_codex.py
+          KUMIHO_TEST_REAL_SDK=1 "$KUMIHO_CI_HOME/.kumiho/venv/bin/python" -I codex/scripts/test_skill_catalog.py
       - name: Provision and exercise the declared Windows runtime from cold state
         if: runner.os == 'Windows'
         shell: pwsh
@@ -162,6 +164,12 @@ jobs:
           $env:KUMIHO_REAL_SDK_HOME = $KumihoCiHome
           $env:KUMIHO_REAL_SDK_PYTHON = $KumihoPython
           python codex/scripts/real_sdk_stdio_smoke.py
+          if ($LASTEXITCODE -ne 0) { throw "Real SDK MCP smoke failed" }
+          $env:KUMIHO_TEST_REAL_SDK = "1"
+          & $KumihoPython -I codex/scripts/test_backfill_codex.py
+          if ($LASTEXITCODE -ne 0) { throw "Codex backfill SDK tests failed" }
+          & $KumihoPython -I codex/scripts/test_skill_catalog.py
+          if ($LASTEXITCODE -ne 0) { throw "Codex skill catalog SDK tests failed" }
 
   openclaw:
     name: openclaw (vitest / typecheck / build)

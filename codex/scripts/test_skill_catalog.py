@@ -78,6 +78,8 @@ class SkillCatalogTests(unittest.TestCase):
             self.assertEqual(kwargs["space_name"], "Skills")
             self.assertTrue(kwargs["dry_run"])
 
+    @unittest.skipUnless(os.getenv("KUMIHO_TEST_REAL_SDK") == "1",
+                         "real-sdk CI job runs this with installed dependencies")
     def test_isolated_snapshot_real_sdk_dry_run(self):
         # No backend is configured and no real identity/capture/dream action
         # runs: SDK ingest_file(dry_run=True) parses/screens local docs only.

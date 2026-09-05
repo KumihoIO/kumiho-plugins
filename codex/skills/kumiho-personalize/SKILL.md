@@ -31,7 +31,8 @@ item: honor it in this conversation and explain the shared scope.
    persist credentials or infer unrequested preferences from old transcripts.
 4. If values actually changed, call `kumiho_create_revision` with the resolved
    `item_kref` and merged `metadata` (string values, matching the tool schema).
-   Tag the **returned** `revision_kref` with `kumiho_tag_revision(tag="published")`.
+   Use the **returned** `revision.kref` as `revision_kref` in
+   `kumiho_tag_revision(tag="published")`.
    Do not guess revision numbers, untag the previous revision, or delete history.
    If publication fails, report the unpublished revision; do not claim success
    or blindly create another revision on retry.
