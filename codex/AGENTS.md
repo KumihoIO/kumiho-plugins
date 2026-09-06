@@ -25,19 +25,38 @@ tokens, refresh tokens, private keys, session cookies, credential-bearing URLs,
 or raw secret-bearing environment/config values. If one appears, omit it from
 all memory calls and recommend rotating it.
 
-## Two reflexes
+## The turn gate — decide read and write independently, first
 
-**Engage — before you respond.** When the user's message touches anything
-that might have history, call `kumiho_memory_engage` with a query derived
-from their current message (at most once per turn; the server deduplicates
-within 5 seconds). Never say "I don't know" without engaging first. Hold
-the returned `source_krefs` for reflect.
+Before discovering memory tools or calling engage/reflect, judge THIS turn on
+two independent axes (full table and mandatory exceptions in
+`skills/kumiho-memory/SKILL.md`):
 
-**Reflect — after you respond.** After a substantive response, call
+- **needs_recall** — whether correctness depends on history that is missing,
+  uncertain, contested, or not usable from current context. Having mentioned the
+  topic, or paraphrasing your own prior answer, does not count.
+- **needs_capture** — whether the turn established a durable decision,
+  preference, correction, useful finding, or an answer to a question you asked.
+
+A context-sufficient short follow-up ("고마워", "thanks", "give an example" after a
+sufficient explanation) is **CONTEXT_ONLY**: answer from context and make no
+engage, recall, reflect, decompose, or discovery call — **not even a buffer-only
+reflect**. The mandatory exceptions (secrets/privacy, identity bootstrap, an
+answer to a question you asked, explicit remember/correct/forget, Decision Memory
+before unfamiliar code) override the no-op. Routing is your own judgment, never a
+separate classifier call.
+
+## Two reflexes (on a READ or WRITE route)
+
+**Engage — before you respond, when the gate says recall.** Call
+`kumiho_memory_engage` with a query derived from the current message (at most
+once per turn; the server deduplicates within 5 seconds). Never say "I don't
+know" without engaging first. Hold the returned `source_krefs` for reflect.
+
+**Reflect — after you respond, when the gate says capture.** Call
 `kumiho_memory_reflect` with your response text and structured captures
-(decisions, preferences, facts, corrections). Use absolute dates in
-capture titles ("on Jul 11", never "today"). Skip captures for trivial
-exchanges; pass `source_krefs` from engage for provenance.
+(decisions, preferences, facts, corrections). Use absolute dates in capture
+titles ("on Jul 11", never "today"); pass `source_krefs` from engage. Do not
+call reflect merely because you produced a reply — a CONTEXT_ONLY turn skips it.
 
 ## Session id — owned by Codex, never invented by the agent
 

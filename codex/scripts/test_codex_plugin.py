@@ -151,9 +151,15 @@ def test_native_plugin_manifest_contract():
 
 
 def test_memory_skill_pins_bounded_recall_contract():
-    source = MEMORY_SKILL.read_text(encoding="utf-8")
+    # After the #97 compaction the bounded-recall contract lives in the route
+    # reference (loaded on a READ route), not the always-loaded main skill. The
+    # main skill keeps the gate + mandatory exceptions inline and links to it.
+    main = MEMORY_SKILL.read_text(encoding="utf-8")
+    assert "capture-and-decisions.md" in main, "main skill must link the recall/capture reference"
+    reference = (
+        MEMORY_SKILL.parent / "references" / "capture-and-decisions.md"
+    ).read_text(encoding="utf-8")
     for marker in (
-        "## Bounded recall — Codex only",
         "limit=3",
         "recall_mode=\"summarized\"",
         "1,200 characters or three items",
@@ -161,8 +167,8 @@ def test_memory_skill_pins_bounded_recall_contract():
         "kumiho_code_why",
         "discard the receipt",
     ):
-        assert marker in source, (
-            f"Codex memory skill lost bounded-recall guard: {marker!r}"
+        assert marker in reference, (
+            f"Codex recall/capture reference lost bounded-recall guard: {marker!r}"
         )
 
 

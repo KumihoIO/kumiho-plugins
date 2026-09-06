@@ -85,7 +85,7 @@ This does three things in one call:
 
 **Route every capture — `space_hint` is not optional.** A capture without one is filed at the project root alongside every other unrouted memory, and the automatic revision stacking then searches *that whole bucket* for something to stack onto — which is how an unrelated capture ends up as a new revision of a months-old item. Reuse a space the graph already has: engage results come back as krefs of the form `kref://<project>/<space>/<item>.<kind>`, so they show you the live space names. Copy the name **exactly**: reflect forwards the hint as a space path verbatim, capitalization included, so `Skills` reaches the real skill library while `skills` would open a second one beside it. Bare or project-qualified both resolve the same (`marketing`, `CognitiveMemory/marketing`). When none fits, fall back to the capture's type — `decisions`, `facts`, `preferences`, `corrections`.
 
-**What to skip**: trivial one-liners, uncommitted brainstorming, credentials, or secrets. For trivial exchanges, call reflect without captures to buffer the response only.
+**What to skip**: trivial one-liners, uncommitted brainstorming, credentials, or secrets. A context-sufficient short follow-up (a "thanks", a paraphrase of your own prior answer) is CONTEXT_ONLY — answer from context and skip reflect entirely; do not call reflect merely to buffer a reply when nothing needs buffering or storing. Reserve a buffer-only reflect for when the response genuinely must persist for session continuity but carries no capture. An answer to a question you asked, an explicit "remember this", a correction, or a forget request is never trivial — it is captured (or honored) even when short.
 
 ### Every answer you had to ask for is a decision — capture it
 
