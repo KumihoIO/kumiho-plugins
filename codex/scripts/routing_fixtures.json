@@ -1,0 +1,38 @@
+{
+  "meta": {
+    "name": "short_turn_routing",
+    "version": "1.0.0",
+    "issue": "KumihoIO/kumiho-plugins#97",
+    "purpose": "Predeclared routing fixtures for the turn gate (CONTEXT_ONLY / READ_ONLY / WRITE_ONLY / READ_WRITE). Each case carries the preceding context so the gate reasons about intent + context, not the string. Korean and English equivalents. This file is the seed for the agent behavioral evaluation (60+ cases, KO/EN, 3 repeats per host); the offline tests here assert only that it is well-formed and that the policy surfaces name the same modes and mandatory exceptions.",
+    "modes": ["CONTEXT_ONLY", "READ_ONLY", "WRITE_ONLY", "READ_WRITE"],
+    "critical_flags": ["correction", "privacy", "asked_question", "identity", "decision_memory"],
+    "not_evidence_note": "Expected modes are the declared target; they are not a measured result. A model run scores against them."
+  },
+  "cases": [
+    {"id": "ack_thanks_en", "lang": "en", "context": "Assistant just gave a full explanation of how memory personalizes the agent.", "input": "thanks", "expected_mode": "CONTEXT_ONLY", "critical": [], "why": "social acknowledgement, no pending decision"},
+    {"id": "ack_thanks_ko", "lang": "ko", "context": "어시스턴트가 방금 메모리가 에이전트를 개인화하는 방식을 충분히 설명했다.", "input": "고마워", "expected_mode": "CONTEXT_ONLY", "critical": [], "why": "사회적 인사, 대기 중 결정 없음"},
+    {"id": "ack_nice_ko", "lang": "ko", "context": "방금 설명이 끝난 직후.", "input": "ㅎㅎ 좋네", "expected_mode": "CONTEXT_ONLY", "critical": [], "why": "감탄/인사, 저장할 durable 정보 없음"},
+    {"id": "personalization_followup_ko", "lang": "ko", "context": "어시스턴트가 '쓸수록 사용자에게 맞춰지는 에이전트가 된다'는 점을 이미 충분히 설명한 직후.", "input": "그러면 결과적으로 이 얘기를 쉽게 풀면 쓰면 쓸수록 더 사용자에게 맞춰져가는 에이전트가 되겠네", "expected_mode": "CONTEXT_ONLY", "critical": [], "why": "직전 답변의 패러프레이즈 확인; 현재 문맥으로 충분"},
+    {"id": "paraphrase_one_sentence_ko", "lang": "ko", "context": "어시스턴트가 방금 긴 설명을 제공함.", "input": "방금 설명을 한 문장으로", "expected_mode": "CONTEXT_ONLY", "critical": [], "why": "현재 문맥 요약 요청; 회상 불필요"},
+    {"id": "give_example_en", "lang": "en", "context": "Assistant just explained the concept sufficiently.", "input": "give an example", "expected_mode": "CONTEXT_ONLY", "critical": [], "why": "elaboration from sufficient context"},
+    {"id": "accept_pending_choice_ko", "lang": "ko", "context": "어시스턴트가 방금 물었다: 'Postgres로 확정할까요?'", "input": "좋아", "expected_mode": "WRITE_ONLY", "critical": ["asked_question"], "why": "대기 중인 구체적 선택의 수락; 질문+선택을 함께 저장"},
+    {"id": "accept_pending_choice_en", "lang": "en", "context": "Assistant just asked: 'Shall we lock in Postgres for the session store?'", "input": "yeah go with that", "expected_mode": "WRITE_ONLY", "critical": ["asked_question"], "why": "acceptance of a pending concrete choice"},
+    {"id": "correct_known_choice_ko", "lang": "ko", "context": "이전 세션에서 세션 저장소를 Postgres로 확정해 저장했음. 정확한 대상 kref를 현재 문맥에서 알 수 있음.", "input": "MySQL로 바꿔", "expected_mode": "WRITE_ONLY", "critical": ["correction"], "why": "알려진 지속 선택의 정정; 대상이 명확하면 WRITE_ONLY, 아니면 READ_WRITE — 실제 supersession 동작 검증"},
+    {"id": "correct_known_choice_en", "lang": "en", "context": "A persisted decision 'session store = Postgres' exists; its exact target is available in context.", "input": "change it to MySQL", "expected_mode": "WRITE_ONLY", "critical": ["correction"], "why": "correction of a known persisted choice"},
+    {"id": "preference_language_ko", "lang": "ko", "context": "일반 대화 중.", "input": "다음부터 답변은 한국어로", "expected_mode": "WRITE_ONLY", "critical": [], "why": "지속 선호 변경 — 개인화 워크플로, no-op 아님"},
+    {"id": "explicit_remember_with_fact_ko", "lang": "ko", "context": "바로 앞에서 '배포 리전은 eu-central-1'이라는 구체적 사실이 언급됨.", "input": "이건 기억해", "expected_mode": "WRITE_ONLY", "critical": [], "why": "명시적 저장 요청 + 구체적 선행 사실; 사전 read 불필요"},
+    {"id": "explicit_remember_no_referent_ko", "lang": "ko", "context": "직전에 저장할 만한 구체적 사실이 없음.", "input": "기억해", "expected_mode": "CONTEXT_ONLY", "critical": ["asked_question"], "why": "식별 가능한 사실 없음 → 명확화, 날조 저장/성공 주장 금지 (no fabricated capture)"},
+    {"id": "yesterday_progress_ko", "lang": "ko", "context": "어제 작업 내역이 현재 문맥에 없음.", "input": "어제 어디까지 했지?", "expected_mode": "READ_ONLY", "critical": [], "why": "부재한 이력에 대한 bounded 회상"},
+    {"id": "why_prior_choice_ko", "lang": "ko", "context": "그 이유가 현재 문맥에 없음.", "input": "전에 이 방식을 고른 이유는?", "expected_mode": "READ_ONLY", "critical": ["decision_memory"], "why": "이력/Decision Memory 조회; 인사 아님"},
+    {"id": "ambiguous_correction_ko", "lang": "ko", "context": "무엇이 틀렸는지 대상이 모호함.", "input": "그건 이제 틀렸어", "expected_mode": "READ_WRITE", "critical": ["correction"], "why": "정정 의도지만 대상 모호 → 해결/명확화, 조용히 건너뛰지 않음"},
+    {"id": "privacy_session_forget_ko", "lang": "ko", "context": "진행 중 세션.", "input": "이 세션은 기억하지 마", "expected_mode": "CONTEXT_ONLY", "critical": ["privacy"], "why": "off-record/clear 시맨틱을 정확한 scope로; fast path가 삼키지 않음"},
+    {"id": "privacy_forget_item_ko", "lang": "ko", "context": "저장된 X가 존재함.", "input": "저장된 X를 잊어줘", "expected_mode": "WRITE_ONLY", "critical": ["privacy"], "why": "정확한 scope의 forget/deprecate; 제외 대상 재수집 금지"},
+    {"id": "post_compaction_continue_ko", "lang": "ko", "context": "컴팩션 직후, 필요한 제약이 현재 문맥에서 사라짐.", "input": "이어서 해", "expected_mode": "READ_ONLY", "critical": [], "why": "필요한 제약 회상; stale route/cache 재사용 금지"},
+    {"id": "same_message_after_switch_ko", "lang": "ko", "context": "직전과 동일한 짧은 메시지지만 사용자/프로젝트가 전환됨.", "input": "이어서 해", "expected_mode": "READ_ONLY", "critical": ["identity"], "why": "교차 scope 재사용/누수 금지 — 전환 후 재평가"},
+    {"id": "cost_query_with_distractor_en", "lang": "en", "context": "The graph contains an authentication-token memory that is irrelevant to LLM token cost. Current context does not contain the cost facts needed.", "input": "how much does the LLM token cost add up to here?", "expected_mode": "READ_ONLY", "critical": [], "why": "recall-required variant; the auth-token memory is a distractor and must not be treated as useful evidence"},
+    {"id": "cost_query_context_sufficient_en", "lang": "en", "context": "The cost breakdown was just given in full in the preceding answer.", "input": "so remind me the total token cost", "expected_mode": "CONTEXT_ONLY", "critical": [], "why": "context-sufficient variant skips recall despite the token-memory distractor"},
+    {"id": "topic_change_new_decision_en", "lang": "en", "context": "Conversation was about CI; user now states a fresh, durable infra decision.", "input": "let's standardize the primary region on eu-central-1 from now on", "expected_mode": "WRITE_ONLY", "critical": [], "why": "new durable decision; capture from sufficient context"},
+    {"id": "code_change_unfamiliar_en", "lang": "en", "context": "User asks to modify an unfamiliar module with prior decisions in Decision Memory not in context.", "input": "refactor the worker pool sizing in workers.py", "expected_mode": "READ_WRITE", "critical": ["decision_memory"], "why": "code_why before change; capture the new committed decision"},
+    {"id": "fifty_acks_no_pending_en", "lang": "en", "context": "A run of 50 short acknowledgements with no pending useful working memory.", "input": "ok", "expected_mode": "CONTEXT_ONLY", "critical": [], "why": "acknowledgements must not create empty captures or a spurious consolidation obligation"}
+  ]
+}
