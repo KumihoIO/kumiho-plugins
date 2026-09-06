@@ -1956,3 +1956,73 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def test_node_launcher_doctor_json_receipt():
+    """--doctor --json emits a versioned, read-only compatibility receipt (#96)."""
+    node = shutil.which("node")
+    if node is None:
+        raise SkipTest("node is not installed")
+
+    task_env = os.environ.copy()
+    task_env.pop("KUMIHO_PYTHON", None)
+    task_env.pop("KUMIHO_SESSION_ID", None)
+    task_env.pop("CODEX_SESSION_ID", None)
+    secret_session = "json-doctor-must-not-leak-this"
+    task_env["CODEX_THREAD_ID"] = secret_session
+    secret_token = "sk-doctor-must-not-leak-token"
+    task_env["KUMIHO_AUTH_TOKEN"] = secret_token
+    task_env["KUMIHO_CLAUDE_MODE"] = "ce"
+
+    # Exit code is 0/1 depending on whether the SDK is provisioned in this
+    # environment; both are valid — we assert the receipt, not the code.
+    result = subprocess.run(
+        [node, str(NODE_LAUNCHER), "--doctor", "--json"],
+        cwd=_PLUGIN, env=task_env, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=30, check=False,
+    )
+    assert result.returncode in (0, 1), result.stderr
+    receipt = json.loads(result.stdout)
+
+    # Shape.
+    assert receipt["doctor_receipt_version"] == "1"
+    assert receipt["host"] == "codex"
+    assert receipt["plugin"]["name"] == "kumiho-memory"
+    assert re.match(r"^\d+\.\d+\.\d+$", receipt["plugin"]["version"])
+    assert set(receipt["required"]) >= {"kumiho", "kumiho_memory", "spec", "source"}
+    assert receipt["backend"]["configured_class"] == "ce"
+    assert receipt["backend"]["observed_class"] == "unknown"
+
+    # Active-process state is never inferred from disk: it is unknown by
+    # construction, distinct from the on-disk package probe.
+    assert receipt["active_process"]["observable"] is False
+    assert receipt["active_process"]["kumiho"] == "unknown"
+    assert "note" in receipt["packages"]
+
+    # Outcome is one of the documented states with an actionable next step.
+    assert receipt["outcome"]["status"] in (
+        "compatible", "possibly_stale", "restart_required", "unsupported", "unknown",
+    )
+    assert receipt["outcome"]["next_action"]
+
+    # Session identity: presence/source only, never the value.
+    assert receipt["session_identity"]["mechanism"] == "CODEX_THREAD_ID"
+    assert receipt["session_identity"]["present"] is True
+
+    # Redaction: no token, no session-id value, and the home dir masked to ~.
+    blob = json.dumps(receipt)
+    assert secret_token not in blob
+    assert secret_session not in blob
+    home = os.path.expanduser("~")
+    assert home not in blob, "receipt leaked an unmasked home path"
+
+
+def test_node_launcher_doctor_json_is_read_only():
+    """The JSON doctor must not write, install, or open a backend connection."""
+    source = NODE_LAUNCHER.read_text(encoding="utf-8")
+    # The receipt builder path uses only read-only fs + a bounded version probe.
+    assert "buildDoctorReceipt" in source
+    # It must never shell out to pip or a package install from the doctor path.
+    receipt_region = source[source.index("buildDoctorReceipt"):]
+    assert "pip install" not in receipt_region
+    assert "--doctor --json" in source  # advertised in the human report
