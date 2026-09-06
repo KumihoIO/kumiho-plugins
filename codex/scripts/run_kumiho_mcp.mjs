@@ -6,10 +6,11 @@ import {
   existsSync,
   fstatSync,
   openSync,
+  readFileSync,
   readSync,
   realpathSync,
 } from "node:fs";
-import { userInfo } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CodexThreadIdBridge } from "./thread_id_bridge.mjs";
@@ -350,6 +351,255 @@ function terminateWindowsTree(pid, { force = false } = {}) {
   return !result.error && result.status === 0;
 }
 
+// --- Runtime compatibility receipt (kumiho-plugins#96) ----------------------
+//
+// Answers "which plugin / core / SDK / backend is this session actually using,
+// is that combination supported, and do I need to restart?" as a versioned,
+// machine-readable receipt. Strictly READ-ONLY and bounded: it never writes to
+// the graph, installs or upgrades a package, or mutates host config. It masks
+// user-specific paths and never emits a token, credential, or the session-id
+// value — only presence and source.
+
+const DOCTOR_RECEIPT_VERSION = "1";
+const PLUGIN_MANIFEST_PATH = fileURLToPath(
+  new URL("../.codex-plugin/plugin.json", import.meta.url),
+);
+const PLUGIN_MCP_JSON_PATH = fileURLToPath(new URL("../.mcp.json", import.meta.url));
+
+function maskHome(value) {
+  // Replace the user's home prefix with ~ so a receipt is shareable. Best-effort
+  // and case-insensitive on Windows; a path outside home is left as-is.
+  if (!value) return value;
+  let home = "";
+  try {
+    home = homedir();
+  } catch {
+    home = "";
+  }
+  if (!home) return value;
+  const norm = (p) => (process.platform === "win32" ? p.toLowerCase() : p);
+  if (norm(value).startsWith(norm(home))) return "~" + value.slice(home.length);
+  return value;
+}
+
+function readJsonFile(path) {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function pluginVersion() {
+  const manifest = readJsonFile(PLUGIN_MANIFEST_PATH);
+  return {
+    name: manifest?.name ?? "kumiho-memory",
+    version: manifest?.version ?? "unknown",
+    version_source: "packaged manifest (codex/.codex-plugin/plugin.json)",
+  };
+}
+
+function parseFloor(spec, pkg) {
+  // Pull ">=X.Y.Z" for a package name out of the space-separated pip spec.
+  const re = new RegExp(`${pkg.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}\\[[^\\]]*\\]?>=([0-9][0-9A-Za-z.\\-]*)`);
+  const m = (spec || "").match(re);
+  return m ? m[1] : "unknown";
+}
+
+function requiredVersions() {
+  const mcp = readJsonFile(PLUGIN_MCP_JSON_PATH);
+  const spec =
+    mcp?.mcpServers?.["kumiho-memory"]?.env?.KUMIHO_CLAUDE_PACKAGE_SPEC ?? "";
+  return {
+    source: "KUMIHO_CLAUDE_PACKAGE_SPEC in codex/.mcp.json",
+    spec: spec || "unknown",
+    kumiho: parseFloor(spec, "kumiho"),
+    kumiho_memory: parseFloor(spec, "kumiho-memory"),
+  };
+}
+
+function installedVersions(selected) {
+  // Read-only: import the SDK metadata in the SELECTED interpreter. This proves
+  // what is ON DISK for that interpreter, NOT what the already-connected MCP
+  // process loaded (see active_process below). Absent/unimportable -> null.
+  const empty = { kumiho: null, kumiho_memory: null, importable: false };
+  if (!selected?.command) return empty;
+  const probe =
+    "import json;out={}\n" +
+    "from importlib.metadata import version,PackageNotFoundError\n" +
+    "for n in ('kumiho','kumiho-memory'):\n" +
+    "    try: out[n]=version(n)\n" +
+    "    except PackageNotFoundError: out[n]=None\n" +
+    "import importlib.util as u\n" +
+    "out['importable']=bool(u.find_spec('kumiho_memory'))\n" +
+    "print('KUMIHO_DOCTOR_PKG '+json.dumps(out))";
+  const result = spawnSync(selected.command, [...(selected.prefixArgs ?? []), "-I", "-c", probe], {
+    encoding: "utf8",
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  const line = (result.stdout ?? "")
+    .split(/\r?\n/)
+    .find((l) => l.startsWith("KUMIHO_DOCTOR_PKG "));
+  if (!line) return empty;
+  try {
+    const data = JSON.parse(line.slice("KUMIHO_DOCTOR_PKG ".length));
+    return {
+      kumiho: data.kumiho ?? null,
+      kumiho_memory: data["kumiho-memory"] ?? null,
+      importable: Boolean(data.importable),
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function backendClass(env = process.env) {
+  // Configured class only. "observed" needs a live call the read-only doctor
+  // does not make, so it is reported unknown rather than probed.
+  const mode = (env.KUMIHO_CLAUDE_MODE ?? "").trim().toLowerCase();
+  const endpoint = (env.KUMIHO_CLAUDE_SERVER_ENDPOINT ?? env.KUMIHO_SERVER_ENDPOINT ?? "").trim();
+  let configured = "unknown";
+  let source = "default (control-plane discovery at runtime)";
+  if (mode === "ce") {
+    configured = "ce";
+    source = "KUMIHO_CLAUDE_MODE=ce";
+  } else if (mode === "cloud") {
+    configured = "cloud";
+    source = "KUMIHO_CLAUDE_MODE=cloud";
+  } else if (endpoint) {
+    configured = "ce";
+    source = "KUMIHO_CLAUDE_SERVER_ENDPOINT set";
+  }
+  return {
+    configured_class: configured,
+    source,
+    observed_class: "unknown",
+    reachable: "unknown",
+    note: "read-only doctor does not open a backend connection; observed/reachable require the opt-in live check",
+  };
+}
+
+function cmpFloor(have, floor) {
+  // -1 have<floor, 0 equal-or-satisfies, 1 have>floor; null when uncomparable.
+  if (!have || !floor || floor === "unknown") return null;
+  const a = String(have).split("-")[0].split(".").map((n) => parseInt(n, 10));
+  const b = String(floor).split(".").map((n) => parseInt(n, 10));
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (Number.isNaN(x) || Number.isNaN(y)) return null;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+function computeOutcome({ selected, scripts, packages, required }) {
+  // Active-process versions are unknown by construction, so the strongest
+  // honest verdict from disk is "possibly_stale" even when disk satisfies the
+  // floor: a newer package on disk may not be what the running server loaded.
+  if (!selected) {
+    return {
+      status: "unsupported",
+      reason: "no compatible Python 3.10+ interpreter found",
+      next_action: "install Python 3.10+ or set KUMIHO_PYTHON, then restart Codex",
+    };
+  }
+  if (!scripts.mcp_present || !scripts.onboard_present) {
+    return {
+      status: "unsupported",
+      reason: "a packaged launcher script is missing",
+      next_action: "reinstall the plugin (codex plugin add kumiho-memory@kumiho-plugins)",
+    };
+  }
+  if (!packages.importable || packages.kumiho === null || packages.kumiho_memory === null) {
+    return {
+      status: "unknown",
+      reason: "the SDK is not importable in the selected interpreter yet (first-run provision installs it on demand)",
+      next_action: "start the server once (or run --onboard) to provision the venv, then re-run the doctor",
+    };
+  }
+  const belowCore = cmpFloor(packages.kumiho, required.kumiho) === -1;
+  const belowMem = cmpFloor(packages.kumiho_memory, required.kumiho_memory) === -1;
+  if (belowCore || belowMem) {
+    return {
+      status: "unsupported",
+      reason: `on-disk package below the required floor (kumiho ${packages.kumiho} vs >=${required.kumiho}, kumiho-memory ${packages.kumiho_memory} vs >=${required.kumiho_memory})`,
+      next_action: "upgrade the shared venv, then restart the session so the server reloads",
+    };
+  }
+  return {
+    status: "possibly_stale",
+    reason: "on-disk packages satisfy the required floor, but a fresh probe cannot confirm the ALREADY-CONNECTED MCP process is running them",
+    next_action: "if the plugin/core was updated in this session, restart the session so the MCP server reloads; otherwise no action needed",
+  };
+}
+
+function buildDoctorReceipt() {
+  const { attempts, selected } = findPython();
+  const scripts = {
+    mcp_present: existsSync(SCRIPT_PATH),
+    onboard_present: existsSync(ONBOARD_PATH),
+  };
+  const packages = installedVersions(selected);
+  const required = requiredVersions();
+  const python = selected
+    ? {
+        selected: maskHome(commandLabel(selected)),
+        executable: maskHome(selected.executable),
+        version: selected.version,
+      }
+    : null;
+  return {
+    doctor_receipt_version: DOCTOR_RECEIPT_VERSION,
+    host: "codex",
+    plugin: pluginVersion(),
+    runtime: {
+      node: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      python,
+    },
+    packages: {
+      observed_source: "on-disk probe of the selected interpreter (read-only)",
+      kumiho: packages.kumiho,
+      kumiho_memory: packages.kumiho_memory,
+      importable: packages.importable,
+      note: "on-disk versions; NOT proof of what the running MCP process loaded",
+    },
+    active_process: {
+      observable: false,
+      reason:
+        "a fresh doctor probe cannot query the already-connected MCP process; the host exposes no active-process version channel",
+      kumiho: "unknown",
+      kumiho_memory: "unknown",
+    },
+    required,
+    backend: backendClass(),
+    session_identity: {
+      mechanism: sessionIdSource(),
+      present: sessionIdSource() !== "unavailable",
+    },
+    scripts,
+    candidates: attempts.map((a) => ({
+      label: maskHome(commandLabel(a)),
+      source: a.source,
+      available: Boolean(a.available),
+      too_old: Boolean(a.tooOld),
+    })),
+    outcome: computeOutcome({ selected, scripts, packages, required }),
+  };
+}
+
+function doctorJson() {
+  const receipt = buildDoctorReceipt();
+  console.log(JSON.stringify(receipt, null, 2));
+  process.exitCode =
+    receipt.outcome.status === "unsupported" || receipt.outcome.status === "unknown" ? 1 : 0;
+}
+
 function doctor() {
   // Stop after the first valid interpreter. Diagnostics must not execute a
   // broken WindowsApps alias after Python has already been found.
@@ -376,7 +626,30 @@ function doctor() {
       : `unavailable${attempt.error ? ` (${attempt.error})` : ""}`;
     console.log(`  - ${commandLabel(attempt)} [${attempt.source}]: ${detail}`);
   }
-  process.exitCode = selected && existsSync(SCRIPT_PATH) && existsSync(ONBOARD_PATH) ? 0 : 1;
+  // Runtime compatibility receipt (#96): plugin / on-disk core+SDK / required
+  // floor / backend class / active-process (unknown by construction) / outcome.
+  const plugin = pluginVersion();
+  const packages = installedVersions(selected);
+  const required = requiredVersions();
+  const scripts = {
+    mcp_present: existsSync(SCRIPT_PATH),
+    onboard_present: existsSync(ONBOARD_PATH),
+  };
+  const backend = backendClass();
+  const outcome = computeOutcome({ selected, scripts, packages, required });
+  console.log(`Plugin version: ${plugin.version} (${plugin.version_source})`);
+  console.log(
+    `Installed on disk: kumiho ${packages.kumiho ?? "not installed"}, ` +
+    `kumiho-memory ${packages.kumiho_memory ?? "not installed"} ` +
+    `(on-disk probe; not proof of the running server)`,
+  );
+  console.log(`Required floor: kumiho >=${required.kumiho}, kumiho-memory >=${required.kumiho_memory}`);
+  console.log(`Active MCP process versions: unknown (a fresh probe cannot query the connected server)`);
+  console.log(`Backend class (configured): ${backend.configured_class} [${backend.source}]; observed: unknown`);
+  console.log(`Outcome: ${outcome.status} — ${outcome.reason}`);
+  console.log(`Next action: ${outcome.next_action}`);
+  console.log(`For a machine-readable receipt: --doctor --json`);
+  process.exitCode = selected && scripts.mcp_present && scripts.onboard_present ? 0 : 1;
 }
 
 function startPython(scriptPath, args, label, { bridgeThreadId = false } = {}) {
@@ -483,7 +756,8 @@ function startOnboarding(args) {
 }
 
 const args = process.argv.slice(2);
-if (args.length === 1 && args[0] === "--doctor") doctor();
+if (args[0] === "--doctor" && args.includes("--json")) doctorJson();
+else if (args.length === 1 && args[0] === "--doctor") doctor();
 else if (args[0] === "--onboard") startOnboarding(args.slice(1));
 else if (args[0] === "--backfill") startPython(BACKFILL_PATH, args.slice(1), "backfill");
 else startMcp(args);
