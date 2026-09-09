@@ -79,6 +79,31 @@ in scope, and the source krefs. This is a checkpoint for reasoning, not text to
 repeat to the user. If the user corrects any premise, discard the receipt and
 rebuild it from the correction before continuing.
 
+## Insight from experience — when it helps
+
+For decisions, recurring difficulties, or changed conditions, use the current
+turn's one engage with `include_insights=true` **when its advertised schema
+supports it**. Keep the normal query, scope, and recall budget. Include brief
+`current_context` and `goals` only when they clarify the present decision.
+Add `include_learned_sources=true` selectively when saved experiences or pattern
+proposals are relevant; it requires `include_insights=true` and adds graph reads.
+Do not issue a second engage to obtain these options. Older servers or missing
+optional tools fall back to ordinary recall and reasoning.
+
+Use the returned `synthesis_request` to form a grounded answer, a provisional
+connection with a way to check it, or one useful clarification. Answer naturally;
+the tool's JSON contract is internal. An empty review brief does not make its
+source facts irrelevant. A schema-valid response is not semantically verified.
+Keep hypotheses separate from facts in reflect/consolidate/decompose as well;
+do not promote a suggestion by storing or repeating it.
+
+For the response contract, explicit experience/outcome capture, or the keyless
+pattern prepare/store/check loop, read
+[Insight and experience](references/insight-and-experience.md). These optional
+writes need the user's request or established authorization for that learning
+workflow; do not ask again when already authorized. Ordinary factual replies
+need no insight ceremony.
+
 ## Optional workflows and skill discovery
 
 Load only the guide relevant to the current task; these are not extra
@@ -206,8 +231,10 @@ skip captured commits at zero LLM cost).
 - Do not re-ask questions already answered this session; do not re-run
   completed work.
 - Respect "forget X" immediately via `kumiho_deprecate_item`.
-- Compare each memory's `created_at` to today's date; prefer recent
-  memories when they conflict with stale ones.
+- Age alone does not invalidate experience. Check event time, validity
+  conditions, explicit corrections/supersession, and current user intent.
+  `created_at` is storage time; use `event_date`/`observed_at` when available
+  and do not assume the newest stored statement wins.
 - After 20+ exchanges or at session end, call
   `kumiho_memory_consolidate` with a `summary` you wrote yourself from the
   conversation. Omit `session_id`; the bridge supplies the Codex thread id as

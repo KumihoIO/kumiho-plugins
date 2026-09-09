@@ -322,6 +322,8 @@ export type {
   CreativeCaptureResult,
   CreativeItem,
   EngageResult,
+  EngageInsightOptions,
+  InsightSynthesisRequest,
   ReflectCapture,
   ReflectResult,
 } from "./types.js";
@@ -1786,11 +1788,12 @@ export function createKumihoMemory(rawConfig: KumihoPluginConfig = {}) {
     },
 
     /** Engage memory before responding — recall + context + source krefs. */
-    async engage(query: string, limit?: number) {
+    async engage(query: string, limit?: number, insight?: import("./types.js").EngageInsightOptions) {
       return kumihoClient.memoryEngage({
         query,
         limit: limit ?? cfg.topK,
         minScore: cfg.searchThreshold,
+        ...insight,
       });
     },
 

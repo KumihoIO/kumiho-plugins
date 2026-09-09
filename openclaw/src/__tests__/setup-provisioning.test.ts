@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 const setupSource = readFileSync(
   new URL("../../scripts/setup.mjs", import.meta.url),
   "utf8",
-);
+).replace(/\r\n/g, "\n");
 
 describe("setup provisioning process contract", () => {
   it("keeps every provisioning child finite and tears down its full process tree", () => {

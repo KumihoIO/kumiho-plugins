@@ -39,6 +39,21 @@ the returned `source_krefs` for reflect.
 capture titles ("on Jul 11", never "today"). Skip captures for trivial
 exchanges; pass `source_krefs` from engage for provenance.
 
+## Optional insight and experience
+
+For decisions, prior experience, or changed conditions, add `include_insights=true`
+to the turn's one engage only when its advertised schema supports the option.
+Keep scope/budget bounded. Selectively add `include_learned_sources=true` when
+saved experiences or patterns matter; it requires `include_insights=true` and
+adds retrieval. Do not make a second engage or break ordinary recall on older
+servers. Use `synthesis_request` internally and give a natural direct answer,
+conditional hypothesis, or useful clarification. Structural validation does not
+verify semantic support; never promote a hypothesis through ordinary captures.
+Read [the optional lifecycle guide](skills/kumiho-memory/references/insight-and-experience.md)
+for the six tool schemas and authorized experience/outcome/pattern writes.
+User acceptance is not an observed successful outcome. Authorized shared memory
+can support continuity across models; that alone proves no performance gain.
+
 ## Session id — owned by Codex, never invented by the agent
 
 Codex attaches its stable thread id to every MCP tool request in per-call
@@ -78,8 +93,10 @@ skip captured commits at zero LLM cost).
 - Do not re-ask questions already answered this session; do not re-run
   completed work.
 - Respect "forget X" immediately via `kumiho_deprecate_item`.
-- Compare each memory's `created_at` to today's date; prefer recent
-  memories when they conflict with stale ones.
+- Age alone does not invalidate experience. Check event time, current
+  conditions, explicit corrections/supersession, and current user intent.
+  `created_at` is storage time; the newest stored statement does not
+  automatically outweigh an older applicable experience.
 - After 20+ exchanges or at session end, call
   `kumiho_memory_consolidate` with a `summary` you wrote yourself from the
   conversation. Omit `session_id`; the bridge supplies the Codex thread id as

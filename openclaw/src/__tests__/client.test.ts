@@ -362,3 +362,74 @@ describe("isUnknownToolError", () => {
     expect(isUnknownToolError(new Error("unsupported tool"))).toBe(true);
   });
 });
+
+
+describe("KumihoClient insight capability and packets", () => {
+  const ref = "kref://CognitiveMemory/old.experience?r=2";
+  const packet = { schema_version: 1, sources: [{ kref: ref, summary: "Past failure", item_markers: { grounding_stale: true } }], source_krefs: [ref], snapshot_fingerprint: "unchanged", review_brief: { candidates: [] } };
+
+  it("passes opt-in parameters and preserves intact packet provenance independently of ordinary sources", async () => {
+    const call = vi.fn().mockResolvedValue({ results: [], source_krefs: [], synthesis_request: packet, insight_brief: { candidates: [] }, learned_source_status: { status: "partial" } });
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+    const result = await client.memoryEngage({ query: "Apply the old lesson?", includeInsights: true, includeLearnedSources: true, currentContext: "Shared state is now isolated", goals: ["Lower latency"] });
+    expect(call).toHaveBeenCalledWith("kumiho_memory_engage", expect.objectContaining({ include_insights: true, include_learned_sources: true, current_context: "Shared state is now isolated", goals: ["Lower latency"] }));
+    expect(result.synthesisRequest).toEqual(packet);
+    expect(result.sourceKrefs).toEqual([]);
+    expect(result.learnedSourceStatus).toEqual({ status: "partial" });
+  });
+
+  it("skips optional arguments when a discovered legacy schema lacks them", async () => {
+    const call = vi.fn().mockResolvedValue({ results: [] });
+    const transport = { ...makeTransport(call), getDiscoveredTools: () => [{ name: "kumiho_memory_engage", inputSchema: { properties: { query: { type: "string" } } } }] };
+    const client = new KumihoClient(transport, "CognitiveMemory");
+    expect(client.supportsInsightOptions()).toBe(false);
+    const result = await client.memoryEngage({ query: "decision", includeInsights: true, includeLearnedSources: true });
+    expect(call.mock.calls[0][1]).not.toHaveProperty("include_insights");
+    expect(result.insightNotice).toContain("ordinary recall only");
+    expect(call).toHaveBeenCalledOnce();
+  });
+
+  it("retries a precise new-argument rejection once and remembers the old HTTP capability", async () => {
+    const call = vi.fn().mockRejectedValueOnce(new Error("unexpected keyword argument 'include_insights'")).mockResolvedValue({ results: [] });
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+    await client.memoryEngage({ query: "decision", includeInsights: true });
+    await client.memoryEngage({ query: "next decision", includeInsights: true });
+    expect(call).toHaveBeenCalledTimes(3);
+    expect(call.mock.calls[0][1]).toHaveProperty("include_insights", true);
+    expect(call.mock.calls[1][1]).not.toHaveProperty("include_insights");
+    expect(call.mock.calls[2][1]).not.toHaveProperty("include_insights");
+    expect(client.supportsInsightOptions()).toBe(false);
+  });
+
+  it.each(["401 Unauthorized", "request timed out", "invalid goals value", "Unknown tool: kumiho_memory_engage"])("does not retry unrelated errors: %s", async (message) => {
+    const call = vi.fn().mockRejectedValue(new Error(message));
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+    await expect(client.memoryEngage({ query: "q", includeInsights: true })).rejects.toThrow(message);
+    expect(call).toHaveBeenCalledOnce();
+  });
+
+  it("rejects learned-source IO without insight before contacting the backend", async () => {
+    const call = vi.fn();
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+    await expect(client.memoryEngage({ query: "q", includeLearnedSources: true })).rejects.toThrow("requires includeInsights");
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("omits oversized packets intact and keeps ordinary recall usable", async () => {
+    const call = vi.fn().mockResolvedValue({ results: [{ kref: ref, summary: "ordinary" }], synthesis_request: { ...packet, instructions: "x".repeat(64001) }, learned_source_status: { detail: "x".repeat(8001) } });
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+    const result = await client.memoryEngage({ query: "q", includeInsights: true });
+    expect(result.synthesisRequest).toBeUndefined();
+    expect(result.learnedSourceStatus).toBeUndefined();
+    expect(result.results[0].summary).toBe("ordinary");
+    expect(result.insightNotice).toContain("Oversized");
+  });
+
+  it("rejects packet citation mismatches without repairing evidence", async () => {
+    const call = vi.fn().mockResolvedValue({ results: [], synthesis_request: { ...packet, source_krefs: ["kref://other/item?r=1"] } });
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+    const result = await client.memoryEngage({ query: "q", includeInsights: true });
+    expect(result.synthesisRequest).toBeUndefined();
+    expect(result.insightNotice).toContain("No usable synthesis");
+  });
+});

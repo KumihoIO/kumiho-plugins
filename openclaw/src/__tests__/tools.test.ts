@@ -297,3 +297,36 @@ describe("handleMemoryReflect", () => {
     expect(result).toContain("Nothing stored");
   });
 });
+
+
+describe("insight tool output", () => {
+  it("returns learned evidence even when ordinary results are empty, without duplicating or broadening provenance", async () => {
+    const ref = "kref://CognitiveMemory/old.experience?r=2";
+    const packet = { schema_version: 1, sources: [{ kref: ref, summary: "Past failure", item_markers: { grounding_stale: true } }], source_krefs: [ref], snapshot_fingerprint: "intact" };
+    const memoryEngage = vi.fn().mockResolvedValue({ context: "", results: [], sourceKrefs: ["kref://unused/item?r=1"], synthesisRequest: packet, learnedSourceStatus: { status: "partial" } });
+    const result = await handleMemoryEngage(makeContext({ memoryEngage }, "sess"), { query: "What changed?", includeInsights: true, includeLearnedSources: true, goals: ["Avoid regression"] });
+    expect(memoryEngage).toHaveBeenCalledWith(expect.objectContaining({ includeInsights: true, includeLearnedSources: true, goals: ["Avoid regression"] }));
+    const payload = JSON.parse(result.slice(result.indexOf("\n") + 1));
+    expect(payload.synthesis_request).toEqual(packet);
+    expect(payload.learned_source_status.status).toBe("partial");
+    expect(result).not.toContain("unused/item");
+    expect(result).toContain("hypotheses remain unverified");
+  });
+
+  it("makes deduplicated insight degradation explicit without repeated engage", async () => {
+    const memoryEngage = vi.fn().mockResolvedValue({ context: "", results: [], sourceKrefs: [], deduplicated: true });
+    const memoryRetrieve = vi.fn().mockResolvedValue([memoryEntry]);
+    const result = await handleMemoryEngage(makeContext({ memoryEngage, memoryRetrieve }, "sess"), { query: "same query", includeInsights: true });
+    expect(memoryEngage).toHaveBeenCalledOnce();
+    expect(result).toContain("Synthesis unavailable");
+    expect(result).toContain("Dark mode");
+  });
+});
+
+
+it("rejects learned-only requests before custom-project fallback IO", async () => {
+  const memoryRetrieve = vi.fn();
+  const ctx = { ...makeContext({ memoryRetrieve }, "sess"), config: { ...baseConfig, project: "WorkMemory" } };
+  await expect(handleMemoryEngage(ctx, { query: "q", includeLearnedSources: true })).rejects.toThrow("requires includeInsights");
+  expect(memoryRetrieve).not.toHaveBeenCalled();
+});

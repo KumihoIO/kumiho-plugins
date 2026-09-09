@@ -29,6 +29,35 @@ EXPECTED_TOOLS = {
 }
 
 
+def validate_insight_contract(tools: list[dict], *, required: bool = False) -> bool:
+    """Check advertised optional APIs; older published servers remain supported."""
+    by_name = {tool.get("name"): tool for tool in tools if isinstance(tool, dict)}
+    engage = by_name.get("kumiho_memory_engage", {})
+    properties = engage.get("inputSchema", {}).get("properties", {})
+    if "include_insights" not in properties:
+        if required:
+            raise RuntimeError("Installed backend does not advertise the insight contract")
+        return False
+    for name in ("include_insights", "include_learned_sources"):
+        if properties.get(name, {}).get("type") != "boolean":
+            raise RuntimeError(f"engage omitted boolean {name}")
+    for name in ("current_context", "goals"):
+        if name not in properties:
+            raise RuntimeError(f"engage omitted {name}")
+    for short_name, read_only in (
+        ("record_experience", False), ("record_outcome", False),
+        ("prepare_patterns", True), ("store_pattern", False),
+        ("check_pattern", True), ("validate_insight_response", True),
+    ):
+        name = "kumiho_memory_" + short_name
+        tool = by_name.get(name)
+        if tool is None:
+            raise RuntimeError(f"insight-capable backend omitted {name}")
+        if tool.get("annotations", {}).get("readOnlyHint") is not read_only:
+            raise RuntimeError(f"{name} has incorrect readOnlyHint")
+    return True
+
+
 def _claude_plugin_data(home: Path) -> Path:
     return (
         home / ".claude" / "plugins" / "data"
@@ -267,6 +296,12 @@ def _run_host_backend(
         missing = EXPECTED_TOOLS - names
         if missing:
             raise RuntimeError(f"{host}/{backend} tools/list omitted {sorted(missing)}")
+
+        insight_available = validate_insight_contract(
+            tools, required=os.environ.get("KUMIHO_REQUIRE_INSIGHT_CONTRACT") == "1"
+        )
+        print(f"{host}/{backend}: insight contract "
+              f"{'available' if insight_available else 'unavailable (ordinary recall supported)'}")
 
         # The canonical launcher and the Codex Cloud adapter log only after
         # they have configured the real SDK client. This proves each matrix
