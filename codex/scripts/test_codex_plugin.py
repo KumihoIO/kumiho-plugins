@@ -1890,6 +1890,7 @@ def test_isolated_codex_plugin_add_and_mcp_get():
             "scripts/run_kumiho_ce.py",
             "scripts/run_kumiho_cloud.py",
             "scripts/codex_thread_context.py",
+            "scripts/sdk_tool_annotations.py",
             "scripts/thread_id_bridge.mjs",
         ):
             installed_file = installed_root / relative

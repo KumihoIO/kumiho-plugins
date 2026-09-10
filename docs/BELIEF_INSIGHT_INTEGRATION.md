@@ -98,6 +98,14 @@ SDK stdio matrix fails if any of the six lifecycle tools or their expected
 read/write annotations is absent in either host's Cloud/CE adapter. These checks
 do not write memories or certify response quality.
 
+The Claude/Codex startup adapters fill missing SDK annotation entries from the
+installed core's own insight tool declarations. This supports SDK versions whose
+separate annotation registry does not yet include the six new tools. Existing
+SDK entries and unrelated tool defaults remain untouched. The same patched SDK
+module starts the server; the required stdio tests verify the metadata actually
+reaches the host.
+
+
 Offline regression uses synthetic packets, old/new schema variants, scope and
 budget checks, and stale/different-question cache cases. A real Codex-to-Claude
 user study or production write/read lifecycle test is not implied by those
