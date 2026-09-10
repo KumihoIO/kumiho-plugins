@@ -3,7 +3,7 @@
 Persistent graph-native memory plugin for Claude. Runs a local Kumiho MCP
 server with `kumiho-memory` so Claude **remembers you across sessions**.
 
-Version: **0.21.2** | Requires: `kumiho>=0.12.2`, `kumiho-memory>=1.4.0`
+Version: **0.22.0** | Requires: `kumiho>=0.12.2`, `kumiho-memory>=1.5.0`
 (reused or installed automatically in `~/.kumiho/venv` — nothing to `pip install`)
 
 **OpenAI Codex** uses the parallel native package under `../codex`,
@@ -11,6 +11,20 @@ selected by the repo's `.agents/plugins/marketplace.json`. This Claude
 package keeps independent commands, hooks, and backend settings while sharing
 Kumiho Desktop's package runtime; see
 [`codex/README.md`](../codex/README.md).
+
+## Experience-informed answers
+
+The memory skill automatically chooses ordinary recall, a brief connection, or
+detailed insight according to the question and available evidence. No per-question
+mode switch is needed. Detailed insight requires a capable Kumiho backend and
+can connect current decisions to earlier experiences, outcomes, and changed premises. Older evidence
+remains useful when its conditions still apply. Responses stay provisional
+where support is incomplete, and ordinary recall works on older servers.
+
+See [integration and rollout](https://github.com/KumihoIO/kumiho-plugins/blob/main/docs/BELIEF_INSIGHT_INTEGRATION.md) for backend
+requirements, optional prefetch settings, and validation limits. Local provisioning
+requires the published kumiho-memory 1.5.0 or newer. Remote servers must advertise
+the capability; ordinary recall remains available when they do not.
 
 ## Quick install
 
@@ -300,7 +314,7 @@ Python-startup variables; put private-index policy in the OS user's pip config.
 Default package spec:
 
 ```text
-kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.4.0
+kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.5.0
 ```
 
 ## Self-hosted (Community Edition)

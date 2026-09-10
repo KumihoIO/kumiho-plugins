@@ -29,3 +29,9 @@ tool logs out of memory calls; use minimal sanitized evidence.
 For changed names/tone/language, use `$kumiho-personalize`: the published
 identity is shared across hosts, not a Codex-only preference file. Preserve
 history; never delete revisions just to change a preference.
+
+Structured experience records and pattern proposals follow the same authorized
+backend scope. Credential screening and PII redaction are best effort; screen
+every field. An explicit proposal write retains an unverified hypothesis, not a
+verified fact. See [Insight and experience](insight-and-experience.md) only when
+using that optional lifecycle.

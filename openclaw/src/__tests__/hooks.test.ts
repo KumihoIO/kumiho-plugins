@@ -1137,3 +1137,30 @@ describe("autoRecall — engage path", () => {
     expect(result.memories).toHaveLength(1);
   });
 });
+
+
+describe("insight-aware automatic recall", () => {
+  it("reserves engage for the current host question while prefetch stays ordinary", async () => {
+    const memory = { kref: "kref://CognitiveMemory/old.experience?r=1", type: "fact", title: "Old experience", summary: "Still useful under these conditions", topics: [] };
+    let engageConsumed = false;
+    const memoryEngage = vi.fn().mockImplementation(async () => {
+      if (engageConsumed) return { results: [], sourceKrefs: [], deduplicated: true };
+      engageConsumed = true;
+      return { results: [memory], sourceKrefs: [memory.kref], synthesisRequest: { schema_version: 1, sources: [{ kref: memory.kref }], source_krefs: [memory.kref] } };
+    });
+    const memoryRetrieve = vi.fn().mockResolvedValue([memory]);
+    const client = { supportsInsightOptions: () => true, memoryRetrieve, memoryEngage, chatAdd: vi.fn() } as unknown as KumihoClient;
+    const state = createHookState();
+    const prefetched = await prefetchMemories(client, baseConfig, "Apply old experience?", state);
+    const recalled = await autoRecall(client, baseConfig, state, "Apply old experience?");
+    expect(memoryEngage).not.toHaveBeenCalled();
+    expect(memoryRetrieve).toHaveBeenCalledTimes(2);
+    expect(prefetched.contextInjection).toContain("Old experience");
+    expect(recalled.contextInjection).toContain("includeInsights=true");
+    const engaged = await client.memoryEngage({ query: "Apply old experience?", includeInsights: true });
+    expect(engaged.deduplicated).not.toBe(true);
+    expect(engaged.synthesisRequest).toBeDefined();
+    expect(memoryEngage).toHaveBeenCalledOnce();
+    expect(memoryRetrieve.mock.calls.every(([params]) => params.includeLearnedSources === undefined)).toBe(true);
+  });
+});

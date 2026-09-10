@@ -18,6 +18,8 @@ import type {
   CreativeCaptureParams,
   CreativeCaptureResult,
   EngageResult,
+  EngageInsightOptions,
+  InsightSynthesisRequest,
   KumihoLLMConfig,
   MemoryEntry,
   MemoryStoreResult,
@@ -411,6 +413,7 @@ export function createTransport(
 export class KumihoClient {
   private readonly transport: Transport;
   private readonly project: string;
+  private insightArgumentsUnsupported = false;
 
   constructor(transport: Transport, project: string) {
     this.transport = transport;
@@ -614,6 +617,15 @@ export class KumihoClient {
    * Note: the backend composite tools operate on the server's default
    * project (CognitiveMemory) — there is no per-call project parameter.
    */
+  /** Unknown HTTP capability reserves the first engage for host selection.
+   * Older discovered schemas and rejected arguments keep ordinary recall. */
+  supportsInsightOptions(): boolean {
+    if (this.insightArgumentsUnsupported) return false;
+    const definition = this.getDiscoveredTools().find((tool) => tool.name === "kumiho_memory_engage");
+    const properties = definition?.inputSchema?.properties as Record<string, unknown> | undefined;
+    return properties === undefined || Boolean(properties.include_insights);
+  }
+
   async memoryEngage(params: {
     query: string;
     limit?: number;
@@ -621,20 +633,69 @@ export class KumihoClient {
     memoryTypes?: string[];
     minScore?: number;
     graphAugmented?: boolean;
-  }): Promise<EngageResult> {
-    const raw = await this.transport.call<{
-      context?: string;
-      results?: Array<Record<string, unknown>>;
-      source_krefs?: string[];
-      deduplicated?: boolean;
-    }>("kumiho_memory_engage", {
-      query: params.query,
-      limit: params.limit,
-      space_paths: params.spacePaths,
-      memory_types: params.memoryTypes,
-      min_score: params.minScore,
+  } & EngageInsightOptions): Promise<EngageResult> {
+    if (params.includeLearnedSources && !params.includeInsights) {
+      throw new Error("includeLearnedSources requires includeInsights=true");
+    }
+    const baseArgs = {
+      query: params.query, limit: params.limit, space_paths: params.spacePaths,
+      memory_types: params.memoryTypes, min_score: params.minScore,
       graph_augmented: params.graphAugmented,
-    });
+    };
+    const wantsInsight = params.includeInsights === true;
+    const definition = this.getDiscoveredTools().find((tool) => tool.name === "kumiho_memory_engage");
+    const properties = definition?.inputSchema?.properties as Record<string, unknown> | undefined;
+    const hasSchema = properties !== undefined;
+    const unsupported = !this.supportsInsightOptions();
+    let notice = wantsInsight && unsupported ? "Insight arguments unavailable on this backend; ordinary recall only." : undefined;
+    let args: Record<string, unknown> = baseArgs;
+    if (wantsInsight && !unsupported) {
+      args = { ...baseArgs, include_insights: true };
+      if (params.includeLearnedSources && (!hasSchema || properties.include_learned_sources)) {
+        args.include_learned_sources = true;
+      } else if (params.includeLearnedSources) {
+        notice = "Saved experience/pattern retrieval unavailable on this backend.";
+      }
+      if (params.currentContext !== undefined && (!hasSchema || properties.current_context)) args.current_context = params.currentContext;
+      if (params.goals !== undefined && (!hasSchema || properties.goals)) args.goals = params.goals;
+    }
+    type RawEngage = {
+      context?: string; results?: Array<Record<string, unknown>>;
+      source_krefs?: string[]; deduplicated?: boolean;
+      insight_brief?: unknown; synthesis_request?: unknown; learned_source_status?: unknown;
+    };
+    let raw: RawEngage;
+    try {
+      raw = await this.transport.call<RawEngage>("kumiho_memory_engage", args);
+    } catch (err) {
+      // Retry only a schema rejection naming a newly supplied argument.
+      // Never mask auth, timeouts, arbitrary 400s or unsupported whole tools.
+      const message = err instanceof Error ? err.message : "";
+      const newArgument = /include_insights|include_learned_sources|current_context|goals/i.test(message);
+      const rejected = /unexpected keyword|unknown (?:argument|parameter|field)|unrecognized (?:argument|parameter|field)|extra inputs are not permitted|additional propert/i.test(message);
+      if (!(wantsInsight && !unsupported && newArgument && rejected)) throw err;
+      this.insightArgumentsUnsupported = true;
+      notice = "Insight arguments rejected by this backend; ordinary recall only.";
+      raw = await this.transport.call<RawEngage>("kumiho_memory_engage", baseArgs);
+    }
+    // Never truncate evidence or change snapshot fingerprints. Omit an
+    // oversized packet intact with a visible notice instead.
+    const boundedObject = (value: unknown, maxChars: number): Record<string, unknown> | undefined => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+      if (JSON.stringify(value).length <= maxChars) return value as Record<string, unknown>;
+      notice = [notice, "Oversized insight packet omitted; do not infer from missing evidence."].filter(Boolean).join(" ");
+      return undefined;
+    };
+    const brief = boundedObject(raw.insight_brief, 12000);
+    const request = boundedObject(raw.synthesis_request, 64000);
+    const status = boundedObject(raw.learned_source_status, 8000);
+    const validRequest = request?.schema_version === 1 && Array.isArray(request.sources)
+      && Array.isArray(request.source_krefs)
+      && request.source_krefs.every((ref) => typeof ref === "string" && /^kref:\/\/[^\s?#]+\?r=[1-9][0-9]*$/.test(ref))
+      && request.sources.length === request.source_krefs.length
+      && request.sources.every((source, i) => source && typeof source === "object"
+        && source.kref === (request.source_krefs as string[])[i]);
+    if (wantsInsight && !validRequest && !notice) notice = "No usable synthesis packet returned; ordinary recall only.";
 
     const results = (raw.results ?? [])
       .map((entry) => mapMemoryEntry(entry))
@@ -647,6 +708,10 @@ export class KumihoClient {
         ? raw.source_krefs.filter((k): k is string => typeof k === "string" && k.length > 0)
         : results.map((entry) => entry.kref),
       deduplicated: raw.deduplicated === true,
+      ...(brief ? { insightBrief: brief } : {}),
+      ...(validRequest ? { synthesisRequest: request as InsightSynthesisRequest } : {}),
+      ...(status ? { learnedSourceStatus: status } : {}),
+      ...(notice ? { insightNotice: notice } : {}),
     };
   }
 

@@ -8,7 +8,7 @@ import { resolvePythonPath } from "../python-setup.js";
 const pythonSetupSource = readFileSync(
   new URL("../python-setup.ts", import.meta.url),
   "utf8",
-);
+).replace(/\r\n/g, "\n");
 
 describe("resolvePythonPath", () => {
   it("uses the configured venv python to launch the MCP module when only pythonPath is overridden", () => {

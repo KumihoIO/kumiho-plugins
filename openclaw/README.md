@@ -360,7 +360,7 @@ The plugin exposes 12 tools the AI can invoke during conversations:
 
 The plugin injects first-turn instructions teaching the agent the same two-reflex model the Claude plugin uses:
 
-- **Engage** (before responding): when the topic might have deeper history than the auto-recalled context shows, the agent calls `memory_engage` once with a query derived from the user's message. The server deduplicates identical recalls, so the automatic hook and the agent never do double work.
+- **Engage** (before responding): when the topic might have deeper history than the auto-recalled context shows, the agent calls `memory_engage` once with a query derived from the user's message. On insight-capable backends (or HTTP endpoints whose capability is not yet known), automatic recall uses ordinary retrieval to reserve the first `engage` for the host's current-question choice. This can add one explicit recall for questions needing synthesis; it prevents background prefetch from consuming the shared engage dedup window. Legacy discovered backends retain automatic engage.
 - **Reflect** (after responding): after a substantive exchange, the agent calls `memory_reflect` with structured captures. `source_krefs` from engage (or the auto-recalled memories) become DERIVED_FROM edges, so every capture traces back to what informed it.
 
 ### Example Interactions
@@ -489,7 +489,7 @@ host-side automation still differs by platform.
 | Tool syntax       | `kumiho_memory_engage(...)` / `kumiho_memory_reflect(...)` | `memory_engage(...)` / `memory_reflect(...)` |
 | Behavioral rules  | Discovery-first SKILL.md + SessionStart context | TypeScript hooks + injected memory instructions |
 | Session bootstrap | SessionStart hook + SKILL bootstrap         | TypeScript identity bootstrap in `before_prompt_build` |
-| Recall behavior   | Agent-triggered engage guided by SKILL      | Automatic engage in `before_prompt_build` + agent `memory_engage` |
+| Recall behavior   | Agent-triggered engage guided by SKILL      | Automatic recall + current-question agent `memory_engage` |
 | Capture behavior  | Agent-triggered `reflect` with captures     | Automatic `agent_end` buffering + agent `memory_reflect` captures |
 | Consolidation     | Agent-triggered                             | Threshold + idle timer + manual tool           |
 | Dream State       | `/dream-state` command                      | Config schedule + manual tool                  |
@@ -498,6 +498,44 @@ host-side automation still differs by platform.
 | Privacy model     | Raw transcripts stay local                  | Raw transcripts stay local + PII redaction     |
 | Creative memory   | Via graph skills                            | Built-in `creative_capture` / `creative_recall` |
 | Local artifacts   | SessionEnd hook                             | Built-in artifact manager                      |
+
+### Experience-informed insight
+
+The host chooses depth automatically: factual questions use ordinary recall,
+simple connections use available evidence, and comparisons needing deeper review
+request a synthesis packet on the first `memory_engage` when the backend supports
+it. Users do not need to toggle a mode. Selection follows usefulness and explicit
+user preferences, not the presence of words such as "decision" or "old". A full
+packet can still lead to a short answer; its input cost has already been spent.
+There is no new packet-depth parameter or separate routing-model call.
+
+Example internal call for a comparison requiring detailed review:
+
+```json
+{
+  "query": "Does the old parallelization lesson apply to this design?",
+  "includeInsights": true,
+  "includeLearnedSources": true,
+  "currentContext": "The new design isolates mutable state.",
+  "goals": ["Reduce latency without write contention"]
+}
+```
+
+`includeInsights` prepares bounded evidence for the current host model; it does not call another model. `includeLearnedSources` additionally retrieves saved experiences and pattern candidates with bounded source-health checks, requires `includeInsights`, and should be selected only when those records can help. Automatic/background recall never enables this extra retrieval or synthesizes an answer to a previous turn's question.
+
+The tool returns the intact `synthesis_request`, including pinned `source_krefs`, applicability caveats, budget information and the host output contract, plus `learned_source_status` when present. The host performs synthesis and then gives the user a natural answer. Old experiences remain useful when their conditions still apply; storage recency alone is not evidence that a lesson is true or obsolete. Hypotheses stay provisional and must not be captured as observed outcomes. Structural validation only checks format/reference membership, not semantic support.
+
+The adapter accepts synthesis packets up to 64,000 serialized characters, briefs up to 12,000 and learned-source status up to 8,000. Oversized or unsupported synthesis packets are omitted intact with a notice, never truncated into changed evidence. The agent tool emits the synthesis packet without duplicating its sources or brief. Direct client results expose `synthesisRequest`, `insightBrief`, `learnedSourceStatus` and any `insightNotice`; the standalone helper accepts the same options as its third argument:
+
+```typescript
+const engaged = await memory.engage("Does the old lesson apply?", 3, {
+  includeInsights: true,
+  includeLearnedSources: true,
+  currentContext: "Mutable state is now isolated.",
+});
+```
+
+Existing servers remain usable. MCP tool schemas determine support; unknown HTTP backends get one ordinary-recall retry only when they explicitly reject a new argument. Auth and other unrelated errors are not retried as compatibility failures. Custom projects continue project-scoped ordinary retrieval. If the backend returns no usable packet or a duplicate response, the tool reports synthesis unavailable rather than claiming insight occurred. The Python dependency floor is unchanged until the supporting core release is available; this integration alone does not install an unpublished core feature.
 
 ### Skill Ingestion
 

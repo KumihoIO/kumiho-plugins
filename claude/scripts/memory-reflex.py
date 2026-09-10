@@ -22,6 +22,7 @@ Run: fed a JSON hook payload on stdin by Claude Code; prints at most one
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
@@ -31,6 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import reflex_state as rs  # noqa: E402
+from reflex_insight import matching_insight, prompt_digest  # noqa: E402
 
 _DEFAULT_TTL_S = 900
 _DEFAULT_FLOOR = 3
@@ -234,7 +236,25 @@ def main(argv: list) -> int:
         # pushed into message history and re-sent on every later request, so
         # re-emitting the same block would accrue duplicate tokens every turn and
         # accelerate the very compaction this exists to survive.
-        if fresh and sha and sha != str(turn.get("last_sha") or "") and spent + len(block) <= budget:
+        # Synthesis is question-specific. Time freshness alone is insufficient:
+        # a cache from the preceding question must not drive a new answer.
+        insight = matching_insight(
+            cache, str(payload.get("prompt") or ""),
+            enabled=rs.gate("KUMIHO_REFLEX_INSIGHTS", default_true=False),
+            max_chars=_int_env("KUMIHO_REFLEX_INSIGHT_MAX_CHARS", 5120),
+        )
+        insight_fresh = 0 <= now - int(generated_at) < _int_env("KUMIHO_REFLEX_TTL_S", _DEFAULT_TTL_S)
+        insight_sha = hashlib.sha256(insight.encode("utf-8")).hexdigest() if insight else ""
+        if (insight and insight_fresh and insight_sha != turn.get("last_insight_sha")
+                and spent + len(insight) <= budget):
+            parts.append(insight)
+            spent += len(insight)
+            turn["last_insight_sha"] = insight_sha
+        elif (not insight or insight_sha != turn.get("last_insight_sha")) and (
+                fresh and sha and sha != str(turn.get("last_sha") or "")
+                and spent + len(block) <= budget):
+            # A complete insight packet already carries its source evidence.
+            # Prefer it when usable; ordinary recall remains the fallback.
             parts.append(block)
             turn["last_sha"] = sha
             spent += len(block)
@@ -300,6 +320,8 @@ def main(argv: list) -> int:
             "injected_chars": spent,
             "prompt": (str(payload.get("prompt") or "")[:_PROMPT_MAX_CHARS]
                        if rs.gate("KUMIHO_REFLEX_STORE_PROMPT") else ""),
+            "prompt_sha256": (prompt_digest(str(payload.get("prompt") or ""))
+                              if rs.gate("KUMIHO_REFLEX_STORE_PROMPT") else ""),
             "prompt_id": str(payload.get("prompt_id") or ""),
             "cwd": str(payload.get("cwd") or ""),
             "ts": now,

@@ -8,6 +8,14 @@ description: Persistent graph-native memory protocol — identity bootstrap, eng
 You have persistent graph-native memory via the `kumiho-memory` MCP server.
 You remember across sessions. Follow this protocol every session.
 
+User instructions take precedence over bootstrap, recall, and capture rules below.
+For a no-memory request, do not initiate memory reads or writes; honor narrower
+off-record or do-not-store instructions by suppressing writes in their scope.
+When the visible conversation already supplies sufficient evidence for the current
+request, skip engage, including bootstrap's broad engage, and answer from it.
+These instructions govern host-initiated calls; they cannot retract context that
+a host hook has already retrieved before the prompt is processed.
+
 ## Session bootstrap — once
 
 On the first user message of a new session, follow
@@ -78,6 +86,36 @@ relevant decision(s), the constraint(s) that must not be violated, the files
 in scope, and the source krefs. This is a checkpoint for reasoning, not text to
 repeat to the user. If the user corrects any premise, discard the receipt and
 rebuild it from the correction before continuing.
+
+## Insight from experience — adapt to the task
+
+Choose the depth yourself by expected usefulness, not trigger words; do not ask
+users to enable insight or select a mode each turn. Respect their requested depth,
+no-memory instructions, and off-record/write limits before applying these defaults.
+
+- **Factual recall:** use ordinary bounded recall and answer directly.
+- **Brief connection:** use evidence already available in the conversation or
+  ordinary recall. One short conditional hypothesis can name its supporting
+  evidence and the condition to check; a full insight packet is unnecessary.
+- **Detailed review:** when competing choices, changed premises, or past experiences
+  warrant checking applicability or source state, even for one important source,
+  choose `include_insights=true` on the turn's first and only engage if supported.
+  Preserve scope and recall budget; add brief `current_context`/`goals` only when useful. Add
+  `include_learned_sources=true` selectively when saved experiences or patterns
+  would help; it requires `include_insights=true` and adds graph reads.
+
+If engage was already used, reason from its evidence; never call it again to change
+mode. Reuse an exact-current-prompt insight packet while still usable. Older servers
+fall back to ordinary recall. These are host reasoning choices using existing
+boolean options, not a new depth API, router model, or keyword classifier.
+
+Answer naturally and preserve necessary uncertainty even in a short reply. Keep
+hypotheses separate from facts in reflect/consolidate/decompose; never promote one
+by repetition or storage. For detailed packet synthesis or an authorized learning
+workflow, read [Insight and experience](references/insight-and-experience.md).
+Leave that reference unloaded on factual or brief-connection turns. Experience,
+outcome, and pattern writes need the user's request or established authorization;
+do not ask again when already authorized.
 
 ## Optional workflows and skill discovery
 
@@ -206,8 +244,10 @@ skip captured commits at zero LLM cost).
 - Do not re-ask questions already answered this session; do not re-run
   completed work.
 - Respect "forget X" immediately via `kumiho_deprecate_item`.
-- Compare each memory's `created_at` to today's date; prefer recent
-  memories when they conflict with stale ones.
+- Age alone does not invalidate experience. Check event time, validity
+  conditions, explicit corrections/supersession, and current user intent.
+  `created_at` is storage time; use `event_date`/`observed_at` when available
+  and do not assume the newest stored statement wins.
 - After 20+ exchanges or at session end, call
   `kumiho_memory_consolidate` with a `summary` you wrote yourself from the
   conversation. Omit `session_id`; the bridge supplies the Codex thread id as

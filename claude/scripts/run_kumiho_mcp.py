@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bounded_proc
 
 
-DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.4.0"
+DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.5.0"
 MARKER_FILE = ".installed-packages.txt"
 #: Asking an existing venv what it has installed. This is on the server-start
 #: critical path, so it is short -- a venv that cannot answer in this long is
@@ -3994,6 +3994,9 @@ def _sanitize_placeholder_env_vars() -> None:
         "KUMIHO_REFLEX_LIMIT",
         "KUMIHO_REFLEX_MIN_INTERVAL_S",
         "KUMIHO_REFLEX_MAX_CHARS",
+        "KUMIHO_REFLEX_INSIGHTS",
+        "KUMIHO_REFLEX_LEARNED_SOURCES",
+        "KUMIHO_REFLEX_INSIGHT_MAX_CHARS",
         "KUMIHO_REFLEX_TTL_S",
         "KUMIHO_REFLEX_FLOOR",
         "KUMIHO_REFLEX_CONSOLIDATE_FLOOR",
@@ -4026,6 +4029,9 @@ _REFLEX_CONFIG_KEYS = (
     "KUMIHO_REFLEX_LIMIT",
     "KUMIHO_REFLEX_MIN_INTERVAL_S",
     "KUMIHO_REFLEX_MAX_CHARS",
+    "KUMIHO_REFLEX_INSIGHTS",
+    "KUMIHO_REFLEX_LEARNED_SOURCES",
+    "KUMIHO_REFLEX_INSIGHT_MAX_CHARS",
     "KUMIHO_REFLEX_TTL_S",
     "KUMIHO_REFLEX_FLOOR",
     "KUMIHO_REFLEX_CONSOLIDATE_FLOOR",

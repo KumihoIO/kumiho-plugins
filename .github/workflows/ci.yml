@@ -99,6 +99,8 @@ jobs:
         run: node codex/scripts/run_kumiho_mcp.mjs --doctor
 
   real-sdk:
+    env:
+      KUMIHO_REQUIRE_INSIGHT_CONTRACT: "1"
     name: Real SDK MCP (Codex + Claude; Cloud + CE; ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -125,7 +127,7 @@ jobs:
           export KUMIHO_CI_HOME="$HOME"
           test ! -e "$KUMIHO_CI_HOME/.kumiho/venv"
           KUMIHO_CLAUDE_PROVISION_SYNC=1 \
-          KUMIHO_CLAUDE_PACKAGE_SPEC='kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.4.0' \
+          KUMIHO_CLAUDE_PACKAGE_SPEC='kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.5.0' \
             node codex/scripts/run_kumiho_mcp.mjs --provision
           test -x "$KUMIHO_CI_HOME/.kumiho/venv/bin/python"
           KUMIHO_DOCTOR_OUTPUT="$(node codex/scripts/run_kumiho_mcp.mjs --doctor)"
@@ -150,7 +152,7 @@ jobs:
             throw "Hosted runner unexpectedly contains a pre-existing Kumiho venv"
           }
           $env:KUMIHO_CLAUDE_PROVISION_SYNC = "1"
-          $env:KUMIHO_CLAUDE_PACKAGE_SPEC = "kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.4.0"
+          $env:KUMIHO_CLAUDE_PACKAGE_SPEC = "kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.5.0"
           node codex/scripts/run_kumiho_mcp.mjs --provision
           if (-not (Test-Path -LiteralPath $KumihoPython -PathType Leaf)) {
             throw "Cold provisioning did not create the shared Windows venv"

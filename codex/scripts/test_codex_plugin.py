@@ -428,8 +428,22 @@ def test_python_probe_rejects_stdout_noise():
             fake.chmod(0o755)
         task_env = os.environ.copy()
         task_env["KUMIHO_PYTHON"] = str(fake)
+        # An installed ~/.kumiho/venv wins before KUMIHO_PYTHON. Isolate the
+        # OS account-home lookup so this test actually visits the bad candidate;
+        # HOME/USERPROFILE are intentionally ignored by the production launcher.
+        bootstrap = """
+import os from 'node:os';
+import { syncBuiltinESMExports } from 'node:module';
+import { pathToFileURL } from 'node:url';
+const [launcher, home] = process.argv.slice(1);
+const originalUserInfo = os.userInfo;
+os.userInfo = (...args) => ({ ...originalUserInfo(...args), homedir: home });
+syncBuiltinESMExports();
+process.argv = [process.execPath, launcher, '--doctor'];
+await import(pathToFileURL(launcher).href);
+"""
         result = _run_checked(
-            [node, str(NODE_LAUNCHER), "--doctor"],
+            [node, "--input-type=module", "-e", bootstrap, str(NODE_LAUNCHER), temp],
             cwd=_PLUGIN,
             env=task_env,
             timeout=20,
@@ -1876,6 +1890,7 @@ def test_isolated_codex_plugin_add_and_mcp_get():
             "scripts/run_kumiho_ce.py",
             "scripts/run_kumiho_cloud.py",
             "scripts/codex_thread_context.py",
+            "scripts/sdk_tool_annotations.py",
             "scripts/thread_id_bridge.mjs",
         ):
             installed_file = installed_root / relative

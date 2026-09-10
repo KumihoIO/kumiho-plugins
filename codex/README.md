@@ -7,6 +7,20 @@ the Codex CLI and Codex in the ChatGPT desktop app — backed by the same
 does not currently load native plugins; use the legacy/manual MCP registration
 at the end of this guide for IDE sessions.
 
+## Experience-informed answers
+
+The memory skill automatically chooses ordinary recall, a brief connection, or
+detailed insight according to the question and available evidence. No per-question
+mode switch is needed. Detailed insight requires a capable Kumiho backend and
+can connect current decisions to earlier experiences, outcomes, and changed premises. Older evidence
+remains useful when its conditions still apply. Responses stay provisional
+where support is incomplete, and ordinary recall works on older servers.
+
+See [integration and rollout](https://github.com/KumihoIO/kumiho-plugins/blob/main/docs/BELIEF_INSIGHT_INTEGRATION.md) for backend
+requirements, optional prefetch settings, and validation limits. Local provisioning
+requires the published kumiho-memory 1.5.0 or newer. Remote servers must advertise
+the capability; ordinary recall remains available when they do not.
+
 ## Native Codex plugin
 
 This repository exposes two parallel host packages:

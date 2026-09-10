@@ -3,6 +3,14 @@
 You have persistent graph-native memory via the `kumiho-memory` MCP server.
 You remember across sessions. Follow this protocol every session.
 
+User instructions take precedence over bootstrap, recall, and capture rules below.
+For a no-memory request, do not initiate memory reads or writes; honor narrower
+off-record or do-not-store instructions by suppressing writes in their scope.
+When the visible conversation already supplies sufficient evidence for the current
+request, skip engage, including bootstrap's broad engage, and answer from it.
+These instructions govern host-initiated calls; they cannot retract context that
+a host hook has already retrieved before the prompt is processed.
+
 ## Session bootstrap — once
 
 On the first user message, look up the `published` revision of
@@ -38,6 +46,33 @@ the returned `source_krefs` for reflect.
 (decisions, preferences, facts, corrections). Use absolute dates in
 capture titles ("on Jul 11", never "today"). Skip captures for trivial
 exchanges; pass `source_krefs` from engage for provenance.
+
+## Adaptive insight and experience
+
+Choose depth by usefulness without asking for a mode or toggle each turn. Honor
+user depth, no-memory, and off-record/write instructions. Ordinary factual recall
+needs a direct answer; a brief connection can use already available evidence or
+ordinary recall, with a short hypothesis, its evidence, and an applicability
+condition. Do not load the detailed lifecycle guide for these light turns.
+
+When competing choices, changed premises, or uncertain applicability warrant
+structured review (even for one important experience), add
+`include_insights=true` to the turn's first and only engage if supported. Preserve
+scope/budget. Add `include_learned_sources=true` selectively when saved experiences
+or patterns help; it requires `include_insights=true` and adds retrieval. Reuse an
+exact-current-prompt packet; never make a second engage to change depth. Older
+servers retain ordinary recall. Depth is a host judgment, not a keyword classifier,
+separate router model, or new API parameter. A shorter answer does not recover
+input tokens already spent on a packet.
+
+For detailed synthesis or authorized learning, read
+[the lifecycle guide](skills/kumiho-memory/references/insight-and-experience.md).
+Use JSON contracts internally and answer naturally without hiding material
+uncertainty. Structural validation does not verify semantic support; never promote
+a hypothesis through ordinary captures or start experience/outcome/pattern writes
+without the user's request or established authorization. User acceptance is not
+an observed successful outcome. Authorized shared memory supports continuity
+across models; that alone proves no performance gain.
 
 ## Session id — owned by Codex, never invented by the agent
 
@@ -78,8 +113,10 @@ skip captured commits at zero LLM cost).
 - Do not re-ask questions already answered this session; do not re-run
   completed work.
 - Respect "forget X" immediately via `kumiho_deprecate_item`.
-- Compare each memory's `created_at` to today's date; prefer recent
-  memories when they conflict with stale ones.
+- Age alone does not invalidate experience. Check event time, current
+  conditions, explicit corrections/supersession, and current user intent.
+  `created_at` is storage time; the newest stored statement does not
+  automatically outweigh an older applicable experience.
 - After 20+ exchanges or at session end, call
   `kumiho_memory_consolidate` with a `summary` you wrote yourself from the
   conversation. Omit `session_id`; the bridge supplies the Codex thread id as

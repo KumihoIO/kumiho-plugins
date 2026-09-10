@@ -38,6 +38,7 @@ VENDORED = _HERE / "_vendored_launcher.py"
 VENDORED_DEPS = (
     "bounded_proc.py",
     "codex_thread_context.py",
+    "sdk_tool_annotations.py",
     "run_kumiho_ce.py",
     "run_kumiho_cloud.py",
 )

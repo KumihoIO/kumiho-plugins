@@ -1,10 +1,10 @@
 # Privacy & Trust
 
 ## What stays local
-Full conversation transcripts, tool logs, images — local files only. Cloud stores summaries + pointers, not content.
+Use the configured CE or Cloud backend within the user's authorized scope. Selected summaries, structured experience records, and sanitized pattern proposals can be stored there. Artifact pointers are paths, not automatic file uploads; do not promise that every operation keeps all content local. Host-model processing is a separate boundary.
 
 ## What gets redacted
-PII redacted from summaries before reaching cloud. Raw PII never crosses the privacy boundary.
+Experience/pattern tools screen credentials and redact recognized PII before storage. These checks are best effort, not proof that arbitrary text is safe. Screen every field you send, and never include secrets or off-record material.
 
 ## Never store
 Credentials, API keys, tokens, passwords, payment details, anything marked off-record.

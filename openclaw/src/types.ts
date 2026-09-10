@@ -217,6 +217,21 @@ export interface MemoryRetrieveResult {
 // Composite two-reflex types (engage / reflect)
 // ---------------------------------------------------------------------------
 
+/** Optional host-driven synthesis; never enables provider calls. */
+export interface EngageInsightOptions {
+  includeInsights?: boolean;
+  includeLearnedSources?: boolean;
+  currentContext?: string;
+  goals?: string[];
+}
+
+/** Intact versioned backend packet; nested metadata stays in snake_case. */
+export interface InsightSynthesisRequest extends Record<string, unknown> {
+  schema_version: number;
+  source_krefs: string[];
+  sources: Array<Record<string, unknown>>;
+}
+
 /** Result of kumiho_memory_engage — recall + context building in one call. */
 export interface EngageResult {
   /** Pre-built context string from the backend (title + summary lines). */
@@ -227,6 +242,11 @@ export interface EngageResult {
   sourceKrefs: string[];
   /** True when the server deduplicated an identical recall within its window. */
   deduplicated?: boolean;
+  insightBrief?: Record<string, unknown>;
+  synthesisRequest?: InsightSynthesisRequest;
+  learnedSourceStatus?: Record<string, unknown>;
+  /** Capability fallback or packets omitted at the adapter boundary. */
+  insightNotice?: string;
 }
 
 /** A structured capture stored via kumiho_memory_reflect. */

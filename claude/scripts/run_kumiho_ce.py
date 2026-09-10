@@ -182,6 +182,11 @@ def main() -> None:
     if args[:1] == ["--module"] and len(args) >= 2:
         module = args[1]
         sys.argv = [module, *args[2:]]
+        if module == "kumiho.mcp_server":
+            from sdk_tool_annotations import run_mcp_server
+
+            run_mcp_server()
+            return
         runpy.run_module(module, run_name="__main__")
         return
     if args[:1] == ["--script"] and len(args) >= 2:
@@ -198,9 +203,9 @@ def main() -> None:
         exec(compile(args[1], "<kumiho-ce-code>", "exec"), {"__name__": "__main__"})
         return
 
-    from kumiho.mcp_server import main as run_server
+    from sdk_tool_annotations import run_mcp_server
 
-    run_server()
+    run_mcp_server()
 
 
 if __name__ == "__main__":
