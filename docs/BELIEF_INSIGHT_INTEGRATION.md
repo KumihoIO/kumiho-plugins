@@ -1,10 +1,10 @@
 # Belief insight integration
 
-This change prepares Claude/Codex plugin 0.22.0 and OpenClaw 0.7.0 for
-[Kumiho Memory PR #32](https://github.com/KumihoIO/kumiho-memory/pull/32).
-It does not merge or publish either package. Insight requires a backend that
-advertises `include_insights` on `kumiho_memory_engage`; installing this plugin
-alone cannot add the backend feature.
+Claude/Codex plugin **0.22.0** and OpenClaw **0.7.0** integrate the published
+[Kumiho Memory 1.5.0](https://pypi.org/project/kumiho-memory/1.5.0/) core.
+Local provisioning requires `kumiho-memory[all]>=1.5.0`. Remote deployments
+must advertise `include_insights` on `kumiho_memory_engage`; installing a local
+plugin does not update a remote server.
 
 ## User behavior
 
@@ -91,16 +91,12 @@ validated source packet.
 3. Release these companion plugins and exercise one decision/experience query
    on each host, including an old experience whose conditions changed.
 
-The existing published dependency floors remain unchanged deliberately: a floor
-pointing at an unpublished version breaks fresh installations. Old servers keep
-ordinary recall. A later release can raise the floor to the actual published
-core version. Core support is determined by capabilities, not a guessed version.
-
-The existing real-SDK stdio smoke checks the insight contract when advertised.
-Set `KUMIHO_REQUIRE_INSIGHT_CONTRACT=1` for a release validation run that must fail
-if the installed backend lacks it. The check covers all six lifecycle tools and
-their read/write annotations through both hosts and Cloud/CE adapters. It does
-not write memories or certify response quality.
+The runtime floor now names the published core 1.5.0 across the launchers,
+setup paths, and distribution declarations. Capability checks remain active for
+older remote servers. CI requires `KUMIHO_REQUIRE_INSIGHT_CONTRACT=1`: the real
+SDK stdio matrix fails if any of the six lifecycle tools or their expected
+read/write annotations is absent in either host's Cloud/CE adapter. These checks
+do not write memories or certify response quality.
 
 Offline regression uses synthetic packets, old/new schema variants, scope and
 budget checks, and stale/different-question cache cases. A real Codex-to-Claude
@@ -140,3 +136,10 @@ Existing automatic hooks may retrieve/inject context before the agent reads the
 current prompt; they do not interpret free-form per-turn no-memory requests.
 This change does not add such a pre-hook privacy gate. Deployments requiring no
 background memory access must control the existing auto-recall/prefetch settings.
+
+## Release tags
+
+The synchronized Claude/Codex release uses `kumiho-memory-v0.22.0`, with
+`claude-v0.22.0` and `codex-v0.22.0` host aliases. OpenClaw uses
+`openclaw-v0.7.0`. All four tags identify the same verified integration commit.
+A Git tag does not itself publish the OpenClaw package to npm.

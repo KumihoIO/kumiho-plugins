@@ -1094,7 +1094,7 @@ const pipUpgrade = await runProvisionCommand(
 if (pipUpgrade.status !== 0) die("pip upgrade failed. See output above.");
 
 // 4b. Install packages --------------------------------------------------------
-const PACKAGES = ["kumiho[mcp]>=0.12.2", "kumiho-memory[all]>=1.4.0"];
+const PACKAGES = ["kumiho[mcp]>=0.12.2", "kumiho-memory[all]>=1.5.0"];
 log(`Installing: ${PACKAGES.join("  ")} ...`);
 console.log();
 
