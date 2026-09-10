@@ -501,7 +501,15 @@ host-side automation still differs by platform.
 
 ### Experience-informed insight
 
-On a backend exposing the insight API, the host can request a synthesis packet on its first `memory_engage` for a decision, diagnosis, changed premise, or applying past experience:
+The host chooses depth automatically: factual questions use ordinary recall,
+simple connections use available evidence, and comparisons needing deeper review
+request a synthesis packet on the first `memory_engage` when the backend supports
+it. Users do not need to toggle a mode. Selection follows usefulness and explicit
+user preferences, not the presence of words such as "decision" or "old". A full
+packet can still lead to a short answer; its input cost has already been spent.
+There is no new packet-depth parameter or separate routing-model call.
+
+Example internal call for a comparison requiring detailed review:
 
 ```json
 {

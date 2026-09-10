@@ -37,7 +37,7 @@ def format_insight(data: dict, max_chars: int = 5120) -> str:
         "health before applying old experience; hypotheses are provisional. "
         "Use supported pinned references only. This packet serves the current "
         "insight recall; do not repeat engage merely to obtain the same packet. "
-        "Answer naturally; JSON is an internal contract only.\n" + encoded +
+        "Choose the shortest useful answer with material caveats; a packet does not require a long answer or a forced hypothesis. JSON is an internal contract only.\n" + encoded +
         "\n</kumiho_insight>"
     )
     return block if 0 < len(block) <= min(max_chars, MAX_INSIGHT_CHARS) else ""

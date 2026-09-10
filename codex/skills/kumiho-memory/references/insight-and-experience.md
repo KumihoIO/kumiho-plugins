@@ -1,12 +1,40 @@
-# Insight and experience: optional host workflow
+# Insight and experience: adaptive host workflow
 
-Read this when a question benefits from past decisions, outcomes, or changed premises,
-or the user has authorized retaining experiences for future use. It extends ordinary
-engage/reflect; it is not a mandatory loop for every reply. Advertised tool schemas
-are the capability source of truth. These tools make no new model/provider call;
-you supply the reasoning, which still uses host computation and tokens.
+Read this for detailed source review or an authorized experience/outcome/pattern
+workflow. Leave it unloaded for factual answers and brief connections using
+available evidence. Advertised tool schemas are the capability source of truth.
+These tools make no new model/provider call; you supply the reasoning, which still
+uses host computation and tokens.
 
-## Choose the smallest useful recall
+## Choose depth by usefulness
+
+Make this choice as part of answering, without a separate router model, keyword
+classifier, or per-turn user toggle/question. Respect explicit user depth requests,
+no-memory instructions, and off-record/write limits. A mention of an old decision
+alone does not require a full insight packet.
+
+| Need in the current task | Host behavior |
+| --- | --- |
+| A remembered fact resolves the question | Ordinary bounded recall and a direct answer. |
+| Available evidence supports one useful connection | Brief reasoning from the conversation or ordinary recall; name the evidence and applicability condition. No full insight packet or lifecycle loop required. |
+| Alternatives, changed premises, or uncertain applicability warrant structured review, even of one important experience | Request the supported insight packet on the first engage; inspect relevant conditions, contrary evidence, and source state. |
+
+For example, recalling which database the team chose is factual. Suggesting that
+its known maintenance constraint may still favor it can be one conditional sentence
+from existing evidence. Reconsidering it after the operating team and workload
+changed may need structured review, even when only one past experience is relevant.
+Judge the uncertainty and value of checking it, not vocabulary or source count.
+
+These depths describe reasoning and presentation, not backend packet compaction.
+The API retains `include_insights` and `include_learned_sources` booleans; do not
+invent a `depth` parameter. Choosing ordinary recall before the call can avoid the
+extra packet input; a short answer after receiving a full packet cannot recover
+that input cost. Reuse a cached packet only when bound to the exact current prompt
+and still usable. Reuse may avoid duplicate retrieval and shorten the answer, but
+does not erase tokens already injected. Do not rewrite or trim a fingerprinted
+request to simulate a lighter packet.
+
+## Request a detailed source review
 
 Use the turn's **one** `kumiho_memory_engage`:
 
@@ -74,7 +102,9 @@ Give the user normal prose in their language, not the internal JSON or tool
 activity. For example: "The earlier pilot tested operating cost. That may still
 help, but the new operator changes one of the original constraints; check whether
 the remaining risk is deployment complexity or ongoing support." Do not force a
-hypothesis when a concise direct answer already resolves the question.
+hypothesis when a concise direct answer already resolves the question. Even one
+short hypothesis should make its supporting evidence and applicability condition
+clear. Brevity never justifies omitting uncertainty that could change the decision.
 
 ## Old does not mean invalid
 
