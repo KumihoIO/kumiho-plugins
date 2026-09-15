@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # Kumiho hosted MCP resource server. Two stages so the runtime image has no
-# compiler and no build cache: App Runner pulls this on every deploy.
+# compiler and no build cache. ECS runs the image by immutable ECR digest.
 
 FROM python:3.11-slim AS build
 
@@ -13,12 +13,13 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md requirements.lock ./
 COPY kumiho_cloud_mcp ./kumiho_cloud_mcp
 
 RUN python -m venv /opt/venv \
  && /opt/venv/bin/pip install --upgrade pip \
- && /opt/venv/bin/pip install .
+ && /opt/venv/bin/pip install --require-hashes -r requirements.lock \
+ && /opt/venv/bin/pip install --no-deps .
 
 
 FROM python:3.11-slim AS runtime

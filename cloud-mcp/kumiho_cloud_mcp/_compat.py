@@ -245,134 +245,28 @@ def _apply_annotations(tool: Any) -> Any:
     return tool.model_copy(update=update)
 
 
-def _restrict_to_connector_profile(server: Any, allowed: tuple) -> None:
-    """Wrap the low-level handlers so only ``allowed`` tools exist.
+async def listed_tools(server: Any) -> list:
+    """Read the static tool catalog using MCP 2.x's public handler API."""
+    entry = server.get_request_handler("tools/list")
+    if entry is None:
+        raise RuntimeError("MCP server has no tools/list handler")
+    return (await entry.handler(None, None)).tools
 
-    The MCP low-level ``Server`` stores one coroutine per request type in
-    ``server.request_handlers``. Wrapping there (rather than re-registering
-    through the decorators) keeps the SDK's own input validation and tool cache
-    intact — the cache is still populated with every tool, so a call to an
-    allowed tool validates exactly as before.
+
+async def _openai_auth_metadata(ctx: Any, call_next: Any) -> Any:
+    """Mirror auth policy after core MCP result validation/serialization.
+
+    MCP 2.x removes non-protocol fields from typed Tool results. OpenAI also
+    reads securitySchemes at the top level, so use public response middleware
+    to mirror the policy stored in the standard _meta extension point.
     """
-    import mcp.types as types
-
-    allowed_set = set(allowed)
-
-    original_list = server.request_handlers.get(types.ListToolsRequest)
-    warned: List[str] = []
-    if original_list is not None:
-
-        async def list_tools_handler(req: Any) -> Any:
-            result = await original_list(req)
-            inner = getattr(result, "root", result)
-            available = {t.name for t in getattr(inner, "tools", [])}
-            if not warned:
-                warned.append("done")
-                missing = sorted(allowed_set - available)
-                if missing:
-                    # The connector profile names 18 tools; anything the
-                    # installed SDK does not define simply cannot be exposed.
-                    logger.warning(
-                        "connector profile tools missing from the installed SDK",
-                        extra={"missing": missing, "exposed": len(allowed_set) - len(missing)},
-                    )
-            tools = [t for t in getattr(inner, "tools", []) if t.name in allowed_set]
-            order = {name: i for i, name in enumerate(allowed)}
-            tools.sort(key=lambda t: order.get(t.name, len(order)))
-            tools = [_apply_annotations(t) for t in tools]
-            return types.ServerResult(types.ListToolsResult(tools=tools))
-
-        server.request_handlers[types.ListToolsRequest] = list_tools_handler
-
-    _guard_call_tool(server, lambda: allowed_set)
-
-
-def _not_available(name: str) -> Any:
-    import mcp.types as types
-
-    return types.ServerResult(
-        types.CallToolResult(
-            isError=True,
-            content=[
-                types.TextContent(
-                    type="text",
-                    text=(
-                        f"Tool {name!r} is not available on the Kumiho Memory connector. "
-                        "Call tools/list to see what is."
-                    ),
-                )
-            ],
-        )
-    )
-
-
-def _guard_call_tool(server: Any, resolve_allowed) -> None:
-    """Refuse ``tools/call`` for anything the server does not list.
-
-    This is applied on *both* paths on purpose. Filtering ``tools/list`` alone
-    hides a tool from the model but leaves the JSON-RPC method reachable by
-    anyone who knows the name — and the full surface includes
-    ``kumiho_delete_project``. A resource server on the public internet must
-    enforce its own profile rather than trust the list to be the boundary.
-    """
-    import mcp.types as types
-
-    original = server.request_handlers.get(types.CallToolRequest)
-    if original is None:  # pragma: no cover - a server with no tools
-        return
-
-    async def handler(req: Any) -> Any:
-        name = req.params.name
-        allowed = resolve_allowed()
-        if inspect.isawaitable(allowed):
-            allowed = await allowed
-        if allowed and name not in allowed:
-            logger.warning(
-                "refused a tool call outside the connector profile", extra={"tool": name}
-            )
-            return _not_available(name)
-        return await original(req)
-
-    server.request_handlers[types.CallToolRequest] = handler
-
-
-def _listed_tool_names(server: Any):
-    """Lazily resolve (and cache) the names the server's own ``tools/list`` returns."""
-    import mcp.types as types
-
-    cache: List[set] = []
-
-    async def resolve() -> set:
-        if cache:
-            return cache[0]
-        handler = server.request_handlers.get(types.ListToolsRequest)
-        if handler is None:  # pragma: no cover
-            return set()
-        result = await handler(types.ListToolsRequest(method="tools/list"))
-        names = {tool.name for tool in getattr(result.root, "tools", [])}
-        cache.append(names)
-        return names
-
-    return resolve
-
-
-def _drop_unused_capabilities(server: Any) -> None:
-    """Hide resources/prompts the connector profile does not advertise.
-
-    The full server registers resource and prompt handlers that reach for an
-    ambient client. In hosted mode there is no ambient client, and the Claude
-    directory only reviews tools, so removing them shrinks the surface.
-    """
-    import mcp.types as types
-
-    for request_type in (
-        types.ListResourcesRequest,
-        types.ReadResourceRequest,
-        types.ListPromptsRequest,
-        types.GetPromptRequest,
-        types.ListResourceTemplatesRequest,
-    ):
-        server.request_handlers.pop(request_type, None)
+    result = await call_next(ctx)
+    if ctx.method == "tools/list" and isinstance(result, dict):
+        result = {**result, "tools": [
+            {**tool, "securitySchemes": tool["_meta"]["securitySchemes"]}
+            for tool in result.get("tools", [])
+        ]}
+    return result
 
 
 def build_server(
@@ -382,62 +276,86 @@ def build_server(
     restrict_capabilities: bool = True,
     create: Optional[Callable[..., Any]] = None,
 ) -> Any:
-    """Return a configured low-level MCP ``Server`` for the connector profile.
+    """Expose the Kumiho tool handlers through a native MCP 2.x server.
 
-    Returns the server; the chosen strategy is recorded on
-    ``server.__kumiho_profile_source__`` for the tests and the health endpoint.
+    Kumiho 0.13.0 already registers v2 constructor handlers and validates tool
+    inputs. Keep those implementations, project only the hosted capabilities,
+    and enforce the published tool list at dispatch as well as discovery.
+    No private handler maps or process-global SDK patches are used.
     """
+    import mcp.types as types
+    from mcp.server import Server
+
     if create is None:
-        import kumiho.mcp_server as ms  # type: ignore
-
+        import kumiho.mcp_server as ms
         create = ms.create_mcp_server
-
     text = instructions if instructions is not None else _connector_instructions()
-
     try:
         params = inspect.signature(create).parameters
-    except (TypeError, ValueError):  # pragma: no cover - builtins / C funcs
+    except (TypeError, ValueError):
         params = {}
+    kwargs = {}
+    source = "native" if "profile" in params else "shim"
+    if "profile" in params:
+        kwargs["profile"] = profile
+    if "instructions" in params:
+        kwargs["instructions"] = text
+    upstream = create(**kwargs)
+    if not callable(getattr(upstream, "get_request_handler", None)):
+        raise RuntimeError("The hosted MCP server requires MCP SDK 2.2 or newer")
+    original_list = upstream.get_request_handler("tools/list")
+    original_call = upstream.get_request_handler("tools/call")
+    if original_list is None or original_call is None:
+        raise RuntimeError("Kumiho SDK did not register the required tool handlers")
 
-    accepts_profile = "profile" in params
-    accepts_instructions = "instructions" in params
+    from .connector_profile import CONNECTOR_TOOLS
+    allowed = set(CONNECTOR_TOOLS)
+    order = {name: i for i, name in enumerate(CONNECTOR_TOOLS)}
 
-    if accepts_profile:
-        kwargs = {"profile": profile}
-        if accepts_instructions:
-            kwargs["instructions"] = text
-        server = create(**kwargs)
-        source = "native"
-        # The SDK's profile filters tools/list but (as of kumiho 0.13.0) still
-        # dispatches tools/call for unlisted names. Guard against whatever it
-        # actually lists, so a future profile change is picked up for free.
-        _guard_call_tool(server, _listed_tool_names(server))
-        logger.info("mcp server built via native profile support", extra={"profile": profile})
-    else:
-        server = create()
-        from .connector_profile import CONNECTOR_TOOLS
+    async def on_list_tools(ctx: Any, params: Any) -> types.ListToolsResult:
+        result = await original_list.handler(ctx, params)
+        tools = result.tools
+        if source == "shim":
+            tools = [tool for tool in tools if tool.name in allowed]
+            tools.sort(key=lambda tool: order[tool.name])
+        annotated = []
+        for tool in tools:
+            tool = _apply_annotations(tool)
+            annotated.append(tool.model_copy(update={"meta": {
+                **(tool.meta or {}),
+                "securitySchemes": [{"type": "oauth2", "scopes": ["memory"]}],
+            }}))
+        return result.model_copy(update={"tools": annotated})
 
-        _restrict_to_connector_profile(server, CONNECTOR_TOOLS)
-        source = "shim"
-        logger.warning(
-            "kumiho.mcp_server.create_mcp_server has no profile= parameter; "
-            "filtering tools locally (WP-A not landed yet)",
-            extra={"profile": profile, "tool_count": len(CONNECTOR_TOOLS)},
-        )
+    async def on_call_tool(ctx: Any, params: Any) -> types.CallToolResult:
+        catalog = await on_list_tools(ctx, None)
+        if params.name not in {tool.name for tool in catalog.tools}:
+            return types.CallToolResult(is_error=True, content=[types.TextContent(
+                type="text", text=f"Tool {params.name!r} is not available on the Kumiho Memory connector. Call tools/list to see what is.",
+            )])
+        # Upstream's v2 path validates inputSchema before dispatching to the
+        # same tenant-scoped, blocking tool implementations as its v1 path.
+        return await original_call.handler(ctx, params)
 
     if restrict_capabilities:
-        _drop_unused_capabilities(server)
+        @contextlib.asynccontextmanager
+        async def lifespan(_server):
+            async with upstream.lifespan(upstream) as state:
+                yield state
 
-    if not getattr(server, "instructions", None):
-        try:
-            server.instructions = text
-        except Exception:  # noqa: BLE001 - frozen server implementations
-            logger.warning("could not set server instructions")
-
-    try:
-        server.__kumiho_profile_source__ = source
-    except Exception:  # noqa: BLE001
-        pass
+        server = Server(
+            upstream.name, version=upstream.version, title=upstream.title,
+            description=upstream.description, instructions=text,
+            website_url=upstream.website_url, icons=upstream.icons,
+            lifespan=lifespan, on_list_tools=on_list_tools, on_call_tool=on_call_tool,
+        )
+    else:
+        server = upstream
+        server.instructions = text
+        server.add_request_handler("tools/list", original_list.params_type, on_list_tools)
+        server.add_request_handler("tools/call", original_call.params_type, on_call_tool)
+    server.middleware.append(_openai_auth_metadata)
+    server.__kumiho_profile_source__ = source
     return server
 
 
@@ -448,6 +366,7 @@ __all__ = [
     "hosted_mode",
     "redis_token_bridge",
     "build_server",
+    "listed_tools",
     "HAVE_UPSTREAM_REQUEST_CONTEXT",
     "PROVIDER_NAMES",
 ]

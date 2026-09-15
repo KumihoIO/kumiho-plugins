@@ -1,6 +1,7 @@
 name = "kumiho-mcp-edge"
 main = "src/index.ts"
 compatibility_date = "2025-06-01"
+compatibility_flags = ["allow_custom_ports"]
 
 # mcp.kumiho.cloud must resolve to this worker (Morpheus: DNS + route).
 routes = [
@@ -9,7 +10,8 @@ routes = [
 
 [vars]
 ENVIRONMENT = "production"
-# Replaced by the deploy workflow with the App Runner service URL.
+# Set only after validating origin DNS/SNI and the existing NLB TLS:8443 listener.
+# /healthz reaches the origin; /edge-health checks only the Worker.
 ORIGIN_URL = "http://localhost:8080"
 # Requests per window per client IP. MCP is chatty (one HTTP request per
 # JSON-RPC call in stateless mode), so this is deliberately generous.

@@ -1,3 +1,8 @@
+> Current rollout: existing Seoul NLB TLS 8443 -> ECS sidecar 8081.
+> Configure a verified HTTPS origin hostname; `allow_custom_ports` is explicit.
+> `/healthz` checks the origin. `/edge-health` checks only this Worker.
+> See [CHATGPT.md](../CHATGPT.md) for validation and deployment prerequisites.
+
 # kumiho-mcp-edge
 
 Cloudflare Worker in front of `mcp.kumiho.cloud`. It does three things and

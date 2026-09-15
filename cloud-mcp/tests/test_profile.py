@@ -187,3 +187,12 @@ async def test_resource_and_prompt_capabilities_are_not_advertised(app, control_
     assert "tools" in capabilities
     assert capabilities.get("resources") is None
     assert capabilities.get("prompts") is None
+
+
+async def test_every_tool_declares_oauth_for_chatgpt(app, control_plane, keypair):
+    async with client_for(app, control_plane) as http:
+        tools = await _tools(http, keypair.sign(base_claims()))
+    for tool in tools:
+        expected = [{"type": "oauth2", "scopes": ["memory"]}]
+        assert tool["securitySchemes"] == expected
+        assert tool["_meta"]["securitySchemes"] == expected

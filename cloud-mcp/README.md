@@ -1,3 +1,7 @@
+> **Current ChatGPT/Codex rollout:** see [CHATGPT.md](CHATGPT.md). The active path
+> uses MCP 2.2.0 and a sidecar in the existing Seoul Kumiho ECS task. The App Runner
+> setup below documents the original PR #80 design.
+
 # kumiho-cloud-mcp
 
 The hosted MCP **resource server** behind `https://mcp.kumiho.cloud/mcp` — the

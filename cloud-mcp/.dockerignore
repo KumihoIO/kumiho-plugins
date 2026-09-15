@@ -16,3 +16,6 @@ build
 *.egg-info
 DIRECTORY.md
 PRIVACY.md
+
+*.log
+.local

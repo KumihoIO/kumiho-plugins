@@ -54,6 +54,8 @@ def _healthz(port: int, timeout: float = 2.0) -> Optional[dict]:
 def pytest_collection_modifyitems(config, items):  # noqa: ARG001
     """Skip the whole directory when the backend is not up."""
     missing = []
+    if os.environ.get("KUMIHO_MCP_RUN_LIVE_CE") != "1":
+        missing.append("explicit KUMIHO_MCP_RUN_LIVE_CE=1 opt-in")
     if not port_open(CE_HOST, CE_PORT):
         missing.append(f"Kumiho CE gRPC at {CE_HOST}:{CE_PORT}")
     if not port_open(REDIS_HOST, REDIS_PORT):
@@ -62,7 +64,8 @@ def pytest_collection_modifyitems(config, items):  # noqa: ARG001
         return
     skip = pytest.mark.skip(reason="live backend not reachable: " + ", ".join(missing))
     for item in items:
-        item.add_marker(skip)
+        if Path(item.path).is_relative_to(Path(__file__).parent):
+            item.add_marker(skip)
 
 
 @pytest.fixture(scope="session")

@@ -46,9 +46,6 @@ def _snapshot() -> dict:
 
 
 def build_stub_server(delay: float = 0.0) -> Server:
-    server: Server = Server("kumiho-stub")
-
-    @server.list_tools()
     async def list_tools() -> List[types.Tool]:
         return [
             types.Tool(
@@ -58,7 +55,6 @@ def build_stub_server(delay: float = 0.0) -> Server:
             )
         ]
 
-    @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> Any:
         if name != "whoami":
             raise ValueError(f"unknown tool {name}")
@@ -74,5 +70,12 @@ def build_stub_server(delay: float = 0.0) -> Server:
         snapshot = await asyncio.to_thread(work)
         return [types.TextContent(type="text", text=json.dumps(snapshot))]
 
+    async def on_list_tools(ctx, params):
+        return types.ListToolsResult(tools=await list_tools())
+
+    async def on_call_tool(ctx, params):
+        return types.CallToolResult(content=await call_tool(params.name, params.arguments or {}))
+
+    server = Server("kumiho-stub", on_list_tools=on_list_tools, on_call_tool=on_call_tool)
     server.__kumiho_profile_source__ = "stub"  # type: ignore[attr-defined]
     return server

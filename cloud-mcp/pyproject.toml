@@ -27,7 +27,7 @@ dependencies = [
     # manager from the ambient environment, so every tenant would share it.
     # app.py refuses to start on anything older outside dev mode.
     "kumiho-memory[all]>=1.4.0",
-    "mcp>=1.26.0",
+    "mcp>=2.2.0,<3",
     "starlette>=0.37,<1.0",
     "uvicorn[standard]>=0.30",
     "PyJWT[crypto]>=2.9",

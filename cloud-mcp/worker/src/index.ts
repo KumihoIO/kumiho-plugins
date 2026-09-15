@@ -1,8 +1,8 @@
 /**
  * Kumiho MCP edge worker — `mcp.kumiho.cloud`.
  *
- * A thin, never-caching proxy in front of the App Runner origin. Its whole job
- * is CORS for claude.ai, a per-IP brake, and streaming the body through
+ * A thin, never-caching proxy in front of the ECS origin. Its whole job
+ * is CORS for ChatGPT and Claude, a per-IP brake, and streaming the body through
  * untouched: MCP responses are Server-Sent Events, so buffering them here would
  * break the transport.
  */
@@ -27,19 +27,28 @@ function config(env: Env): RateLimitConfig {
 }
 
 async function forward(request: Request, env: Env, url: URL): Promise<Response> {
-  const origin = new URL(url.pathname + url.search, env.ORIGIN_URL);
+  // Assign paths instead of resolving them: a //host path must never turn
+  // this into a proxy to a caller-controlled host carrying their bearer token.
+  const origin = new URL(env.ORIGIN_URL);
+  if (env.ENVIRONMENT !== 'development' && origin.protocol !== 'https:') {
+    throw new Error('Production and staging origins must use HTTPS');
+  }
+  if (origin.origin === url.origin || origin.username || origin.password) {
+    throw new Error('Invalid or recursive MCP origin');
+  }
+  origin.pathname = url.pathname;
+  origin.search = url.search;
 
   const headers = new Headers(request.headers);
+  headers.delete('Host');
   headers.set('X-Forwarded-For', request.headers.get('cf-connecting-ip') || 'unknown');
   headers.set('X-Forwarded-Proto', 'https');
   headers.set('X-Forwarded-Host', url.hostname);
   headers.set('X-Real-IP', request.headers.get('cf-connecting-ip') || 'unknown');
 
-  const forwarded = new Request(origin.toString(), {
-    method: request.method,
+  // Request-to-Request copying keeps the streaming body and method intact.
+  const forwarded = new Request(new Request(origin.toString(), request), {
     headers,
-    // Streamed, not buffered: MCP POSTs answer with an SSE stream.
-    body: request.body,
     redirect: 'manual',
   });
 
@@ -66,7 +75,7 @@ export default {
       const preflight = handlePreflight(request);
       if (preflight) return preflight;
 
-      if (url.pathname === '/healthz' || url.pathname === '/edge-health') {
+      if (url.pathname === '/edge-health') {
         return withCors(
           new Response(
             JSON.stringify({

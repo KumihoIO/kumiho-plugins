@@ -1,0 +1,18 @@
+{
+  "runtime": "MCP 2.2.0 / linux-amd64",
+  "tools": 18,
+  "stacking": {
+    "middle_band": false
+  },
+  "requests": 100,
+  "concurrency": 8,
+  "paths": "healthz and unauthenticated /mcp",
+  "p95_ms": 93.23,
+  "max_ms": 98.3,
+  "memory_limit_mib": 512,
+  "cpu_limit": 0.125,
+  "docker_working_set_mib": 89.27,
+  "cgroup_peak_mib": 121.94,
+  "authenticated_graph_load_tested": false,
+  "production_deployed": false
+}

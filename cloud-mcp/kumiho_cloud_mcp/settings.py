@@ -162,6 +162,8 @@ class Settings:
     scopes_supported: Tuple[str, ...] = field(default=SCOPES_SUPPORTED)
 
     # ---- derived -------------------------------------------------------
+    host_context: str = "claude"
+
     @property
     def dev(self) -> bool:
         """True when auth is disabled and a fixed fake tenant is used."""
@@ -227,7 +229,12 @@ def load_settings(environ: Optional[dict] = None) -> Settings:
         _env("KUMIHO_CONTROL_PLANE_URL", DEFAULT_CONTROL_PLANE_URL) or DEFAULT_CONTROL_PLANE_URL
     ).rstrip("/")
 
+    host_context = _env("KUMIHO_MCP_HOST_CONTEXT", "claude")
+    if host_context not in {"claude", "chatgpt", "codex"}:
+        raise ValueError("KUMIHO_MCP_HOST_CONTEXT must be claude, chatgpt, or codex")
+
     return Settings(
+        host_context=host_context,
         public_url=public_url,
         issuer=issuer,
         jwks_url=jwks_url,

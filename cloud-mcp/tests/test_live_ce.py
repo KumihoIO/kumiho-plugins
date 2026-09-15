@@ -84,20 +84,20 @@ class UvicornThread:
 
 
 @pytest.mark.skipif(
-    not _reachable(CE_ENDPOINT),
-    reason=f"no Kumiho CE server on {CE_ENDPOINT}",
+    os.environ.get("KUMIHO_MCP_RUN_LIVE_CE") != "1" or not _reachable(CE_ENDPOINT),
+    reason=f"opt in with KUMIHO_MCP_RUN_LIVE_CE=1 and a disposable CE server on {CE_ENDPOINT}",
 )
 async def test_live_round_trip_against_ce(capsys):
     from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.client.streamable_http import streamable_http_client
 
     with UvicornThread(_free_port()) as server:
-        async with streamablehttp_client(server.url) as (read, write, _get_session_id):
+        async with streamable_http_client(server.url) as (read, write):
             async with ClientSession(read, write) as session:
                 init = await session.initialize()
                 print("\n--- initialize ---")
-                print("server:", init.serverInfo.name, init.serverInfo.version)
-                print("protocol:", init.protocolVersion)
+                print("server:", init.server_info.name, init.server_info.version)
+                print("protocol:", init.protocol_version)
                 print("instructions (first 120):", (init.instructions or "")[:120])
 
                 listing = await session.list_tools()
@@ -107,8 +107,8 @@ async def test_live_round_trip_against_ce(capsys):
                 for tool in listing.tools[:3]:
                     print(
                         f"  {tool.name}: title={tool.annotations.title!r} "
-                        f"readOnly={tool.annotations.readOnlyHint} "
-                        f"destructive={tool.annotations.destructiveHint}"
+                        f"readOnly={tool.annotations.read_only_hint} "
+                        f"destructive={tool.annotations.destructive_hint}"
                     )
 
                 print("\n--- tools/call kumiho_memory_engage ---")
@@ -117,7 +117,7 @@ async def test_live_round_trip_against_ce(capsys):
                     {"query": "What did we decide about the hosted Claude connector?"},
                 )
                 text = result.content[0].text if result.content else ""
-                print("isError:", result.isError)
+                print("isError:", result.is_error)
                 print("payload:", text[:1500])
 
     from kumiho_cloud_mcp.connector_profile import CONNECTOR_TOOLS

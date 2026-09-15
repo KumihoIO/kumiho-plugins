@@ -63,7 +63,7 @@ async def test_initialize_carries_the_connector_instructions(live_server):
     from kumiho.mcp_server import CONNECTOR_INSTRUCTIONS
 
     async with connect(live_server.url) as conn:
-        info = conn.init.serverInfo
+        info = conn.init.server_info
         show("serverInfo", {"name": info.name, "version": info.version})
         show("instructions[:240]", (conn.init.instructions or "")[:240])
 
@@ -97,12 +97,12 @@ async def test_tools_list_is_the_reviewed_profile(live_server):
         assert annotations is not None, f"{tool.name} has no annotations"
         assert annotations.title == tool.title
         assert (
-            annotations.readOnlyHint is not None or annotations.destructiveHint is not None
+            annotations.read_only_hint is not None or annotations.destructive_hint is not None
         ), f"{tool.name} declares neither readOnlyHint nor destructiveHint"
-        assert annotations.openWorldHint is False
+        assert annotations.open_world_hint is False
 
-    destructive = sorted(t.name for t in tools if t.annotations.destructiveHint)
-    read_only = sorted(t.name for t in tools if t.annotations.readOnlyHint)
+    destructive = sorted(t.name for t in tools if t.annotations.destructive_hint)
+    read_only = sorted(t.name for t in tools if t.annotations.read_only_hint)
     show("destructive tools", destructive)
     show("read-only tools", read_only)
     assert destructive == ["kumiho_chat_clear", "kumiho_deprecate_item"]

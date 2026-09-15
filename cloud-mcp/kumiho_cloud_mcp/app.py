@@ -118,12 +118,12 @@ def _auth_response(settings: Settings, exc: AuthError) -> JSONResponse:
     )
 
 
-def _context_for(principal: Principal, request: Request) -> RequestContext:
+def _context_for(principal: Principal, request: Request, host_context: str = "claude") -> RequestContext:
     return RequestContext(
         tenant_id=principal.tenant_id,
         user_id=principal.user_id,
         auth_token=principal.token,
-        context="claude",
+        context=host_context,
         session_id=request.headers.get("x-kumiho-session-id") or None,
         client_id=principal.client_id,
         scopes=list(principal.scopes),
@@ -373,18 +373,13 @@ def create_app(settings: Optional[Settings] = None, *, server_factory=None) -> S
         dependency that predates ``kumiho_memory_space_profile`` /
         ``kumiho_memory_decompose`` silently exposes 16.
         """
-        import mcp.types as types
+        from ._compat import listed_tools
 
-        handler = mcp_server.request_handlers.get(types.ListToolsRequest)
-        if handler is None:  # pragma: no cover - a server with no tools
-            logger.error("mcp server registered no tools/list handler")
-            return []
         try:
-            result = await handler(types.ListToolsRequest(method="tools/list"))
-        except Exception:  # noqa: BLE001 - never let the check stop startup
+            names = [tool.name for tool in await listed_tools(mcp_server)]
+        except Exception:
             logger.exception("tool smoke check failed")
             return []
-        names = [tool.name for tool in getattr(result.root, "tools", [])]
         if len(names) != CONNECTOR_TOOL_COUNT:
             logger.error(
                 "connector exposes the wrong number of tools",
@@ -474,6 +469,7 @@ code{{background:#f3f3f3;padding:.1em .35em;border-radius:.25em}}</style>
 <h1>Kumiho Memory &mdash; MCP endpoint</h1>
 <p>This is an MCP resource server, not a website. Point an MCP client at
 <code>{settings.public_url}</code>.</p>
+<p>ChatGPT and Codex: connect this HTTPS endpoint using OAuth in developer mode.</p>
 <p>In Claude Code:<br><code>claude mcp add --transport http kumiho-memory {settings.public_url}</code></p>
 <p><a href="{settings.resource_documentation}">Documentation</a> &middot;
 <a href="{settings.prm_url}">Protected resource metadata</a></p>
@@ -581,7 +577,7 @@ code{{background:#f3f3f3;padding:.1em .35em;border-radius:.25em}}</style>
         if leased is None:
             return
 
-        ctx = _context_for(principal, Request(scope, receive))
+        ctx = _context_for(principal, Request(scope, receive), settings.host_context)
         logger.info(
             "mcp request",
             extra={
@@ -645,7 +641,7 @@ code{{background:#f3f3f3;padding:.1em .35em;border-radius:.25em}}</style>
             leased = await _lease_or_503(principal, scope, receive, send)
             if leased is None:
                 return
-            ctx = _context_for(principal, Request(scope, receive))
+            ctx = _context_for(principal, Request(scope, receive), settings.host_context)
 
             import kumiho
 

@@ -11,3 +11,6 @@ dist/
 build/
 node_modules/
 .wrangler/
+
+*.log
+.local/

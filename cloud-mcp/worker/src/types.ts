@@ -22,6 +22,8 @@ export interface RateLimitEntry {
  * the rest are Kumiho's own surfaces.
  */
 export const ALLOWED_ORIGINS = [
+  'https://chatgpt.com',
+  'https://chat.openai.com',
   'https://claude.ai',
   'https://www.claude.ai',
   'https://kumiho.io',
@@ -40,6 +42,9 @@ export const ALLOWED_REQUEST_HEADERS = [
   'x-api-key',
   'mcp-session-id',
   'mcp-protocol-version',
+  'mcp-method',
+  'mcp-name',
+  'mcp-param-name',
   'last-event-id',
 ] as const;
 

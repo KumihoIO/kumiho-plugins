@@ -9,7 +9,7 @@ is what proves the hand-off happened.
 from __future__ import annotations
 
 import json
-from typing import Any, List
+from typing import List
 
 import mcp.types as types
 import pytest
@@ -22,34 +22,27 @@ pytestmark = pytest.mark.anyio
 
 
 def _server_with(names: List[str]) -> Server:
-    server: Server = Server("fake")
-
-    @server.list_tools()
-    async def list_tools() -> List[types.Tool]:
-        return [
-            types.Tool(name=n, description=n, inputSchema={"type": "object", "properties": {}})
+    async def list_tools(ctx, params):
+        return types.ListToolsResult(tools=[
+            types.Tool(name=n, description=n, input_schema={"type": "object", "properties": {}})
             for n in names
-        ]
+        ])
 
-    @server.call_tool()
-    async def call_tool(name: str, arguments: dict) -> Any:
-        return [types.TextContent(type="text", text=json.dumps({"called": name}))]
-
-    return server
+    async def call_tool(ctx, params):
+        return types.CallToolResult(content=[
+            types.TextContent(type="text", text=json.dumps({"called": params.name}))
+        ])
+    return Server("fake", on_list_tools=list_tools, on_call_tool=call_tool)
 
 
 async def _list(server: Server) -> List[types.Tool]:
-    handler = server.request_handlers[types.ListToolsRequest]
-    result = await handler(types.ListToolsRequest(method="tools/list"))
-    return result.root.tools
+    return await _compat.listed_tools(server)
 
 
 async def _call(server: Server, name: str):
-    handler = server.request_handlers[types.CallToolRequest]
-    request = types.CallToolRequest(
-        method="tools/call", params=types.CallToolRequestParams(name=name, arguments={})
+    return await server.get_request_handler("tools/call").handler(
+        None, types.CallToolRequestParams(name=name, arguments={})
     )
-    return (await handler(request)).root
 
 
 # ---------------------------------------------------------------------------
@@ -85,14 +78,14 @@ async def test_native_path_still_blocks_calls_to_unlisted_tools():
 
     def create(profile=None, instructions=None):
         server = _server_with(["kumiho_memory_engage", "kumiho_delete_project"])
-        original = server.request_handlers[types.ListToolsRequest]
+        original = server.get_request_handler("tools/list")
 
-        async def only_engage(req):
-            result = await original(req)
-            keep = [t for t in result.root.tools if t.name == "kumiho_memory_engage"]
-            return types.ServerResult(types.ListToolsResult(tools=keep))
+        async def only_engage(ctx, params):
+            result = await original.handler(ctx, params)
+            keep = [t for t in result.tools if t.name == "kumiho_memory_engage"]
+            return types.ListToolsResult(tools=keep)
 
-        server.request_handlers[types.ListToolsRequest] = only_engage
+        server.add_request_handler("tools/list", original.params_type, only_engage)
         return server
 
     server = _compat.build_server(create=create)
@@ -100,9 +93,9 @@ async def test_native_path_still_blocks_calls_to_unlisted_tools():
     assert [t.name for t in await _list(server)] == ["kumiho_memory_engage"]
 
     blocked = await _call(server, "kumiho_delete_project")
-    assert blocked.isError is True
+    assert blocked.is_error is True
     assert "not available" in blocked.content[0].text
-    assert (await _call(server, "kumiho_memory_engage")).isError is not True
+    assert (await _call(server, "kumiho_memory_engage")).is_error is not True
 
 
 async def test_profile_only_signature_still_gets_instructions_set():
@@ -142,10 +135,10 @@ async def test_shim_attaches_annotations_and_titles():
     tools = {t.name: t for t in await _list(server)}
     engage = tools["kumiho_memory_engage"]
     assert engage.title == "Engage memory before responding"
-    assert engage.annotations.readOnlyHint is True
-    assert engage.annotations.openWorldHint is False
+    assert engage.annotations.read_only_hint is True
+    assert engage.annotations.open_world_hint is False
     forget = tools["kumiho_deprecate_item"]
-    assert forget.annotations.destructiveHint is True
+    assert forget.annotations.destructive_hint is True
     assert forget.annotations.title == "Forget a memory"
 
 
@@ -155,25 +148,26 @@ async def test_shim_blocks_calls_to_tools_outside_the_profile():
 
     server = _compat.build_server(create=create)
     blocked = await _call(server, "kumiho_delete_project")
-    assert blocked.isError is True
+    assert blocked.is_error is True
     assert "not available" in blocked.content[0].text
 
     allowed = await _call(server, "kumiho_memory_engage")
-    assert allowed.isError is not True
+    assert allowed.is_error is not True
 
 
 async def test_capabilities_that_need_an_ambient_client_are_dropped():
     def create():
         server = _server_with(["kumiho_memory_engage"])
 
-        @server.list_resources()
-        async def list_resources() -> List[types.Resource]:  # pragma: no cover
-            return []
+        async def list_resources(ctx, params):  # pragma: no cover
+            return types.ListResourcesResult(resources=[])
+
+        server.add_request_handler("resources/list", types.PaginatedRequestParams, list_resources)
 
         return server
 
     server = _compat.build_server(create=create)
-    assert types.ListResourcesRequest not in server.request_handlers
+    assert server.get_request_handler("resources/list") is None
 
 
 async def test_explicit_instructions_win():

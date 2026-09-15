@@ -12,8 +12,9 @@ import contextlib
 import json
 from typing import Any, AsyncIterator, Dict, Optional
 
+import httpx2
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 
 def result_payload(result: Any) -> Any:
@@ -38,7 +39,7 @@ class Connector:
     async def call(self, name: str, arguments: Optional[Dict[str, Any]] = None):
         """``(is_error, payload)`` — errors are values here, not exceptions."""
         result = await self.session.call_tool(name, arguments or {})
-        return bool(result.isError), result_payload(result)
+        return bool(result.is_error), result_payload(result)
 
     async def ok(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> Any:
         is_error, payload = await self.call(name, arguments)
@@ -50,7 +51,8 @@ class Connector:
 async def connect(
     url: str, headers: Optional[Dict[str, str]] = None
 ) -> AsyncIterator[Connector]:
-    async with streamablehttp_client(url, headers=headers or {}) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            init = await session.initialize()
-            yield Connector(session, init)
+    async with httpx2.AsyncClient(headers=headers or {}) as http:
+        async with streamable_http_client(url, http_client=http) as (read, write):
+            async with ClientSession(read, write) as session:
+                init = await session.initialize()
+                yield Connector(session, init)
