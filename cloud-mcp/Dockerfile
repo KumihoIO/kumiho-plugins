@@ -3,12 +3,13 @@
 # Kumiho hosted MCP resource server. Two stages so the runtime image has no
 # compiler and no build cache. ECS runs the image by immutable ECR digest.
 
-FROM python:3.11-slim AS build
+FROM python:3.11-slim-trixie@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534 AS build
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
 RUN apt-get update \
+ && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends build-essential \
  && rm -rf /var/lib/apt/lists/*
 
@@ -22,7 +23,7 @@ RUN python -m venv /opt/venv \
  && /opt/venv/bin/pip install --no-deps .
 
 
-FROM python:3.11-slim AS runtime
+FROM python:3.11-slim-trixie@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534 AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -39,7 +40,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 # Non-root, and a writable HOME that deliberately contains no ~/.kumiho:
 # hosted mode must never pick up ambient credentials.
-RUN useradd --system --create-home --uid 10001 kumiho
+# Apply Debian security fixes newer than the pinned Python base image.
+RUN apt-get update \
+ && apt-get upgrade -y \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --create-home --uid 10001 kumiho
 
 COPY --from=build /opt/venv /opt/venv
 
