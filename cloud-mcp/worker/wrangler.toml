@@ -3,9 +3,9 @@ main = "src/index.ts"
 compatibility_date = "2025-06-01"
 compatibility_flags = ["allow_custom_ports"]
 
-# mcp.kumiho.cloud must resolve to this worker (Morpheus: DNS + route).
+# Wrangler provisions DNS and TLS for this dedicated Worker hostname.
 routes = [
-  { pattern = "mcp.kumiho.cloud/*", zone_name = "kumiho.cloud" }
+  { pattern = "mcp.kumiho.cloud", custom_domain = true }
 ]
 
 [vars]
