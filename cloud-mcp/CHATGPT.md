@@ -80,10 +80,14 @@ Never enable CE dev mode on the public deployment.
 
 ## Remaining before a working public connection
 
-1. **OAuth control plane**: `KumihoIO/kumiho-control#3` is not deployed. The live
-   authorization-server metadata endpoint was 404. Integrate on current main,
-   verify ChatGPT client metadata / callback URLs, PKCE, audience, refresh and
-   revocation, then test the full login-to-tool flow with a disposable tenant.
+1. **OAuth control plane**: PR #3 is now integrated locally on current control
+   main in `codex/chatgpt-oauth` (`6c620f3`), reusing the existing control service.
+   ChatGPT CIMD, issuer-bearing callbacks, PKCE/resource binding, refresh and paid
+   expiry were validated: origin 256, Worker 50, deployment 14, and fresh AS-to-MCP
+   contract 25 tests passed. See control `docs/CHATGPT-OAUTH.md`. Production is
+   still undeployed; apply the reviewed DB migration, configure Firebase public
+   build variables/domain, deploy control and test the full login-to-tool flow.
+   The live metadata endpoint was previously 404 and has not been rechecked.
 2. **Origin and public route**: publish ECR image; verify origin DNS/ACM/SNI,
    add TLS 8443 and target 8081, bind `mcp.kumiho.cloud` to the Worker and validate
    streaming through the real Cloudflare -> NLB -> ECS path. Preserve the normal

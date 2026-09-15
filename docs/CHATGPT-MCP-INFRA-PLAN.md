@@ -153,6 +153,25 @@ EC2의 MemAvailable 값만으로 DB와의 동시 실행 안전성을 확정하�
 자세한 결과: `cloud-mcp/CHATGPT.md`.
 서버 배포 절차: kumiho-server `scripts/aws/MCP-SIDECAR.md`.
 
-다음 운영 선행 조건은 control-plane PR #3 OAuth 통합, ECR 이미지 게시,
+다음 운영 선행 조건은 통합된 control-plane OAuth의 DB/Firebase 설정 및 배포, ECR 이미지 게시,
 오리진 DNS·인증서 확인, NLB 8443/8081 및 Cloudflare 연결이다.
 공개 등록 전 동일 사용자의 동시 대화 버퍼 분리와 실제 OAuth 로그인도 검증해야 한다.
+
+
+## 2026-09-16 기존 control OAuth 통합
+
+사용자 요청에 따라 별도 OAuth 서비스를 만들지 않고 기존 `kumiho-control`에
+추가하는 구조를 적용했다. 기존 Firebase, Supabase, 서명 키, 도메인을 재사용한다.
+기존 control 리전은 유지하고 MCP 사이드카를 서울에서 시작한다.
+
+- control 최신 main `c9d7639` + OAuth PR #3 통합: `codex/chatgpt-oauth`, `6c620f3`.
+- ChatGPT CIMD 지원 방식 선택, 성공/실패 콜백 `iss`, resource 검증 및 기존 유료
+  플랜 만료 정책 적용. 운영 배포의 수동 승인 게이트와 서버 빌드 비밀 분리 보존.
+- control 256개, Worker 50개, Linux 배포 보호 14개 테스트 통과.
+- 새로 생성한 OAuth 토큰을 MCP 2.2에서 검증하는 계약 테스트 25개 통과.
+- 운영용 Linux 이미지 빌드·로컬 기동 및 임시 PostgreSQL migration/RLS 검사 통과.
+- 별도 OAuth 컴퓨팅 리소스는 추가하지 않음. 기존 요청량/DB/자동 확장 비용은
+  증가할 수 있다. 운영 migration·배포·원격 push/merge는 실행하지 않았다.
+
+다음 단계는 control `docs/CHATGPT-OAUTH.md`에 정리했다. OpenAI 심사 대기 중에도
+여기까지의 구현·검증은 완료할 수 있으며, 실제 Firebase/ChatGPT 연결 및 공개 등록은 남아 있다.
