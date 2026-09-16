@@ -192,7 +192,17 @@ async def authenticated_checks(access_token: str, writes: bool) -> None:
                         ids.append(issued["session_id"])
                     check("two distinct conversations", ids[0] != ids[1])
                     for index, sid in enumerate(ids):
-                        await call("kumiho_memory_reflect", {"session_id": sid, "response": f"Synthetic buffer {index} for {run_id}", "captures": [], "discover_edges": False})
+                        captures = [{
+                            "type": "decision", "title": "Reflect capture " + run_id,
+                            "content": "Synthetic test: keep hosted SDK handles scoped to the active caller.",
+                        }] if index == 0 else []
+                        _, reflected = await call("kumiho_memory_reflect", {
+                            "session_id": sid, "response": f"Synthetic buffer {index} for {run_id}",
+                            "space_path": space + "/reflect", "captures": captures, "discover_edges": False,
+                        })
+                        if captures:
+                            refs = reflected.get("stored_krefs", [])
+                            check("reflect stores a capture in its test space", reflected.get("captures_stored") == 1 and len(refs) == 1 and "/" + space + "/reflect/" in refs[0])
                     for index, sid in enumerate(ids):
                         _, data = await call("kumiho_chat_get", {"session_id": sid})
                         serialized = json.dumps(data)

@@ -265,13 +265,18 @@ def build_server(
     Kumiho 0.13.0 already registers v2 constructor handlers and validates tool
     inputs. Keep those implementations, project only the hosted capabilities,
     and enforce the published tool list at dispatch as well as discovery.
-    No private handler maps or process-global SDK patches are used.
+    Handler registration uses the native API. Credential-bound SDK handle
+    caches are isolated per tool call until the SDK provides that lifetime.
     """
     import mcp.types as types
     from mcp.server import Server
 
     if create is None:
         import kumiho.mcp_server as ms
+
+        from .sdk_caches import install_sdk_cache_isolation
+
+        install_sdk_cache_isolation()
         create = ms.create_mcp_server
     text = instructions if instructions is not None else _connector_instructions()
     try:
@@ -293,6 +298,7 @@ def build_server(
         raise RuntimeError("Kumiho SDK did not register the required tool handlers")
 
     from .connector_profile import CONNECTOR_TOOL_DESCRIPTIONS, CONNECTOR_TOOLS
+    from .sdk_caches import sdk_cache_scope
     from .sessions import (
         SESSION_DESCRIPTION,
         SESSION_TOOL_DESCRIPTIONS,
@@ -358,11 +364,12 @@ def build_server(
                 )], structured_content=exc.payload)
             arguments["session_id"] = session_id
             params = params.model_copy(update={"arguments": arguments})
-            with request_context(replace(request, session_id=session_id)):
+            with request_context(replace(request, session_id=session_id)), sdk_cache_scope():
                 return await original_call.handler(ctx, params)
         # Upstream's v2 path validates inputSchema before dispatching to the
         # same tenant-scoped, blocking tool implementations as its v1 path.
-        return await original_call.handler(ctx, params)
+        with sdk_cache_scope():
+            return await original_call.handler(ctx, params)
 
     if restrict_capabilities:
         @contextlib.asynccontextmanager

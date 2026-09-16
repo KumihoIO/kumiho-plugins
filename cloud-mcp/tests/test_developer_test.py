@@ -69,6 +69,7 @@ def fake_live_session(monkeypatch):
     class FakeSession:
         empty_search = False
         fail_cleanup = False
+        drop_captures = False
         item = ""
         buffers = {}
         clear_calls = []
@@ -107,7 +108,8 @@ def fake_live_session(monkeypatch):
                     data = {"messages": self.buffers.get(sid, [])}
             elif name == "kumiho_memory_reflect":
                 self.buffers[arguments["session_id"]] = [{"content": arguments["response"]}]
-                data = {"buffered": True}
+                refs = ["kref://CognitiveMemory/" + arguments["space_path"] + "/capture.conversation?r=1"] if arguments.get("captures") and not self.drop_captures else []
+                data = {"buffered": True, "captures_stored": len(refs), "stored_krefs": refs}
             elif name == "kumiho_chat_clear":
                 sid = arguments["session_id"]
                 self.clear_calls.append(sid)
@@ -195,4 +197,12 @@ def test_refresh_and_revocation_require_the_expected_token_contract(monkeypatch,
 @pytest.mark.anyio
 async def test_live_fixture_and_buffer_success(fake_live_session):
     await runner.authenticated_checks("test-only", writes=True)
+    assert all(not messages for messages in fake_live_session.buffers.values())
+
+
+@pytest.mark.anyio
+async def test_buffer_success_cannot_mask_failed_capture(fake_live_session):
+    fake_live_session.drop_captures = True
+    with pytest.raises(RuntimeError, match="reflect stores a capture"):
+        await runner.authenticated_checks("test-only", writes=True)
     assert all(not messages for messages in fake_live_session.buffers.values())

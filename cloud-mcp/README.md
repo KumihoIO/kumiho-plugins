@@ -224,6 +224,15 @@ tool. Validate this behavior in real ChatGPT before public submission.
 
 ### Authentication cache failures
 
+The SDK 0.13.0 project and bundle caches contain handles bound to a gRPC
+client and its bearer token. Hosted mode replaces those two caches with
+tool-call scopes, propagated through worker threads. A renewed OAuth token
+or another member of the same tenant therefore cannot reuse an earlier
+caller's handle. Handles are reused within a call and released from the cache
+when it ends. This adds a project lookup per storing call; pooled gRPC channels
+and the non-handle caches retain their existing lifetimes. Startup fails if an
+SDK upgrade changes the expected cache shape.
+
 JWKS keys are trusted only within their configured cache lifetime. A failed
 refresh after expiry rejects authentication; an authoritative empty JWKS
 revokes the cached keys. Failed cold fetches observe the refresh cooldown.
