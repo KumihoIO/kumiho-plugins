@@ -1,14 +1,9 @@
-"""Local mirror of the ``connector`` tool profile (plan §2.2).
+"""Reviewed hosted tool allowlist and conversation instructions.
 
-The SDK owns this: ``kumiho.mcp_server.create_mcp_server(profile="connector")``,
-``TOOL_ANNOTATIONS`` and ``CONNECTOR_INSTRUCTIONS`` are authoritative, and
-:mod:`kumiho_cloud_mcp._compat` prefers them whenever they exist. What lives
-here is the *fallback* — names, titles and hints copied from the SDK verbatim —
-so that a lagging dependency degrades to "some of the right tools" rather than
-"all 63 tools, unannotated, in the Claude directory".
-
-Keep this table byte-identical to the SDK's. ``tests/test_profile.py`` compares
-what the live server exposes against it, which is what catches drift.
+SDK handlers remain authoritative for implementation. The hosted wrapper always
+intersects their catalog with this list, including the native profile path, so
+SDK upgrades cannot silently expose new tools. Hosted session instructions
+intentionally differ from stdio's active-session fallback.
 """
 
 from __future__ import annotations
@@ -76,11 +71,13 @@ At the start of a conversation that might have history, call \
 returns the most relevant prior memories and the krefs they came from; keep \
 those krefs for `kumiho_memory_reflect`.
 
-Never invent a `session_id`. Omit it and the server resolves one, and keeps \
-resolving to that same one for the rest of the conversation. Every \
-session-scoped result — reflect, consolidate, chat — echoes back the \
-`session_id` and `session_id_source` it used; engage is read-only and reports \
-none.
+Never invent a `session_id` or reuse one from another conversation. If the \
+host supplies no conversation ID, the first session-scoped call without one \
+returns `session_required` and a new ID without accessing memory. Retry the \
+same call with that ID, then pass it on every reflect, consolidate, chat-get \
+or chat-clear call in this conversation. Session results echo the ID. \
+Engage is read-only and needs no buffer ID. Never infer a conversation ID \
+from the user's identity or an active-session pointer.
 
 During the conversation, call `kumiho_memory_recall` when the user refers to \
 something you do not have in context ("like we discussed", "the usual setup", \

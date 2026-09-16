@@ -272,11 +272,7 @@ def load_settings(environ: Optional[dict] = None) -> Settings:
         resource_documentation=_env("KUMIHO_MCP_DOCS_URL", DEFAULT_RESOURCE_DOCUMENTATION)
         or DEFAULT_RESOURCE_DOCUMENTATION,
         log_level=(_env("KUMIHO_MCP_LOG_LEVEL", "INFO") or "INFO").upper(),
-        # OFF by default. The deprecated HTTP+SSE transport doubles the
-        # authenticated surface (`/sse` plus an unauthenticated-by-design
-        # `/messages/` POST whose only tenant binding is an in-memory session
-        # map) for clients Claude no longer uses. Turn it on per deployment,
-        # knowingly, if some legacy client ever needs it.
+        # Kept to reject legacy deployment configs explicitly at startup.
         enable_sse=_env_bool("KUMIHO_MCP_ENABLE_SSE", default=False),
         json_response=_env_bool("KUMIHO_MCP_JSON_RESPONSE", default=False),
         # Dev-only. Lets the service start on a `kumiho`/`kumiho-memory` older

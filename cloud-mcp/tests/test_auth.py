@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import time
 
 import pytest
@@ -347,3 +349,11 @@ def test_extract_token_sources():
 def test_unused_fixture_shim(keypair: KeyPair, control_plane: FakeControlPlane):
     """Keeps the imported type names honest for readers of this file."""
     assert keypair.jwk["kid"] == control_plane.published_keys[0].jwk["kid"]
+
+
+@pytest.mark.parametrize("algorithm", [["ES256"], {"name": "ES256"}])
+async def test_malformed_algorithm_header_is_401(app, control_plane, algorithm):
+    header = base64.urlsafe_b64encode(json.dumps({"alg": algorithm}).encode()).rstrip(b"=").decode()
+    async with client_for(app, control_plane) as http:
+        response = await _post(http, {"authorization": f"Bearer {header}.e30.AA"})
+    assert response.status_code == 401

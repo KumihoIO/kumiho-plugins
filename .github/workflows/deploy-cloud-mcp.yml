@@ -3,6 +3,13 @@ name: Publish Cloud MCP image for ECS
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "cloud-mcp/**"
+      - ".github/workflows/deploy-cloud-mcp.yml"
+
+permissions:
+  contents: read
 
 env:
   AWS_REGION: ap-northeast-2
@@ -34,6 +41,7 @@ jobs:
           npm run typecheck
           npm test
   publish:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: test
     runs-on: ubuntu-latest
     environment: production

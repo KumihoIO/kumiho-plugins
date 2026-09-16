@@ -9,7 +9,7 @@ Shape of a request to ``/mcp``:
    raises and we answer 401 with the RFC 9728 challenge Claude follows to find
    the authorization server.
 2. A ``RequestContext`` and a tenant-scoped gRPC client are built (the client
-   pooled, keyed by tenant + token id, never outliving the token).
+   pooled, keyed by tenant, user and credential fingerprint).
 3. ``with kumiho.use_client(client), request_context(ctx), redis_token_bridge(...)``
    wraps the streamable-HTTP session manager for the whole request, so every
    tool handler — which runs in a worker thread via ``asyncio.to_thread`` and
@@ -20,7 +20,6 @@ Nothing tenant-scoped is stored in a module global or in ``os.environ``.
 
 from __future__ import annotations
 
-import contextvars
 import logging
 import os
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -32,7 +31,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
-from starlette.routing import Mount, Route
+from starlette.routing import Route
 
 from . import __version__
 from ._compat import (
@@ -65,11 +64,6 @@ from .settings import (
 
 logger = logging.getLogger("kumiho.cloud_mcp")
 
-_sse_session_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
-    "kumiho_cloud_mcp_sse_session", default=None
-)
-
-
 class _ASGIPassthrough(Response):
     """A Starlette ``Response`` that is really a raw ASGI app.
 
@@ -84,19 +78,6 @@ class _ASGIPassthrough(Response):
 
     async def __call__(self, scope, receive, send) -> None:  # noqa: D102
         await self.asgi_app(scope, receive, send)
-
-
-class _RecordingWriters(dict):
-    """``SseServerTransport._read_stream_writers`` that reports new session ids.
-
-    Registration happens synchronously inside the connecting task, so the
-    contextvar set here is the session id of *this* connection — no snapshot
-    diffing, no race with a concurrent connect.
-    """
-
-    def __setitem__(self, key, value) -> None:  # noqa: D105
-        _sse_session_var.set(getattr(key, "hex", str(key)))
-        super().__setitem__(key, value)
 
 
 def _auth_response(settings: Settings, exc: AuthError) -> JSONResponse:
@@ -298,6 +279,8 @@ def create_app(settings: Optional[Settings] = None, *, server_factory=None) -> S
     """Build the ASGI application. Importable as ``kumiho_cloud_mcp.app:app``."""
 
     settings = settings or load_settings()
+    if settings.enable_sse:
+        raise ValueError("Legacy SSE is unsupported in hosted mode; use Streamable HTTP at /mcp")
     configure_logging(settings.log_level)
 
     if settings.hosted:
@@ -362,8 +345,6 @@ def create_app(settings: Optional[Settings] = None, *, server_factory=None) -> S
         json_response=settings.json_response,
         stateless=True,
     )
-
-    sse_sessions: Dict[str, str] = {}
 
     async def _smoke_check_tools() -> list:
         """Ask the server what it will actually expose, and complain if wrong.
@@ -624,83 +605,13 @@ code{{background:#f3f3f3;padding:.1em .35em;border-radius:.25em}}</style>
         ),
     ]
 
-    # ---- optional SSE fallback (legacy MCP clients) ---------------------
-
-    if settings.enable_sse:
-        from mcp.server.sse import SseServerTransport
-
-        sse_transport = SseServerTransport("/messages/")
-        sse_transport._read_stream_writers = _RecordingWriters(  # type: ignore[assignment]
-            sse_transport._read_stream_writers
-        )
-
-        async def sse_endpoint(scope, receive, send) -> None:
-            principal = await _authorize(scope, receive, send)
-            if principal is None:
-                return
-            leased = await _lease_or_503(principal, scope, receive, send)
-            if leased is None:
-                return
-            ctx = _context_for(principal, Request(scope, receive), settings.host_context)
-
-            import kumiho
-
-            try:
-                with kumiho.use_client(leased.client), request_context(ctx), redis_token_bridge(
-                    principal.token
-                ):
-                    async with sse_transport.connect_sse(scope, receive, send) as (read, write):
-                        session_id = _sse_session_var.get()
-                        if session_id:
-                            sse_sessions[session_id] = principal.tenant_id
-                        try:
-                            await mcp_server.run(
-                                read, write, mcp_server.create_initialization_options()
-                            )
-                        finally:
-                            if session_id:
-                                sse_sessions.pop(session_id, None)
-            finally:
-                # An SSE stream holds its lease for the life of the connection,
-                # which is exactly what the lease refcount is for: the pool will
-                # not close this channel underneath a live stream.
-                await leased.release()
-
-        async def messages_endpoint(scope, receive, send) -> None:
-            principal = await _authorize(scope, receive, send)
-            if principal is None:
-                return
-            session_id = Request(scope, receive).query_params.get("session_id", "")
-            bound = sse_sessions.get(session_id)
-            if bound is not None and bound != principal.tenant_id:
-                logger.warning(
-                    "sse session/tenant mismatch",
-                    extra={"tenant_id": principal.tenant_id},
-                )
-                await JSONResponse(
-                    {
-                        "error": "forbidden",
-                        "error_description": "session belongs to another tenant",
-                    },
-                    status_code=403,
-                )(scope, receive, send)
-                return
-            await sse_transport.handle_post_message(scope, receive, send)
-
-        routes.extend(
-            [
-                Route("/sse", endpoint=sse_endpoint, methods=["GET"]),
-                Mount("/messages/", app=messages_endpoint),
-            ]
-        )
-
     app = Starlette(
         routes=routes,
         lifespan=lifespan,
         middleware=[
             Middleware(SecurityHeadersMiddleware),
-            Middleware(BodyLimitMiddleware, max_bytes=settings.max_body_bytes),
             Middleware(TimeoutMiddleware, seconds=settings.request_timeout_seconds),
+            Middleware(BodyLimitMiddleware, max_bytes=settings.max_body_bytes),
         ],
     )
     app.state.settings = settings

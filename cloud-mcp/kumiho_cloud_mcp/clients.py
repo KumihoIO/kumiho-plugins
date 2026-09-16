@@ -6,14 +6,16 @@ plane's discovery endpoint directly (rather than through the SDK's
 ``DiscoveryManager``, which writes an encrypted cache file keyed by machine id)
 and the client is constructed explicitly with the caller's own token.
 
-Clients are pooled per ``(tenant_id, token_id)`` because building a gRPC
-channel is expensive and a Claude conversation is many small requests. The
-entry never outlives the token that created it.
+Clients are pooled per tenant, user, token id and credential fingerprint because
+building a gRPC channel is expensive. Each request is authenticated before
+borrowing; idle entries expire after at most 15 minutes (with a 30-second
+cleanup floor).
 """
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import inspect
 import logging
 import time
@@ -155,16 +157,19 @@ class ClientLease:
     async def release(self) -> None:
         if self._released:
             return
-        self._released = True
-        await self._pool._release(self._entry)
+        # Timeouts cancel the request's scope, including its finally block.
+        # Finish releasing a retired channel even in that cancelled scope.
+        with anyio.CancelScope(shield=True):
+            self._released = True
+            await self._pool._release(self._entry)
 
 
 class ClientPool:
-    """Bounded LRU of gRPC clients keyed by ``(tenant_id, token_id)``.
+    """Bounded LRU of gRPC clients bound to the full authenticated credential.
 
-    ``token_id`` is in the key so a rotated credential never reuses the channel
-    built for the previous one, and the entry expires no later than the token
-    it was built from.
+    Rotated credentials never reuse the channel built for the previous token,
+    even when the issuer omits or repeats a token id. TTL follows token expiry,
+    subject to the cleanup floor below; every request is authenticated first.
 
     Every client is reachable from the pool, and every client leaves it through
     :meth:`_close` — expiry, LRU overflow, replacement and shutdown alike. A
@@ -180,11 +185,14 @@ class ClientPool:
     def __init__(self, settings: Settings, router: DiscoveryRouter) -> None:
         self.settings = settings
         self.router = router
-        self._entries: "OrderedDict[Tuple[str, str], _PooledClient]" = OrderedDict()
+        self._entries: "OrderedDict[Tuple[str, str, str, str], _PooledClient]" = OrderedDict()
         self._lock = anyio.Lock()
 
-    def _key(self, principal: Principal) -> Tuple[str, str]:
-        return (principal.tenant_id, principal.token_id or principal.user_id)
+    def _key(self, principal: Principal) -> Tuple[str, str, str, str]:
+        # jti is optional and issuer-controlled. Bind reuse to the actual
+        # credential as well, without retaining another plaintext token copy.
+        fingerprint = hashlib.sha256(principal.token.encode()).hexdigest()
+        return (principal.tenant_id, principal.user_id, principal.token_id or "", fingerprint)
 
     # -- public ----------------------------------------------------------
     async def acquire(self, principal: Principal) -> ClientLease:
@@ -207,20 +215,23 @@ class ClientPool:
             client=client, expires_at=time.monotonic() + self._ttl_for(principal), leases=1
         )
 
-        async with self._lock:
-            # A concurrent acquire for the same key may have won the race. Ours
-            # is already leased, so it becomes the pooled one and theirs retires
-            # — whoever holds that one keeps working until they let go.
-            displaced = self._entries.pop(key, None)
-            if displaced is not None:
-                displaced.retired = True
-            self._entries[key] = entry
-            self._entries.move_to_end(key)
-            evicted = self._retire_locked(time.monotonic())
-            if displaced is not None and displaced.leases <= 0:
-                evicted.append(displaced)
+        # Once built, ownership must reach the pool and caller even if the
+        # request deadline fires at the next lock checkpoint.
+        with anyio.CancelScope(shield=True):
+            async with self._lock:
+                # A concurrent acquire for the same key may have won the race. Ours
+                # is already leased, so it becomes the pooled one and theirs retires
+                # — whoever holds that one keeps working until they let go.
+                displaced = self._entries.pop(key, None)
+                if displaced is not None:
+                    displaced.retired = True
+                self._entries[key] = entry
+                self._entries.move_to_end(key)
+                evicted = self._retire_locked(time.monotonic())
+                if displaced is not None and displaced.leases <= 0:
+                    evicted.append(displaced)
 
-        await self._close_all(evicted)
+            await self._close_all(evicted)
         return ClientLease(self, entry)
 
     @contextlib.asynccontextmanager
@@ -269,8 +280,9 @@ class ClientPool:
             await self._close(entry.client)
 
     async def _close_all(self, entries: List[_PooledClient]) -> None:
-        for entry in entries:
-            await self._close(entry.client)
+        with anyio.CancelScope(shield=True):
+            for entry in entries:
+                await self._close(entry.client)
 
     async def _close(self, client: Any) -> None:
         close = getattr(client, "close", None)

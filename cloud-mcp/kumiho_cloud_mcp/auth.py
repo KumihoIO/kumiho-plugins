@@ -115,7 +115,7 @@ class JwksCache:
         self.timeout = timeout
         self._keys: Dict[str, PyJWK] = {}
         self._fetched_at: float = 0.0
-        self._last_attempt: float = 0.0
+        self._last_attempt: float = float("-inf")
         self._lock = anyio.Lock()
         self._client: Optional[httpx.AsyncClient] = None
 
@@ -123,6 +123,8 @@ class JwksCache:
         self._client = client
 
     async def get_key(self, kid: Optional[str]) -> PyJWK:
+        if kid is not None and (not isinstance(kid, str) or not kid):
+            raise AuthError("invalid_token", "invalid signing key id", token_present=True)
         now = time.monotonic()
         fresh = (now - self._fetched_at) < self.ttl
         if fresh and kid and kid in self._keys:
@@ -137,12 +139,14 @@ class JwksCache:
             if fresh and kid and kid in self._keys:
                 return self._keys[kid]
             if not fresh or (kid and kid not in self._keys):
-                if (now - self._last_attempt) >= self.cooldown or not self._keys:
+                if (now - self._last_attempt) >= self.cooldown:
                     await self._refresh()
 
-        if kid and kid in self._keys:
+        # A failed refresh must never extend the trust window of retired keys.
+        fresh = (time.monotonic() - self._fetched_at) < self.ttl
+        if fresh and kid and kid in self._keys:
             return self._keys[kid]
-        if not kid and len(self._keys) == 1:
+        if fresh and not kid and len(self._keys) == 1:
             return next(iter(self._keys.values()))
         raise AuthError(
             "invalid_token",
@@ -158,6 +162,8 @@ class JwksCache:
             response = await client.get(self.url, timeout=self.timeout)
             response.raise_for_status()
             document = response.json()
+            if not isinstance(document, dict) or not isinstance(document.get("keys"), list):
+                raise ValueError("JWKS must contain a keys array")
         except Exception as exc:  # noqa: BLE001 - network / parse errors alike
             logger.warning("jwks refresh failed", extra={"jwks_url": self.url, "error": str(exc)[:200]})
             return
@@ -173,12 +179,12 @@ class JwksCache:
                 logger.warning("skipping unusable jwks entry", extra={"error": str(exc)[:200]})
                 continue
             kid = entry.get("kid") or getattr(key, "key_id", None)
-            if kid:
+            if isinstance(kid, str) and kid:
                 keys[kid] = key
-        if keys:
-            self._keys = keys
-            self._fetched_at = time.monotonic()
-            logger.info("jwks refreshed", extra={"kids": sorted(keys), "jwks_url": self.url})
+        # An empty key set is authoritative too: the issuer may revoke all keys.
+        self._keys = keys
+        self._fetched_at = time.monotonic()
+        logger.info("jwks refreshed", extra={"kids": sorted(keys), "jwks_url": self.url})
 
 
 class ServiceTokenIntrospector:

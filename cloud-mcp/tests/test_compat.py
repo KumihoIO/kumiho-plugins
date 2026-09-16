@@ -62,11 +62,9 @@ async def test_native_profile_is_preferred_when_the_signature_accepts_it():
     assert seen["profile"] == "connector"
     assert "kumiho_memory_engage" in seen["instructions"]
     assert server.__kumiho_profile_source__ == "native"
-    # Native means we trust the SDK: no local filtering is applied.
-    assert {t.name for t in await _list(server)} == {
-        "kumiho_memory_engage",
-        "kumiho_delete_project",
-    }
+    # A newer native SDK cannot expand the reviewed hosted allowlist.
+    assert {t.name for t in await _list(server)} == {"kumiho_memory_engage"}
+    assert (await _call(server, "kumiho_delete_project")).is_error is True
 
 
 async def test_native_path_still_blocks_calls_to_unlisted_tools():

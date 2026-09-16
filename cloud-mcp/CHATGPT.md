@@ -1,7 +1,8 @@
 # Kumiho Memory: ChatGPT / Codex hosted MCP
 
-Status: local implementation validated, production endpoint not deployed.
-Updated 2026-09-15. Based on PR #80 plus current main.
+Status: OAuth control plane deployed; MCP production endpoint not yet deployed.
+Updated 2026-09-16. PR #101 includes the PR #80 implementation and adversarial
+review fixes; see [ADVERSARIAL-REVIEW.md](ADVERSARIAL-REVIEW.md).
 
 ## Implemented
 
@@ -23,7 +24,8 @@ Updated 2026-09-15. Based on PR #80 plus current main.
 - The Worker keeps forwarding pinned to its configured origin even for paths
   starting `//`; `/healthz` now reaches the MCP origin instead of reporting
   Worker-only health.
-- Manual image workflow publishes a Seoul ECR candidate; ECS rollout is owned
+- PR CI runs the hosted Python/Worker suites. Manual main-only image publication
+  produces a Seoul ECR candidate; ECS rollout is owned
   by `kumiho-server`, with a second NLB listener and the existing task size.
 
 No OpenAI model API call or API key is needed for this server preparation.
@@ -32,8 +34,8 @@ No OpenAI model API call or API key is needed for this server preparation.
 
 | Check | Result |
 | --- | --- |
-| Windows / Python 3.12 / MCP 2.2.0 | 148 passed, 11 skipped |
-| Linux image / Python 3.11 / locked MCP 2.2.0, 512 MiB | 148 passed, 11 skipped |
+| Windows / Python 3.12 / MCP 2.2.0 | 177 passed, 11 skipped |
+| Linux image / Python 3.11 / locked MCP 2.2.0, 512 MiB | 177 passed, 11 skipped |
 | Real MCP 2.x HTTP client | Legacy initialization and 2026-07-28 modes passed |
 | Profile and input validation | 18 tools, OAuth metadata, malformed arguments rejected, hidden delete rejected |
 | Worker | TypeScript check + 3 tests passed |
@@ -45,7 +47,7 @@ backends. It will not automatically use a developer's already-running CE/Redis.
 The expected warning is from a deliberately invalid HS256 token in a negative
 auth test. It does not indicate the ES256 production path accepts that token.
 
-### Container resource probe
+### Earlier container resource probe (before the review fixes)
 
 Image `kumiho-cloud-mcp:sidecar-mcp2`, Linux/amd64, non-root `10001:10001`,
 512 MiB memory limit, local 0.125 CPU hard limit, port 8081 bound to loopback only:
@@ -80,35 +82,41 @@ Never enable CE dev mode on the public deployment.
 
 ## Remaining before a working public connection
 
-1. **OAuth control plane**: PR #3 is now integrated locally on current control
-   main in `codex/chatgpt-oauth` (`6c620f3`), reusing the existing control service.
-   ChatGPT CIMD, issuer-bearing callbacks, PKCE/resource binding, refresh and paid
-   expiry were validated: origin 256, Worker 50, deployment 14, and fresh AS-to-MCP
-   contract 25 tests passed. See control `docs/CHATGPT-OAUTH.md`. Production is
-   still undeployed; apply the reviewed DB migration, configure Firebase public
-   build variables/domain, deploy control and test the full login-to-tool flow.
-   The live metadata endpoint was previously 404 and has not been rechecked.
-2. **Origin and public route**: publish ECR image; verify origin DNS/ACM/SNI,
-   add TLS 8443 and target 8081, bind `mcp.kumiho.cloud` to the Worker and validate
-   streaming through the real Cloudflare -> NLB -> ECS path. Preserve the normal
-   server deployment's sidecar support before activation.
-3. **Submission behavior**: complete the privacy/data-deletion review, descriptions,
-   screenshots/test account, domain challenge and verified OpenAI organization.
-   Business verification is pending according to the user; it is not the blocker
-   for local implementation.
+1. **End-to-end OAuth**: control PR #14 is merged and the existing App Runner
+   and control Worker serve OAuth discovery/JWKS/consent. Firebase authorized
+   domain, OAuth DB tables/RLS and cleanup are configured. Public metadata and
+   negative auth probes passed; a real Firebase login followed by signed
+   ChatGPT tool calls remains to be validated.
+2. **Origin and public route**: the Seoul sidecar network stack exists and
+   server PR #65 preserves the sidecar on future deployments. ECS still runs
+   the original task without MCP, and the MCP Worker is not deployed. Rebuild
+   the ECR candidate from the final reviewed merge commit, then perform the
+   ECS canary, TLS 8443 check, public Worker activation and rollback checks.
+   The earlier `0af330b` image predates the review fixes and must not be rolled out.
+3. **Submission behavior**: the user confirmed OpenAI business verification is
+   approved. Complete privacy/data-deletion review, publisher/support details,
+   screenshots, review account, domain challenge and app-directory submission.
+   Business verification is distinct from app approval.
 
 Authentication is currently enforced at the HTTP boundary with an OAuth challenge,
 including before tools/list. This is the account-linking path being prepared.
 Anonymous tool discovery and tool-result-level `_meta["mcp/www_authenticate"]`
 relink UX have not been implemented/tested; do not describe this as that flow.
 
-### Conversation state limitation
+### Conversation identity
 
-The hosted SDK can still resolve an omitted session_id through an active-user
-pointer. Tenant isolation tests are not proof that two chats from the same user
-have independent short-term buffers. Before public release, define and test an
-explicit host conversation/session contract. Do not guess IDs or share a global
-conversation pointer while claiming automatic per-chat isolation.
+The hosted wrapper prevents the SDK's active-user fallback for all four buffer
+tools. If the host supplies `X-Kumiho-Session-Id`, it is bound to the authenticated
+tenant, user, OAuth client and host context. Without it, the first call returns
+`session_required` and a fresh ID without accessing memory; the client retries
+with that ID and reuses it only within the current conversation. Same-user
+concurrent conversations, different users, host-ID conflicts and token rotation
+are regression-tested through real SDK handlers. This requires a real ChatGPT
+conversation test before submission: the server cannot infer host conversation
+boundaries from an OAuth token, and an agent must retain the issued ID.
+
+Legacy HTTP+SSE routes are removed. Enabling `KUMIHO_MCP_ENABLE_SSE` fails startup;
+MCP 2.x Streamable HTTP at `/mcp` is the supported transport.
 
 ## Deployment files
 

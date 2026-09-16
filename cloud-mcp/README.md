@@ -162,7 +162,7 @@ the payload it asserted on.
 | `KUMIHO_MCP_DISCOVERY_CACHE_SECONDS` | `600` | Per-tenant routing cache. |
 | `KUMIHO_MCP_CLIENT_CACHE_MAX` | `1024` | gRPC clients held, keyed by `(tenant_id, token_id)`. |
 | `KUMIHO_STACK_MIDDLE_BAND` | `0` | Read by the SDK, not by this service. `0` — the hosted default, pinned into the environment at startup — is **strong-only** revision stacking; `1` restores the SDK's two-band gate. See below. |
-| `KUMIHO_MCP_ENABLE_SSE` | `0` | Serve the legacy `/sse` + `/messages` transport. Off by default — see below. |
+| `KUMIHO_MCP_ENABLE_SSE` | `0` | Must remain `0`. Setting `1` fails startup; use Streamable HTTP. |
 | `KUMIHO_MCP_JSON_RESPONSE` | `0` | Answer POSTs with JSON instead of SSE (tests use this). |
 | `KUMIHO_MCP_LOG_LEVEL` | `INFO` | Root log level. |
 
@@ -201,14 +201,34 @@ telemetry which gate fired, alongside `stack_score`, `stack_runner_up` and
 `{"stacking": {"middle_band": false}}`. Turn the band back on per deployment
 once those numbers justify it — not before.
 
-### The SSE fallback is off by default
+### Transport and conversation identity
 
-`KUMIHO_MCP_ENABLE_SSE` defaults to `0`. Claude connects over streamable HTTP,
-and the deprecated HTTP+SSE transport roughly doubles the authenticated surface:
-a long-lived `GET /sse` stream plus a `POST /messages/` whose only binding
-between a message and a tenant is an in-process session map. Turn it on
-knowingly, per deployment, if some legacy client ever needs it — and note that
-`/messages/` then rejects a session id belonging to a different tenant with 403.
+Only MCP 2.x Streamable HTTP at `/mcp` is supported. The legacy `/sse` and
+`/messages/` routes are removed; `KUMIHO_MCP_ENABLE_SSE=1` fails startup.
+The old tenant-only session binding did not isolate users of one workspace.
+
+Buffer operations (reflect, consolidate, chat get, chat clear) require a
+conversation identity. A host can send `X-Kumiho-Session-Id`. Otherwise the
+first call without `session_id` returns a `session_required` tool error with a
+new opaque ID and performs no memory operation. Retry with that ID and reuse
+it only in the current conversation. A new conversation must obtain its own
+ID. The server cannot infer ChatGPT conversation boundaries from an OAuth
+user token; it never uses the SDK's shared active-session pointer.
+
+Backend buffer IDs are namespaced by authenticated tenant, user, OAuth client
+and host context, stable across token rotation. Explicit arguments cannot
+override a host-bound conversation or reuse another identity's issued ID.
+This separates working buffers; long-term memories remain workspace-scoped.
+Existing clients need to follow the new-ID retry instructions returned by the
+tool. Validate this behavior in real ChatGPT before public submission.
+
+### Authentication cache failures
+
+JWKS keys are trusted only within their configured cache lifetime. A failed
+refresh after expiry rejects authentication; an authoritative empty JWKS
+revokes the cached keys. Failed cold fetches observe the refresh cooldown.
+Request deadlines include body upload and preserve channel cleanup on
+cancellation.
 
 ### The startup contract
 
@@ -230,7 +250,6 @@ SDK's tenant-keyed caches. That has to fail the deploy, not the tenants.
 | `GET /.well-known/oauth-protected-resource` | none | RFC 9728. `Access-Control-Allow-Origin: *`. |
 | `GET /.well-known/oauth-protected-resource/mcp` | none | Same document, path-suffixed form. |
 | `GET\|POST\|DELETE /mcp` | required | Streamable HTTP, `stateless=True`. |
-| `GET /sse` + `POST /messages/` | required | Legacy SSE transport. **Not mounted unless `KUMIHO_MCP_ENABLE_SSE=1`.** |
 
 Every response carries `Cache-Control: no-store` and `X-Robots-Tag: noindex`.
 

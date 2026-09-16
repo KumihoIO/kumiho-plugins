@@ -31,11 +31,13 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import copy
 import importlib
 import inspect
+import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterator, List, Optional
 
 logger = logging.getLogger("kumiho.cloud_mcp.compat")
@@ -193,15 +195,7 @@ def redis_token_bridge(token: Optional[str]) -> Iterator[None]:
 
 
 def _connector_instructions() -> str:
-    """Prefer the SDK's canonical text; fall back to our copy."""
-    try:
-        import kumiho.mcp_server as ms  # type: ignore
-
-        text = getattr(ms, "CONNECTOR_INSTRUCTIONS", None)
-        if isinstance(text, str) and text.strip():
-            return text
-    except Exception:  # noqa: BLE001
-        pass
+    """Use the hosted conversation contract, independent of stdio defaults."""
     from .connector_profile import CONNECTOR_INSTRUCTIONS
 
     return CONNECTOR_INSTRUCTIONS
@@ -309,18 +303,34 @@ def build_server(
         raise RuntimeError("Kumiho SDK did not register the required tool handlers")
 
     from .connector_profile import CONNECTOR_TOOLS
+    from .sessions import (
+        SESSION_DESCRIPTION,
+        SESSION_TOOL_DESCRIPTIONS,
+        SESSION_TOOLS,
+        SessionError,
+        resolve_buffer_session,
+    )
     allowed = set(CONNECTOR_TOOLS)
     order = {name: i for i, name in enumerate(CONNECTOR_TOOLS)}
 
     async def on_list_tools(ctx: Any, params: Any) -> types.ListToolsResult:
         result = await original_list.handler(ctx, params)
-        tools = result.tools
-        if source == "shim":
-            tools = [tool for tool in tools if tool.name in allowed]
-            tools.sort(key=lambda tool: order[tool.name])
+        # An SDK upgrade must not silently expand the reviewed hosted surface.
+        tools = [tool for tool in result.tools if tool.name in allowed]
+        tools.sort(key=lambda tool: order[tool.name])
         annotated = []
         for tool in tools:
             tool = _apply_annotations(tool)
+            if tool.name in SESSION_TOOLS:
+                schema = copy.deepcopy(tool.input_schema)
+                schema.setdefault("properties", {})["session_id"] = {
+                    "type": "string", "minLength": 1, "maxLength": 512,
+                    "description": SESSION_DESCRIPTION,
+                }
+                tool = tool.model_copy(update={
+                    "input_schema": schema,
+                    "description": SESSION_TOOL_DESCRIPTIONS[tool.name] + SESSION_DESCRIPTION,
+                })
             annotated.append(tool.model_copy(update={"meta": {
                 **(tool.meta or {}),
                 "securitySchemes": [{"type": "oauth2", "scopes": ["memory"]}],
@@ -333,6 +343,19 @@ def build_server(
             return types.CallToolResult(is_error=True, content=[types.TextContent(
                 type="text", text=f"Tool {params.name!r} is not available on the Kumiho Memory connector. Call tools/list to see what is.",
             )])
+        request = current_request()
+        if params.name in SESSION_TOOLS and request is not None:
+            arguments = dict(params.arguments or {})
+            try:
+                session_id = resolve_buffer_session(request, arguments)
+            except SessionError as exc:
+                return types.CallToolResult(is_error=True, content=[types.TextContent(
+                    type="text", text=json.dumps(exc.payload),
+                )], structured_content=exc.payload)
+            arguments["session_id"] = session_id
+            params = params.model_copy(update={"arguments": arguments})
+            with request_context(replace(request, session_id=session_id)):
+                return await original_call.handler(ctx, params)
         # Upstream's v2 path validates inputSchema before dispatching to the
         # same tenant-scoped, blocking tool implementations as its v1 path.
         return await original_call.handler(ctx, params)

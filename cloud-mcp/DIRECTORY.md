@@ -70,7 +70,7 @@ connect; a workspace is created for you if you do not have one.
 https://mcp.kumiho.cloud/mcp
 ```
 
-**Transport**: Streamable HTTP (SSE fallback available at `/sse` + `/messages/`).
+**Transport**: MCP 2.x Streamable HTTP at `/mcp` (legacy SSE is not supported).
 
 **Authentication**: OAuth 2.1 — `oauth_dcr` and `oauth_cimd` both supported.
 The authorization server is `https://control.kumiho.cloud`; its RFC 8414
