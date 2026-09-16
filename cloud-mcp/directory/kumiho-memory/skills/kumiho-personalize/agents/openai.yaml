@@ -1,0 +1,11 @@
+interface:
+  display_name: "Kumiho Personalize"
+  short_description: "Save and review your Kumiho memory preferences"
+  default_prompt: "$kumiho-personalize Show my Kumiho memory preferences and change only what I approve."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "kumiho-memory"
+      description: "Read and save approved preference memories in Kumiho."
+      transport: "streamable_http"
+      url: "https://mcp.kumiho.cloud/mcp"

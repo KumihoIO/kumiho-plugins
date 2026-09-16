@@ -6,6 +6,56 @@ import { handlePreflight } from '../src/cors';
 const env = { ORIGIN_URL: 'https://origin.kumiho.cloud:8443', ENVIRONMENT: 'production' };
 const ctx = {} as ExecutionContext;
 
+test('review assets preserve video ranges without forwarding credentials or reaching MCP', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => { throw new Error('Origin must not be contacted'); }) as typeof fetch;
+  let seen: Request | undefined;
+  const configured = { ...env, REVIEW_ASSETS: { fetch: async (request: Request) => {
+    seen = request;
+    return new Response('video', { status: 206, headers: { 'Content-Type': 'video/mp4' } });
+  } } as unknown as Fetcher };
+  const url = 'https://mcp.kumiho.cloud/review/0123456789abcdef0123456789abcdef/demo.mp4';
+  try {
+    const result = await worker.fetch(new Request(url + '?private=discard', {
+      headers: { Authorization: 'Bearer test-only', Cookie: 'private=test', Range: 'bytes=0-4' },
+    }), configured, ctx);
+    assert.equal(result.status, 206);
+    assert.equal(result.headers.get('X-Robots-Tag'), 'noindex, nofollow');
+    assert.equal(seen!.url, url);
+    assert.equal(seen!.headers.get('Range'), 'bytes=0-4');
+    assert.equal(seen!.headers.get('Authorization'), null);
+    assert.equal(seen!.headers.get('Cookie'), null);
+    assert.equal((await worker.fetch(new Request(url, { method: 'POST', body: '{}' }), configured, ctx)).status, 405);
+    assert.equal((await worker.fetch(new Request(url), env, ctx)).status, 404);
+    assert.equal((await worker.fetch(new Request(url.replace('demo.mp4', 'secret.json')), configured, ctx)).status, 404);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('domain verification serves only the configured public token without contacting the origin', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => { calls++; throw new Error('Origin must not be contacted'); }) as typeof fetch;
+  try {
+    const url = 'https://mcp.kumiho.cloud/.well-known/openai-apps-challenge';
+    const configured = { ...env, OPENAI_APPS_CHALLENGE: 'test-public-domain-proof' };
+    const result = await worker.fetch(new Request(url), configured, ctx);
+    assert.equal(result.status, 200);
+    assert.equal(await result.text(), configured.OPENAI_APPS_CHALLENGE);
+    assert.equal(result.headers.get('Cache-Control'), 'no-store');
+    assert.match(result.headers.get('Content-Type')!, /^text\/plain/);
+    const head = await worker.fetch(new Request(url, { method: 'HEAD' }), configured, ctx);
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), '');
+    const missing = await worker.fetch(new Request(url), env, ctx);
+    assert.equal(missing.status, 404);
+    assert.equal(await missing.text(), '');
+    const post = await worker.fetch(new Request(url, { method: 'POST' }), configured, ctx);
+    assert.equal(post.status, 405);
+    assert.equal(post.headers.get('Allow'), 'GET, HEAD');
+    assert.equal(calls, 0);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test('ChatGPT CORS exposes the OAuth challenge; unrelated origins do not', () => {
   for (const origin of ['https://chatgpt.com', 'https://chat.openai.com', 'https://claude.ai']) {
     const result = handlePreflight(new Request('https://mcp.kumiho.cloud/mcp', {

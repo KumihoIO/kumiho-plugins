@@ -1,0 +1,11 @@
+interface:
+  display_name: "Kumiho Backfill"
+  short_description: "Review selected conversation history for Kumiho import"
+  default_prompt: "$kumiho-backfill Review only the selected conversation excerpts and propose memories to import."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "kumiho-memory"
+      description: "Store only reviewed backfill captures in Kumiho."
+      transport: "streamable_http"
+      url: "https://mcp.kumiho.cloud/mcp"

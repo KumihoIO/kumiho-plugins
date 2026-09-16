@@ -1,133 +1,90 @@
-# Kumiho Memory — ChatGPT / Codex submission package
+# Kumiho Memory — directory submission
 
-Status: **prepared locally; not submitted or published**. Updated 2026-09-16.
-Archetype: submission-ready preparation for a tool-only remote MCP app.
+Updated 2026-09-16. **Portal draft prepared; not submitted or published.**
+Tool-only remote MCP app, with no custom widget.
 
-## Confirmed publisher and launch choices
+## Listing and publisher
 
-| Field | Value |
+| Field | Prepared portal value |
 | --- | --- |
-| Display name | Kumiho Memory |
-| Publisher / verified identity to select | Kumiho Inc. |
-| Public support email | support@kumiho.io |
-| Initial availability | South Korea (`KR`) only |
-| Expansion | Global later, after country-specific readiness review |
-| Primary listing language | Korean |
-| Category | Productivity |
-| Submitter role | Owner — user-confirmed |
-| Business verification | Approved — user-confirmed |
-
-The organization identifier and review contact are in the local, gitignored
-`.local/submission-private.md` handoff. Select that same verified organization
-in the portal. Owner status has not been independently inspected in the portal.
-Country availability is a listing choice; it does not promise Korea-only data
-processing. The MCP task is in Seoul, while the existing control plane is in
-US East. Verify the full data-processing locations before any residency claim.
-
-## Files to use
-
-- `chatgpt-app-submission.json`: importable app info, 18 tool justifications,
-  exactly five positive scenarios and three negative scenarios.
-- `submission-assets/kumiho-fox.png`: selected app icon, original transparent
-  PNG, 1254 × 1254, 844,363 bytes. Confirm the portal accepts the dimensions;
-  no portal upload or automatic resize has been performed.
-- `submission-assets/kumiho-white.png`: original white wordmark, transparent
-  PNG, 949 × 326; use on dark backgrounds, not as the square directory icon.
-- `SUBMISSION-REVIEW.md`: source inspection, remaining output-schema warnings
-  and launch gates. The JSON does not contain findings or credentials.
-
-Both images were supplied by the user and copied byte-for-byte. No generated
-logo, visual redesign or image transformation was applied.
-
-## Portal fields not included in the JSON importer
-
-| Field | Prepared value / status |
-| --- | --- |
-| Submission type | With MCP; remote MCP only |
-| URL type | Universal |
-| MCP server URL | `https://mcp.kumiho.cloud/mcp` — live for developer testing; see DEVELOPER-TEST.md |
-| Authentication | OAuth through `https://control.kumiho.cloud` |
+| Name / publisher | Kumiho Memory / Kumiho Inc. |
+| Category / version | Productivity / 0.1.0 |
+| Availability | South Korea (`KR`); global expansion later |
+| Languages | English base (`en-US`), Korean translation (`ko-KR`) |
+| Support | support@kumiho.io; https://kumiho.io/en/contact |
 | Website | https://kumiho.io/ |
-| Support URL | https://kumiho.io/en/contact |
-| Privacy policy URL | https://kumiho.io/en/legal — Privacy Policy section |
-| Terms URL | https://kumiho.io/en/legal — Terms of Service section |
-| Domain challenge | Waiting for the portal-issued token; never invent a token |
-| Custom UI / CSP | No widget is exposed; no widget CSP domains to declare |
-| Review credentials | Dedicated demo account and workspace still need provisioning and live verification |
-| Screenshots | User confirmed a working ChatGPT connection; full scenario screenshots still pending |
+| Privacy and terms | https://kumiho.io/en/legal |
+| MCP URL | https://mcp.kumiho.cloud/mcp |
+| Authentication | OAuth through https://control.kumiho.cloud |
+| Business identity | Verified Kumiho business selected in the portal |
 
-The public contact/legal pages were fetched on 2026-09-16. They already name
-Kumiho Inc. and cover AI memory. The root `/privacy` and `/terms` URLs could not
-be verified; do not submit those guessed URLs. Review the actual policy against
-the hosted service before attesting. `PRIVACY.md` is an older engineering draft,
-not an approved replacement for the published policy.
+Private organization/draft identifiers and review instructions are in ignored
+`.local/` handoff files. Credentials are entered only in the portal's protected
+reviewer field. KR listing availability does not imply Korea-only processing:
+MCP and the review workspace are in Seoul; the control plane is in US East.
+The historical `PRIVACY.md` is an engineering draft, not approved policy.
 
-## Reviewer setup — required before running the supplied scenarios
+## Submission contents
 
-Provision a **dedicated, isolated demo workspace** with synthetic data only.
-Do not give reviewers the publisher's own account or production workspace.
-The following fixtures are specified here, not yet created:
+- `chatgpt-app-submission.json`: 18 tools, 54 annotation justifications,
+  five positive scenarios and three negative scenarios. Portal test prompts
+  are reconciled with observed ChatGPT paths.
+- `submission-assets/kumiho-fox.png`: original user-supplied fox PNG, uploaded
+  in both icon fields. The white wordmark remains a separate brand asset.
+- Three Korean starter prompts, release notes and Korean listing translation.
+- Portal-issued domain proof deployed and verified; live scan found 18 tools.
+- Dedicated review account containing only synthetic fixtures in
+  `CognitiveMemory/review-demo`, on Seoul's existing paid Neo4j instance.
+- A 90-second edited walkthrough made from actual ChatGPT browser frames:
+  `worker/public/review/7bf5db6c415e4fb6a7a5dc5c0d2b9e61/`. It identifies itself
+  as recorded frames with waiting time shortened, not continuous recording.
+  It contains no reviewer password or private conversation history.
 
-1. A project named `CognitiveMemory` with a `review-demo` space.
-2. A decision titled `서울 파일럿 리전 결정`: the pilot uses Seoul to reduce
-   latency for its initial Korean users. Include that rationale in the summary.
-3. A disposable item named `검토용 테스트 기억`, to retire in test 5; record its
-   actual item reference in the private reviewer instructions after creation.
-4. A prepared conversation buffer for test 4, created through the hosted
-   conversation-ID flow. Retain its actual ID in that test conversation only.
-5. A second demo conversation with a distinct buffer, to verify that clearing
-   the first one does not touch the second. Provide no second-tenant credentials.
+## Deployment and verification
 
-Use a review account that can complete sign-in without reviewer-side MFA, SMS,
-email confirmation or private-network access. Enter its credentials only in the
-portal's protected review fields, not in this repository, test prompts or chat.
-Reset the disposable fixture between review attempts using normal authorized
-workspace operations. Do not bypass tenant checks or disable authentication.
+The SDK fix isolates credential-bound project and bundle handles per tool call,
+preventing reuse of old credentials after token rotation or another user's call.
+Signing keys and regional database assignments were not changed.
 
-The scenarios in the JSON are **review instructions, not completed ChatGPT
-acceptance tests**. Run all eight through the final deployed endpoint, recording
-screenshots and expected results. The Python fixtures do not replace this step. Screenshots are useful supporting
-evidence; the current public submission guide does not list them as a universal
-requirement. Follow any additional requirements shown by the actual portal.
+- Hosted suite: **209 passed, 11 skipped**; Ruff passed.
+- Actual reviewer OAuth and hosted server: **47/47 checks passed**, including
+  nonempty reflect capture, separate buffers, cleanup, refresh and revocation.
+- Actual ChatGPT: all five positive workflows and three negative scenarios
+  exercised; see `DIRECTORY-ACCEPTANCE.md` for observed tools and limitations.
+- Summary and clear used `kumiho_memory_store` then `kumiho_chat_clear`; the
+  portal lists this observed path rather than an unobserved consolidate call.
+- Final runtime source `78b4209`, ECS revision **23**, completed with one task.
+  Image manifest digest:
+  `sha256:51a9ae649d7b53a89f8d518d026dfab5906f471a864868bddbcac4dc4050ac6f`.
+- PR #102 is merged; follow-up fixes and assets are in PR #103.
+- Worker TypeScript and all five proxy/asset tests passed. Public demo, MCP
+  health and domain verification paths return HTTP 200. The asset binding
+  returned the complete 973 KB MP4 even for a Range request; browser loading
+  succeeded without media errors.
+- No additional compute, database, signing key, subscription or R2 bucket.
 
-## Suggested starter prompts
+## Remaining submission steps
 
-- 전에 저장한 프로젝트 결정과 그 이유를 찾아줘.
-- 이 결정을 기억해 줘: 서울 파일럿은 응답 지연을 줄이기 위해 서울 리전을 사용한다.
-- 이번 대화의 핵심 결정을 요약해 저장하고 임시 버퍼를 정리해 줘.
+1. Public demo URL is live, loads as a 90-second video without media errors,
+   and is entered in the draft. Protected review notes contain final evidence.
+2. Check required fields. Legal attestations remain unchecked until the owner
+   confirms them at submission time.
+3. Submit and verify a receipt/status. Business verification, app review
+   approval and public publishing are separate states.
 
-## Initial release notes
+## Known limitations
 
-Kumiho Memory brings private-workspace memory storage, contextual recall,
-provenance and conversation summarization to ChatGPT and Codex through OAuth and
-MCP 2.x. This is the initial public submission, available first in South Korea.
-Writes and destructive modes are explicitly labeled; retiring a memory is not
-permanent erasure. Review credentials use a dedicated synthetic-data workspace.
+- All 18 tools omit `outputSchema`; add schemas paired with actual structured
+  success/error output. The portal recommends them; none are invented here.
+- The final Linux image scan reports one HIGH zlib finding, CVE-2026-85091.
+  Debian still marks the installed trixie package unfixed on 2026-09-16. The
+  affected nonblocking gzip formatted-write API was not found in the hosted
+  request path; that is not proof of non-reachability. Track before public
+  activation; see `ADVERSARIAL-REVIEW.md`.
+- A finite acceptance run does not guarantee future model tool choices.
 
-## Remaining release sequence
+## References
 
-The candidate image from `a1aca0e` is already deployed in ECS revision 21,
-with both targets healthy and the public Worker active. Real browser OAuth and
-direct read/write tests passed; the user also confirmed ChatGPT use. Later
-changes so far affect test scripts, documentation and the recorded Worker origin,
-not the application image contents.
-
-1. Finish PR #102 review and merge. Confirm the final runtime files still match
-   the deployed candidate before submission; rebuild if they differ.
-2. Re-scan the deployed image and assess the previously reported zlib finding.
-3. Provision the dedicated reviewer account and synthetic fixtures.
-4. Run all supplied ChatGPT scenarios, including destructive confirmations and
-   two-chat separation, and verify the reviewer login independently.
-5. Open the portal in the confirmed organization, import the JSON, upload the
-   fox icon, fill publisher/policy/test fields and select South Korea only.
-6. Install the exact generated domain-challenge token, scan the live tools,
-   reconcile the scan with this JSON and attach real screenshots if requested.
-7. Complete factual attestations and submit. App review approval and the later
-   publish action remain separate from business verification.
-
-## Official references
-
-- [Submission flow and required fields](https://developers.openai.com/plugins/deploy/submission)
-- [Tool descriptions, annotations and data minimization](https://developers.openai.com/plugins/app-guidelines)
-- [Public Kumiho legal page](https://kumiho.io/en/legal)
-- [Public Kumiho support page](https://kumiho.io/en/contact)
+- [Official submission flow](https://developers.openai.com/plugins/deploy/submission)
+- [App guidelines](https://developers.openai.com/plugins/app-guidelines)
+- [Debian zlib finding](https://security-tracker.debian.org/tracker/CVE-2026-85091)

@@ -2,8 +2,8 @@
 
 Updated 2026-09-16. Inspected the hosted MCP wrapper plus the locked
 `kumiho==0.13.0` / `kumiho-memory==1.5.0` implementations and called helpers.
-The importer JSON matches the current local descriptors. It has not been
-validated by the live OpenAI submission portal.
+The importer JSON matches the current local descriptors. The live portal has
+accepted its 18 tools and 54 justifications; actual submission is still pending.
 
 ## Corrections included
 
@@ -68,27 +68,27 @@ generation of the submission-import JSON.
 
 ## Public-release gates
 
-- The public MCP endpoint and real browser Firebase/OAuth + direct tool tests
-  are now live and verified; see `DEVELOPER-TEST.md`. A dedicated reviewer
-  account, the complete eight-scenario ChatGPT acceptance run and actual
-  screenshots are still pending. The publisher reported successful ChatGPT use
-  on 2026-09-16; that is not evidence that all submission scenarios passed.
+- The dedicated synthetic reviewer account passed 47 hosted OAuth/MCP checks.
+  Actual ChatGPT evidence and the final scenario retest are documented in
+  `DIRECTORY-ACCEPTANCE.md`; the edited demo uses captured browser frames.
+  Keep legal attestations pending until owner confirmation at submission time.
 - Availability is KR-only initially. Do not claim every service or account
   record is processed exclusively in Korea; the control plane is in US East.
 - Public policy exists at `https://kumiho.io/en/legal`; compare its promises
   against current deployment settings, deletion behavior and actual retention.
   The historical `PRIVACY.md` draft contains unconfirmed retention/residency
   statements and must not be treated as approved policy.
-- Domain verification requires the portal's exact token. Owner/business status
-  was provided by the user and must be selected in the matching organization.
-- Rebuild and scan the final image; see `ADVERSARIAL-REVIEW.md` for the earlier
-  unfixed zlib dependency finding and the real-login test requirement.
+- The portal verified the exact domain token and the Kumiho business identity
+  is selected. The final runtime is deployed as ECS revision 23.
+- The final image scan still reports one HIGH zlib dependency finding; see
+  `CHATGPT-SUBMISSION.md` for the digest and current assessment. No direct
+  affected API use was identified; this does not establish non-reachability.
 
 ## Verification
 
 - JSON structure, 18 exact action names, 54 explicit boolean hint values,
   descriptor equality, subtitle length and exact 5/3 scenario counts checked.
-- Python Ruff passed; full hosted suite including developer-runner regressions: **202 passed, 11 skipped**.
+- Python Ruff passed; full hosted suite including credential-cache regressions: **209 passed, 11 skipped**.
   The skipped checks require optional live CE/Redis or a fallback-only SDK path.
 - Original icons copied without modification; PNG headers and hashes checked.
 

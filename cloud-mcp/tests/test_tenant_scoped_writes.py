@@ -623,11 +623,9 @@ async def test_tenant_caches_do_not_serve_the_second_tenant(
     assert b_projects, "tenant B was served project state cached for tenant A"
     assert all(c["owner"] == TENANT_B for c in b_projects)
 
-    # Both tenants are present in the cache, under separate keys.
-    keys = list(mcp_server._project_cache)
-    assert len(keys) == 2
-    assert any(k.startswith(TENANT_A) for k in keys)
-    assert any(k.startswith(TENANT_B) for k in keys)
+    # Credential-bound handles cannot survive either hosted tool invocation.
+    assert len(mcp_server._project_cache) == 0
+    assert len(mcp_server._bundle_cache) == 0
 
     assert [c for c in ledger.calls if c["owner"] != c["ctx_tenant"]] == []
 

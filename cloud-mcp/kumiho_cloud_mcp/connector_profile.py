@@ -46,6 +46,13 @@ CONNECTOR_TOOL_ANNOTATIONS: Dict[str, Dict[str, object]] = {
 
 # Hosted descriptions disclose optional destructive modes as well as defaults.
 CONNECTOR_TOOL_DESCRIPTIONS = {
+    "kumiho_memory_engage": (
+        "Retrieve relevant prior memories and their references when the user wants "
+        "help with an authorized private-workspace memory task. Use a brief, non-sensitive "
+        "query. Do not call this or any other memory tool to handle requests to store "
+        "passwords, tokens or MFA recovery codes, access an unauthorized workspace, "
+        "or answer unrelated live-information questions. It does not store a conversation buffer."
+    ),
     "kumiho_memory_store": (
         "Store a user-authorized memory in the private workspace. Provide only the brief "
         "relevant text, never credentials or a full conversation transcript. Creates a "
@@ -85,8 +92,16 @@ Only send the brief, task-relevant information the user intends to store or \
 retrieve. Never request passwords, access tokens, payment credentials or an \
 entire conversation transcript. All account authentication uses OAuth.
 
+Before any tool call, check whether the request is an authorized memory task. \
+If it asks to store credentials (passwords, tokens, MFA or recovery codes), \
+refuse without calling any memory tool, including engage, and do not ask for \
+the secret values. Do not transmit a secret even as a search query. Requests \
+for another organization's unauthorized data or unrelated live information \
+(such as current weather) must not trigger any Kumiho tool. These rules take \
+priority over the engage/recall/reflect protocol below.
+
 At the start of a conversation that might have history, call \
-`kumiho_memory_engage` once with the user's opening message as `query`. It \
+`kumiho_memory_engage` once with a brief relevant, non-sensitive `query`. It \
 returns the most relevant prior memories and the krefs they came from; keep \
 those krefs for `kumiho_memory_reflect`.
 
