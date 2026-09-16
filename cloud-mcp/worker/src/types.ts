@@ -9,6 +9,9 @@ export interface Env {
   RATE_LIMIT_REQUESTS?: string;
   RATE_LIMIT_WINDOW_MS?: string;
 
+  /** Public proof of domain ownership issued by the OpenAI submission portal. */
+  OPENAI_APPS_CHALLENGE?: string;
+
   VERSION?: string;
 }
 

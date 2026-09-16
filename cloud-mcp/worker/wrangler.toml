@@ -10,6 +10,8 @@ routes = [
 
 [vars]
 ENVIRONMENT = "production"
+# Public domain verification value for the Kumiho Memory directory submission.
+OPENAI_APPS_CHALLENGE = "XxpHh5BkHzPJot3Rr11gU3F5l5CsGtwP2r0iiytFMvk"
 # Verified on 2026-09-16 against ECS revision 21 and the NLB TLS:8443 listener.
 # /healthz reaches the origin; /edge-health checks only the Worker.
 ORIGIN_URL = "https://ap-northeast-2.kumiho.cloud:8443"

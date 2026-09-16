@@ -72,6 +72,19 @@ export default {
     try {
       const url = new URL(request.url);
 
+      if (url.pathname === '/.well-known/openai-apps-challenge') {
+        const headers = { 'Content-Type': 'text/plain; charset=utf-8' };
+        if (request.method !== 'GET' && request.method !== 'HEAD') {
+          return withNoStore(new Response(null, {
+            status: 405, headers: { ...headers, Allow: 'GET, HEAD' },
+          }));
+        }
+        const token = env.OPENAI_APPS_CHALLENGE;
+        return withNoStore(new Response(request.method === 'HEAD' ? null : token || null, {
+          status: token ? 200 : 404, headers,
+        }));
+      }
+
       const preflight = handlePreflight(request);
       if (preflight) return preflight;
 
