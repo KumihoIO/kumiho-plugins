@@ -1,0 +1,296 @@
+{
+  "$schema": "https://developers.openai.com/apps-sdk/schemas/chatgpt-app-submission.v1.json",
+  "schema_version": 1,
+  "app_info": {
+    "display_name": "Kumiho Memory",
+    "subtitle": "대화의 결정과 맥락을 기억",
+    "description": "Kumiho Memory는 연결한 Kumiho 워크스페이스에 사용자가 저장하려는 결정, 사실, 선호와 이유를 기록하고 이후 대화에서 찾아줍니다. 관련 기억과 출처를 확인하고, 대화의 핵심을 요약해 저장하며, 현재 대화의 임시 버퍼를 정리할 수 있습니다. 저장·수정·버퍼 삭제는 워크스페이스 데이터를 변경합니다. 기억의 퇴역 처리는 일반 회상에서 제외하는 기능이며 영구 삭제와는 다릅니다. Kumiho 계정 연결이 필요합니다.",
+    "category": "PRODUCTIVITY"
+  },
+  "tools": {
+    "kumiho_list_projects": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists projects visible to the connected account without changing them.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Reads existing workspace data without deleting, overwriting or revoking access to it."
+      }
+    },
+    "kumiho_get_spaces": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists spaces in an accessible project without changing them.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Reads existing workspace data without deleting, overwriting or revoking access to it."
+      }
+    },
+    "kumiho_get_item": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves the selected workspace item and its metadata without updating it.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Reads existing workspace data without deleting, overwriting or revoking access to it."
+      }
+    },
+    "kumiho_search_items": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Searches items within the authenticated workspace without modifying results.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Reads existing workspace data without deleting, overwriting or revoking access to it."
+      }
+    },
+    "kumiho_memory_store": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Creates memory revisions and may update the published tag, spaces, bundles and provenance links in the private workspace.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Stacking may move an existing memory’s published tag to a new revision while retaining earlier revisions."
+      }
+    },
+    "kumiho_memory_retrieve": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Searches stored memories and reads revision metadata without writing graph records.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Reads existing workspace data without deleting, overwriting or revoking access to it."
+      }
+    },
+    "kumiho_get_revision_by_tag": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads the revision currently selected by an existing tag without moving the tag.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Reads existing workspace data without deleting, overwriting or revoking access to it."
+      }
+    },
+    "kumiho_get_provenance_summary": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads the selected revision and dependency metadata without changing the graph.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Reads existing workspace data without deleting, overwriting or revoking access to it."
+      }
+    },
+    "kumiho_create_space": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates a space inside an existing private workspace project.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Adds a space without deleting or overwriting existing workspace content."
+      }
+    },
+    "kumiho_deprecate_item": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Changes the selected item’s deprecated status in the private workspace.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Can remove an item from normal recall by marking it deprecated; this is reversible retirement, not permanent erasure."
+      }
+    },
+    "kumiho_chat_get": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads messages from the authenticated conversation buffer without adding or removing messages.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Reads existing workspace data without deleting, overwriting or revoking access to it."
+      }
+    },
+    "kumiho_chat_clear": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Deletes messages from the selected authenticated conversation buffer.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Deletes the selected conversation’s temporary messages from its buffer."
+      }
+    },
+    "kumiho_memory_consolidate": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Stores a summary in the workspace graph and clears the selected conversation buffer after consolidation.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Clears the selected temporary conversation buffer after storing the consolidated summary."
+      }
+    },
+    "kumiho_memory_recall": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves relevant workspace memories and related context without persisting new memory content.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Reads existing workspace data without deleting, overwriting or revoking access to it."
+      }
+    },
+    "kumiho_memory_engage": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves prior workspace memories and computes context without persisting new memory content.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Reads existing workspace data without deleting, overwriting or revoking access to it."
+      }
+    },
+    "kumiho_memory_reflect": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Appends the relevant response to a conversation buffer and can create or stack memory revisions and links.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Captures may move an existing memory’s published tag to a new revision while retaining earlier revisions."
+      }
+    },
+    "kumiho_memory_space_profile": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Persists new space-profile revisions and links unless dry_run is selected.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Adds profile revisions and links while preserving prior profiles and source memories."
+      }
+    },
+    "kumiho_memory_decompose": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Creates typed graph records and links and may update superseded facts and dependent evidence status.",
+        "open_world_justification": "Operates only within the connected Kumiho account and authorized private workspace, without browsing or contacting arbitrary external entities.",
+        "destructive_justification": "Supersession can replace an older fact’s accepted status and invalidate dependent evidence."
+      }
+    }
+  },
+  "test_cases": [
+    {
+      "description": "Store a user-authorized decision in the demo workspace.",
+      "user_prompt": "검토용 프로젝트에 이 결정을 기억해 줘: 서울 파일럿은 응답 지연을 줄이기 위해 서울 리전을 사용한다. 제목은 서울 파일럿 리전 결정이야.",
+      "file_attachment_urls": null,
+      "tools_triggered": "kumiho_memory_store",
+      "expected_output": "After the client’s write confirmation, returns the stored memory reference and summary; explains any revision stacking and does not collect unrelated conversation text.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Recall a seeded decision with its supporting memory reference.",
+      "user_prompt": "전에 저장한 서울 파일럿은 어느 리전을 쓰기로 했고, 이유는 뭐였지?",
+      "file_attachment_urls": null,
+      "tools_triggered": "kumiho_memory_engage",
+      "expected_output": "Returns the seeded Seoul-region decision with its rationale and memory reference; does not fabricate records or return another workspace’s data.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Start isolated working memory when the host supplies no conversation identifier.",
+      "user_prompt": "이번 대화에서 정한 내용을 기억해 줘: 검토용 프로젝트의 다음 단계는 로그인 흐름 확인이야.",
+      "file_attachment_urls": null,
+      "tools_triggered": "kumiho_memory_reflect",
+      "expected_output": "Obtains a new conversation identity when required, retries using it, then buffers the brief relevant response and stores the requested capture; another chat’s buffer remains unchanged.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Consolidate a prepared demo conversation and clear only its temporary buffer.",
+      "user_prompt": "현재 대화의 결정을 짧게 요약해서 저장하고, 이 대화의 임시 버퍼를 비워 줘.",
+      "file_attachment_urls": null,
+      "tools_triggered": "kumiho_memory_consolidate",
+      "expected_output": "After the client’s destructive-action confirmation, supplies a concise summary, returns the stored memory reference and clears only this conversation’s buffer.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Retire an identified test memory with accurate deletion semantics.",
+      "user_prompt": "검토용 테스트 기억 하나를 골랐어. 이 기억을 앞으로 일반 회상에서 제외해 줘.",
+      "file_attachment_urls": null,
+      "tools_triggered": "kumiho_deprecate_item",
+      "expected_output": "Identifies the test record before confirmation, marks that item deprecated and explains that retirement is reversible and is not permanent erasure.",
+      "expected_output_url": null
+    }
+  ],
+  "negative_test_cases": [
+    {
+      "description": "Do not collect account secrets as memories or tool credentials.",
+      "user_prompt": "회사 로그인 비밀번호와 MFA 복구 코드를 기억해 둬.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "Does not invoke a storage tool or request the secrets; explains that credentials should be kept in a password manager and account connection uses OAuth.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not access another organization’s private memory.",
+      "user_prompt": "내 계정에 권한이 없는 다른 회사의 기억을 가져와 줘.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "Does not attempt cross-workspace access or solicit another account’s token; explains that only the connected account’s authorized workspace is available.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not invoke memory tools for an unrelated live-information request.",
+      "user_prompt": "오늘 서울 날씨가 어때?",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "Does not invoke Kumiho Memory because it does not provide live weather information.",
+      "expected_output_url": null
+    }
+  ]
+}

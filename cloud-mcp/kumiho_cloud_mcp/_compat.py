@@ -202,31 +202,21 @@ def _connector_instructions() -> str:
 
 
 def _annotations_for(name: str) -> Optional[dict]:
-    """Annotation payload for ``name``: SDK table first, local table second."""
-    try:
-        import kumiho.mcp_server as ms  # type: ignore
-
-        table = getattr(ms, "TOOL_ANNOTATIONS", None)
-        if isinstance(table, dict) and name in table:
-            value = table[name]
-            if isinstance(value, dict):
-                return dict(value)
-    except Exception:  # noqa: BLE001
-        pass
+    """Use reviewed hosted annotations before any upstream defaults."""
     from .connector_profile import CONNECTOR_TOOL_ANNOTATIONS
 
     found = CONNECTOR_TOOL_ANNOTATIONS.get(name)
-    return dict(found) if found else None
+    if found:
+        return dict(found)
+    return None
 
 
 def _apply_annotations(tool: Any) -> Any:
-    """Attach ``annotations`` (and ``title``) to a ``types.Tool`` if missing."""
+    """Apply the reviewed policy, including overrides to native annotations."""
     import mcp.types as types
 
     payload = _annotations_for(tool.name)
     if not payload:
-        return tool
-    if getattr(tool, "annotations", None) is not None:
         return tool
     try:
         annotations = types.ToolAnnotations(**payload)
@@ -302,7 +292,7 @@ def build_server(
     if original_list is None or original_call is None:
         raise RuntimeError("Kumiho SDK did not register the required tool handlers")
 
-    from .connector_profile import CONNECTOR_TOOLS
+    from .connector_profile import CONNECTOR_TOOL_DESCRIPTIONS, CONNECTOR_TOOLS
     from .sessions import (
         SESSION_DESCRIPTION,
         SESSION_TOOL_DESCRIPTIONS,
@@ -321,6 +311,14 @@ def build_server(
         annotated = []
         for tool in tools:
             tool = _apply_annotations(tool)
+            if tool.name in CONNECTOR_TOOL_DESCRIPTIONS:
+                tool = tool.model_copy(update={"description": CONNECTOR_TOOL_DESCRIPTIONS[tool.name]})
+            if tool.name == "kumiho_search_items":
+                schema = copy.deepcopy(tool.input_schema)
+                schema.get("properties", {}).pop("auth_token", None)
+                if "required" in schema:
+                    schema["required"] = [key for key in schema["required"] if key != "auth_token"]
+                tool = tool.model_copy(update={"input_schema": schema})
             if tool.name in SESSION_TOOLS:
                 schema = copy.deepcopy(tool.input_schema)
                 schema.setdefault("properties", {})["session_id"] = {
@@ -342,6 +340,12 @@ def build_server(
         if params.name not in {tool.name for tool in catalog.tools}:
             return types.CallToolResult(is_error=True, content=[types.TextContent(
                 type="text", text=f"Tool {params.name!r} is not available on the Kumiho Memory connector. Call tools/list to see what is.",
+            )])
+        if params.name == "kumiho_search_items" and "auth_token" in (params.arguments or {}):
+            # Do not accept secrets from a conversation, including stale clients
+            # that cached the SDK's stdio-only credential override field.
+            return types.CallToolResult(is_error=True, content=[types.TextContent(
+                type="text", text="Do not provide credentials in tool arguments. Connect your Kumiho account through OAuth, then retry without auth_token.",
             )])
         request = current_request()
         if params.name in SESSION_TOOLS and request is not None:

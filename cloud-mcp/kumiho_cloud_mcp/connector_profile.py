@@ -28,7 +28,7 @@ CONNECTOR_TOOL_ANNOTATIONS: Dict[str, Dict[str, object]] = {
     "kumiho_get_spaces": _ann("List spaces", _READ),
     "kumiho_get_item": _ann("Get an item", _READ),
     "kumiho_search_items": _ann("Search items", _READ),
-    "kumiho_memory_store": _ann("Store a memory", _WRITE),
+    "kumiho_memory_store": _ann("Store a memory", _WRITE, destructiveHint=True),
     "kumiho_memory_retrieve": _ann("Retrieve memories", _READ),
     "kumiho_get_revision_by_tag": _ann("Get a revision by tag", _READ),
     "kumiho_get_provenance_summary": _ann("Summarize provenance", _READ),
@@ -36,12 +36,27 @@ CONNECTOR_TOOL_ANNOTATIONS: Dict[str, Dict[str, object]] = {
     "kumiho_deprecate_item": _ann("Forget a memory", _DESTRUCTIVE),
     "kumiho_chat_get": _ann("Read the chat buffer", _READ),
     "kumiho_chat_clear": _ann("Clear the chat buffer", _DESTRUCTIVE),
-    "kumiho_memory_consolidate": _ann("Consolidate the session into long-term memory", _WRITE),
+    "kumiho_memory_consolidate": _ann("Consolidate the session into long-term memory", _WRITE, destructiveHint=True),
     "kumiho_memory_recall": _ann("Recall memories", _READ),
     "kumiho_memory_engage": _ann("Engage memory before responding", _READ),
-    "kumiho_memory_reflect": _ann("Reflect and capture memories", _WRITE),
+    "kumiho_memory_reflect": _ann("Reflect and capture memories", _WRITE, destructiveHint=True),
     "kumiho_memory_space_profile": _ann("Profile memory spaces", _WRITE),
-    "kumiho_memory_decompose": _ann("Decompose a memory into the typed graph", _WRITE),
+    "kumiho_memory_decompose": _ann("Decompose a memory into the typed graph", _WRITE, destructiveHint=True),
+}
+
+# Hosted descriptions disclose optional destructive modes as well as defaults.
+CONNECTOR_TOOL_DESCRIPTIONS = {
+    "kumiho_memory_store": (
+        "Store a user-authorized memory in the private workspace. Provide only the brief "
+        "relevant text, never credentials or a full conversation transcript. Creates a "
+        "revision and may move an existing memory's published tag to it when stacking; "
+        "earlier revisions are retained. May create spaces, bundles and provenance links."
+    ),
+    "kumiho_memory_decompose": (
+        "Add typed entities, facts and relationships to a stored workspace memory. "
+        "Supersession can replace an older fact's accepted status and mark dependent "
+        "evidence stale; prior revisions remain in history. Requires ontology support."
+    ),
 }
 
 #: Exact tool names exposed by the ``connector`` profile, in listing order.
@@ -65,6 +80,10 @@ CONNECTOR_INSTRUCTIONS = """\
 Kumiho Memory gives you a persistent, graph-native memory that survives across \
 conversations. There is no local hook or skill here — the protocol below is \
 yours to run.
+
+Only send the brief, task-relevant information the user intends to store or \
+retrieve. Never request passwords, access tokens, payment credentials or an \
+entire conversation transcript. All account authentication uses OAuth.
 
 At the start of a conversation that might have history, call \
 `kumiho_memory_engage` once with the user's opening message as `query`. It \

@@ -96,6 +96,8 @@ Never enable CE dev mode on the public deployment.
 3. **Submission behavior**: the user confirmed OpenAI business verification is
    approved. Complete privacy/data-deletion review, publisher/support details,
    screenshots, review account, domain challenge and app-directory submission.
+   Publisher, support contact, KR-first availability and Owner role are now
+   confirmed; see [CHATGPT-SUBMISSION.md](CHATGPT-SUBMISSION.md).
    Business verification is distinct from app approval.
 
 Authentication is currently enforced at the HTTP boundary with an OAuth challenge,
