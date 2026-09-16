@@ -1,0 +1,71 @@
+# Image publication only. The existing kumiho-server service owns ECS rollout.
+name: Publish Cloud MCP image for ECS
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "cloud-mcp/**"
+      - ".github/workflows/deploy-cloud-mcp.yml"
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REPOSITORY: kumiho-cloud-mcp
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install and verify locked runtime
+        working-directory: cloud-mcp
+        run: |
+          pip install --require-hashes -r requirements.lock
+          pip install --no-deps -e .
+          pip install pytest pytest-asyncio ruff
+          ruff check kumiho_cloud_mcp tests
+          python -m pytest -q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Verify edge worker
+        working-directory: cloud-mcp/worker
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+  publish:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - name: Build and publish immutable candidate
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          # The repository must already exist; this workflow creates no infrastructure.
+          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" >/dev/null
+          image="$REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA"
+          docker build --platform linux/amd64 -t "$image" cloud-mcp
+          docker push "$image"
+          digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)
+          echo "Candidate: \`$REGISTRY/$ECR_REPOSITORY@$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Next: use kumiho-server/scripts/aws/mcp_sidecar.py with fresh service snapshots.' >> "$GITHUB_STEP_SUMMARY"
