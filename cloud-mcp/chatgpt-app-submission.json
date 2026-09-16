@@ -244,17 +244,17 @@
     },
     {
       "description": "Start isolated working memory when the host supplies no conversation identifier.",
-      "user_prompt": "이번 대화에서 정한 내용을 기억해 줘: 검토용 프로젝트의 다음 단계는 로그인 흐름 확인이야.",
+      "user_prompt": "추가 결정도 기억하고 이번 대화의 임시 작업 버퍼에도 짧게 반영해 줘: 로그인 확인 뒤에는 로그아웃과 재연결을 검사한다. review-demo 공간에 저장해 줘.",
       "file_attachment_urls": null,
       "tools_triggered": "kumiho_memory_reflect",
       "expected_output": "Obtains a new conversation identity when required, retries using it, then buffers the brief relevant response and stores the requested capture; another chat’s buffer remains unchanged.",
       "expected_output_url": null
     },
     {
-      "description": "Consolidate a prepared demo conversation and clear only its temporary buffer.",
-      "user_prompt": "현재 대화의 결정을 짧게 요약해서 저장하고, 이 대화의 임시 버퍼를 비워 줘.",
+      "description": "Save a concise summary of the demo decisions, then clear only this conversation buffer.",
+      "user_prompt": "현재 대화의 결정을 짧게 요약해서 review-demo 공간에 저장하고, 이 대화의 임시 버퍼를 비워 줘.",
       "file_attachment_urls": null,
-      "tools_triggered": "kumiho_memory_consolidate",
+      "tools_triggered": "kumiho_memory_store, kumiho_chat_clear",
       "expected_output": "After the client’s destructive-action confirmation, supplies a concise summary, returns the stored memory reference and clears only this conversation’s buffer.",
       "expected_output_url": null
     },
