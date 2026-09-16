@@ -12,6 +12,9 @@ export interface Env {
   /** Public proof of domain ownership issued by the OpenAI submission portal. */
   OPENAI_APPS_CHALLENGE?: string;
 
+  /** Synthetic, review-only demo files; never contains workspace credentials. */
+  REVIEW_ASSETS?: Fetcher;
+
   VERSION?: string;
 }
 

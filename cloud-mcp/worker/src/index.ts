@@ -72,6 +72,28 @@ export default {
     try {
       const url = new URL(request.url);
 
+      if (url.pathname.startsWith('/review/')) {
+        if (!/^\/review\/[a-f0-9]{32}\/(?:index\.html|demo\.mp4)$/.test(url.pathname)
+          || !env.REVIEW_ASSETS) return new Response(null, { status: 404 });
+        if (request.method !== 'GET' && request.method !== 'HEAD') {
+          return new Response(null, { status: 405, headers: { Allow: 'GET, HEAD' } });
+        }
+        // The static binding receives no caller credentials or query string.
+        url.search = '';
+        const headers = new Headers();
+        for (const name of ['Range', 'If-Range']) {
+          const value = request.headers.get(name);
+          if (value) headers.set(name, value);
+        }
+        const asset = await env.REVIEW_ASSETS.fetch(new Request(url, {
+          method: request.method, headers,
+        }));
+        const response = new Response(asset.body, asset);
+        response.headers.set('X-Robots-Tag', 'noindex, nofollow');
+        response.headers.set('Referrer-Policy', 'no-referrer');
+        return response;
+      }
+
       if (url.pathname === '/.well-known/openai-apps-challenge') {
         const headers = { 'Content-Type': 'text/plain; charset=utf-8' };
         if (request.method !== 'GET' && request.method !== 'HEAD') {
