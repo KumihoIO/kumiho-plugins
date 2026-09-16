@@ -86,7 +86,9 @@ workspace operations. Do not bypass tenant checks or disable authentication.
 
 The scenarios in the JSON are **review instructions, not completed ChatGPT
 acceptance tests**. Run all eight through the final deployed endpoint, recording
-screenshots and expected results. The Python fixtures do not replace this step.
+screenshots and expected results. The Python fixtures do not replace this step. Screenshots are useful supporting
+evidence; the current public submission guide does not list them as a universal
+requirement. Follow any additional requirements shown by the actual portal.
 
 ## Suggested starter prompts
 
@@ -119,7 +121,7 @@ not the application image contents.
 5. Open the portal in the confirmed organization, import the JSON, upload the
    fox icon, fill publisher/policy/test fields and select South Korea only.
 6. Install the exact generated domain-challenge token, scan the live tools,
-   reconcile the scan with this JSON and attach real screenshots.
+   reconcile the scan with this JSON and attach real screenshots if requested.
 7. Complete factual attestations and submit. App review approval and the later
    publish action remain separate from business verification.
 

@@ -51,8 +51,10 @@ these fixes. This is bounded assurance, not a guarantee of no vulnerabilities.
 ## Public submission still requires
 
 A dedicated reviewer account and synthetic workspace, the complete five positive
-and three negative ChatGPT scenarios and real screenshots, exact portal domain
-verification, and a submission receipt. Business verification and a working
+and three negative ChatGPT scenarios, exact portal domain verification, and a
+submission receipt. Capture real screenshots as supporting evidence if the
+portal requests them; the public submission guide does not require screenshots
+for every submission. Business verification and a working
 private developer connection do not mean directory approval.
 
 All 18 tools still lack outputSchema (see SUBMISSION-REVIEW.md). The existing
