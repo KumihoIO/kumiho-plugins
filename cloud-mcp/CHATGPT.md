@@ -1,6 +1,8 @@
+> **Developer testing is live (2026-09-16):** see [DEVELOPER-TEST.md](DEVELOPER-TEST.md) for the deployed URL, current validation and browser OAuth test commands. ECS revision 21 and the public Worker are live; real browser OAuth and direct MCP lifecycle checks passed.
+
 # Kumiho Memory: ChatGPT / Codex hosted MCP
 
-Status: OAuth control plane deployed; MCP production endpoint not yet deployed.
+Status: OAuth and public MCP deployed for developer testing; directory submission pending.
 Updated 2026-09-16. PR #101 includes the PR #80 implementation and adversarial
 review fixes; see [ADVERSARIAL-REVIEW.md](ADVERSARIAL-REVIEW.md).
 
@@ -80,25 +82,25 @@ docker run --rm --memory 512m --publish 127.0.0.1:18081:8081 --env PORT=8081 --e
 Tenant tools require a valid bearer token and a functioning control plane.
 Never enable CE dev mode on the public deployment.
 
-## Remaining before a working public connection
+## Developer connection and remaining directory work
 
-1. **End-to-end OAuth**: control PR #14 is merged and the existing App Runner
-   and control Worker serve OAuth discovery/JWKS/consent. Firebase authorized
-   domain, OAuth DB tables/RLS and cleanup are configured. Public metadata and
-   negative auth probes passed; a real Firebase login followed by signed
-   ChatGPT tool calls remains to be validated.
-2. **Origin and public route**: the Seoul sidecar network stack exists and
-   server PR #65 preserves the sidecar on future deployments. ECS still runs
-   the original task without MCP, and the MCP Worker is not deployed. Rebuild
-   the ECR candidate from the final reviewed merge commit, then perform the
-   ECS canary, TLS 8443 check, public Worker activation and rollback checks.
-   The earlier `0af330b` image predates the review fixes and must not be rolled out.
-3. **Submission behavior**: the user confirmed OpenAI business verification is
-   approved. Complete privacy/data-deletion review, publisher/support details,
-   screenshots, review account, domain challenge and app-directory submission.
-   Publisher, support contact, KR-first availability and Owner role are now
-   confirmed; see [CHATGPT-SUBMISSION.md](CHATGPT-SUBMISSION.md).
-   Business verification is distinct from app approval.
+1. **Live endpoint:** `https://mcp.kumiho.cloud/mcp` now reaches the existing Seoul
+   ECS task revision 21 through `kumiho-mcp-edge`. The deployed MCP application
+   is the tested PR #102 commit `a1aca0e`; the 1 vCPU / 2 GiB task is unchanged.
+   Both the original Kumiho and new MCP target groups are healthy.
+2. **Real OAuth/direct MCP validation:** browser Firebase login and consent,
+   PKCE code exchange, refresh rotation, initialization, all 18 descriptors,
+   a new synthetic memory, two isolated conversation buffers, targeted clearing
+   and refresh revocation passed. See [DEVELOPER-TEST.md](DEVELOPER-TEST.md).
+3. **ChatGPT acceptance:** connect in developer mode and verify model tool
+   selection, confirmation UI, issued-ID reuse and cross-conversation behavior.
+   Direct MCP tests do not replace those ChatGPT UI checks.
+4. **Public submission:** publisher Kumiho Inc., support contact, KR-first
+   availability and Owner role are confirmed. Complete an isolated reviewer
+   account, final policy review, screenshots, domain challenge and directory
+   submission using [CHATGPT-SUBMISSION.md](CHATGPT-SUBMISSION.md).
+   Business verification is distinct from app approval. Review/merge the final
+   code and reassess the upstream zlib image finding before public release.
 
 Authentication is currently enforced at the HTTP boundary with an OAuth challenge,
 including before tools/list. This is the account-linking path being prepared.

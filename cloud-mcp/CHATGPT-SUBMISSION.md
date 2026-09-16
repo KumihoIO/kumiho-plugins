@@ -45,7 +45,7 @@ logo, visual redesign or image transformation was applied.
 | --- | --- |
 | Submission type | With MCP; remote MCP only |
 | URL type | Universal |
-| MCP server URL | `https://mcp.kumiho.cloud/mcp` — planned, not yet live |
+| MCP server URL | `https://mcp.kumiho.cloud/mcp` — live for developer testing; see DEVELOPER-TEST.md |
 | Authentication | OAuth through `https://control.kumiho.cloud` |
 | Website | https://kumiho.io/ |
 | Support URL | https://kumiho.io/en/contact |
