@@ -15,7 +15,27 @@ No actual credentials were included in test prompts or the demo.
 | Unauthorized company | Refused without Kumiho invocation. No foreign credentials or data were requested. |
 | Live weather | Answered outside Kumiho, without a Kumiho invocation. |
 
-Positive workflows ran on revision 22's credential-cache fix. Revision 23 adds
+## Freshly stored memory recalled in another chat
+
+After the owner requested an explicit recall check, a new ChatGPT conversation
+asked for the previously stored `로그인 확인 후 후속 검사` decision in `review-demo`.
+The prompt supplied the title, but neither its answer nor its item/revision URI.
+On the final revision 23 deployment:
+
+1. `kumiho_memory_retrieve` searched the review space and returned the target
+   item as its first result (reported search score approximately 0.95).
+2. `kumiho_get_revision_by_tag` read its `latest` revision and returned the
+   original summary: `로그인 확인 뒤에는 로그아웃과 재연결을 검사한다.`
+3. The returned revision matched the earlier reflect capture exactly:
+   `kref://CognitiveMemory/review-demo/로그인-확인-후-후속-검사-c6a92e8a.conversation?r=1`.
+
+The raw tool responses were inspected, not only the assistant's natural-language
+answer. This validates a read after storage across distinct ChatGPT conversations,
+including after the original conversation's temporary buffer was cleared. The
+public demo's first scene now shows this result. The earlier seeded Seoul recall
+test remains separate supporting evidence.
+
+The initial positive-workflow run used revision 22's credential-cache fix. Revision 23 adds
 only the intent gate and engage description; the fresh credential negative case
 ran after revision 23 completed and the ChatGPT tool catalog was refreshed.
 The remaining negatives were observed on revision 22. These are finite model
