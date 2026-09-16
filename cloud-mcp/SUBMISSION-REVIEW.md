@@ -70,7 +70,9 @@ generation of the submission-import JSON.
 
 - The public MCP endpoint and real browser Firebase/OAuth + direct tool tests
   are now live and verified; see `DEVELOPER-TEST.md`. A dedicated reviewer
-  account, ChatGPT acceptance tests and actual screenshots are still pending.
+  account, the complete eight-scenario ChatGPT acceptance run and actual
+  screenshots are still pending. The publisher reported successful ChatGPT use
+  on 2026-09-16; that is not evidence that all submission scenarios passed.
 - Availability is KR-only initially. Do not claim every service or account
   record is processed exclusively in Korea; the control plane is in US East.
 - Public policy exists at `https://kumiho.io/en/legal`; compare its promises
@@ -86,6 +88,12 @@ generation of the submission-import JSON.
 
 - JSON structure, 18 exact action names, 54 explicit boolean hint values,
   descriptor equality, subtitle length and exact 5/3 scenario counts checked.
-- Python Ruff passed; full hosted suite including developer-runner regressions: **191 passed, 11 skipped**.
+- Python Ruff passed; full hosted suite including developer-runner regressions: **202 passed, 11 skipped**.
   The skipped checks require optional live CE/Redis or a fallback-only SDK path.
 - Original icons copied without modification; PNG headers and hashes checked.
+
+## PR #102 adversarial review
+
+See `PR102-ADVERSARIAL-REVIEW.md` for the reproduced developer-runner failures,
+fixes, regression evidence, and limits. This source review does not substitute
+for GitHub's required approving review or an OpenAI submission receipt.

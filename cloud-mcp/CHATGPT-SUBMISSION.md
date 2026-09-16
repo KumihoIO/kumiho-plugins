@@ -54,7 +54,7 @@ logo, visual redesign or image transformation was applied.
 | Domain challenge | Waiting for the portal-issued token; never invent a token |
 | Custom UI / CSP | No widget is exposed; no widget CSP domains to declare |
 | Review credentials | Dedicated demo account and workspace still need provisioning and live verification |
-| Screenshots | Capture real connected ChatGPT workflows after the endpoint is live |
+| Screenshots | User confirmed a working ChatGPT connection; full scenario screenshots still pending |
 
 The public contact/legal pages were fetched on 2026-09-16. They already name
 Kumiho Inc. and cover AI memory. The root `/privacy` and `/terms` URLs could not
@@ -104,13 +104,18 @@ permanent erasure. Review credentials use a dedicated synthetic-data workspace.
 
 ## Remaining release sequence
 
-1. Review and merge the submission metadata changes; publish an image from that
-   final commit. The pre-review `0af330b` image must not be used.
-2. Re-scan the image and assess the previously reported upstream zlib finding.
-3. Deploy the MCP sidecar into the existing Seoul ECS task, verify both old and
-   new target mappings and rollback, then activate the public MCP Worker.
-4. Verify real Firebase/OAuth linking, signed tool calls, two-chat separation,
-   destructive confirmations and the dedicated review account.
+The candidate image from `a1aca0e` is already deployed in ECS revision 21,
+with both targets healthy and the public Worker active. Real browser OAuth and
+direct read/write tests passed; the user also confirmed ChatGPT use. Later
+changes so far affect test scripts, documentation and the recorded Worker origin,
+not the application image contents.
+
+1. Finish PR #102 review and merge. Confirm the final runtime files still match
+   the deployed candidate before submission; rebuild if they differ.
+2. Re-scan the deployed image and assess the previously reported zlib finding.
+3. Provision the dedicated reviewer account and synthetic fixtures.
+4. Run all supplied ChatGPT scenarios, including destructive confirmations and
+   two-chat separation, and verify the reviewer login independently.
 5. Open the portal in the confirmed organization, import the JSON, upload the
    fox icon, fill publisher/policy/test fields and select South Korea only.
 6. Install the exact generated domain-challenge token, scan the live tools,

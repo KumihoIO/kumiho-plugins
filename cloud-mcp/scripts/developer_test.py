@@ -62,7 +62,7 @@ def public_probes(client: httpx.Client) -> dict:
 
 def callback_valid(query: dict, state: str) -> bool:
     return (len(query.get("state", [])) == 1 and len(query.get("iss", [])) == 1
-            and secrets.compare_digest(query["state"][0], state) and query["iss"][0] == ISSUER)
+            and secrets.compare_digest(query["state"][0].encode(), state.encode()) and query["iss"][0] == ISSUER)
 
 
 def login(client: httpx.Client, metadata: dict, no_browser: bool) -> tuple[dict, str]:
@@ -117,10 +117,16 @@ def login(client: httpx.Client, metadata: dict, no_browser: bool) -> tuple[dict,
         issued = client.post(endpoint(metadata, "token_endpoint"), data=form)
         check("authorization code exchange", issued.status_code == 200)
         token = issued.json()
-        check("bearer and refresh issued", bool(token.get("access_token")) and bool(token.get("refresh_token")))
         # Replaying this code revokes its refresh family. Keep destructive
         # replay probes separate from the normal refresh/tool lifecycle.
         return token, client_id
+
+
+def valid_token_pair(token) -> bool:
+    return (isinstance(token, dict)
+            and all(isinstance(token.get(key), str) and bool(token[key].strip())
+                    for key in ("access_token", "refresh_token", "token_type"))
+            and token["token_type"].lower() == "bearer")
 
 
 def payload(result):
@@ -172,8 +178,9 @@ async def authenticated_checks(access_token: str, writes: bool) -> None:
                 item = kref.split("?", 1)[0]
                 REPORT["fixture_kref"] = item
                 _, fetched = await call("kumiho_get_item", {"kref": item})
-                check("stored fixture readable", bool(fetched))
-                await call("kumiho_memory_retrieve", {"project": "CognitiveMemory", "query": run_id, "space_paths": ["CognitiveMemory/" + space], "limit": 3})
+                check("stored fixture readable", fetched.get("kref") == item)
+                _, retrieved = await call("kumiho_memory_retrieve", {"project": "CognitiveMemory", "query": run_id, "space_paths": ["CognitiveMemory/" + space], "limit": 3})
+                check("search returns the created fixture", item in retrieved.get("item_krefs", []))
                 # Only this newly-created fixture can be retired/restored.
                 await call("kumiho_deprecate_item", {"item_kref": item, "deprecated": True})
                 await call("kumiho_deprecate_item", {"item_kref": item, "deprecated": False})
@@ -195,8 +202,15 @@ async def authenticated_checks(access_token: str, writes: bool) -> None:
                     _, second = await call("kumiho_chat_get", {"session_id": ids[1]})
                     check("clear affects only its own conversation", not first.get("messages") and "Synthetic buffer 1" in json.dumps(second))
                 finally:
+                    cleanup_failed = False
                     for sid in ids:
-                        await call("kumiho_chat_clear", {"session_id": sid})
+                        try:
+                            await call("kumiho_chat_clear", {"session_id": sid})
+                        except Exception:
+                            cleanup_failed = True
+                    if cleanup_failed:
+                        REPORT["buffer_cleanup"] = "Some temporary buffers need cleanup verification"
+                    check("all temporary buffers cleaned", not cleanup_failed)
 
 
 def main() -> int:
@@ -218,12 +232,16 @@ def main() -> int:
                 if args.writes:
                     print("Write tests are enabled: one new synthetic memory and two temporary buffers only.", flush=True)
                 token, client_id = login(client, metadata, args.no_browser)
+                # Take ownership before validation so even a partial issuance is revoked.
+                check("bearer and refresh issued", valid_token_pair(token))
                 refreshed = client.post(endpoint(metadata, "token_endpoint"), data={
                     "grant_type": "refresh_token", "client_id": client_id,
                     "refresh_token": token["refresh_token"], "resource": MCP_URL,
                 })
-                check("refresh rotation", refreshed.status_code == 200 and refreshed.json().get("refresh_token") != token["refresh_token"])
-                token = refreshed.json()
+                successor = refreshed.json() if refreshed.status_code == 200 else {}
+                check("refresh rotation", valid_token_pair(successor) and successor["refresh_token"] != token["refresh_token"])
+                # Keep the prior refresh token for family revocation if validation fails.
+                token = successor
                 asyncio.run(authenticated_checks(token["access_token"], args.writes))
         REPORT["status"] = "passed"
     except Exception as exc:
@@ -238,7 +256,7 @@ def main() -> int:
                     revoked = client.post(endpoint(metadata, "revocation_endpoint"), data={"token": token["refresh_token"], "token_type_hint": "refresh_token", "client_id": client_id})
                     check("test refresh token revoked", revoked.status_code == 200)
                     denied = client.post(endpoint(metadata, "token_endpoint"), data={"grant_type": "refresh_token", "client_id": client_id, "refresh_token": token["refresh_token"], "resource": MCP_URL})
-                    check("revoked refresh token rejected", denied.status_code == 400)
+                    check("revoked refresh token rejected", denied.status_code == 400 and denied.json().get("error") == "invalid_grant")
             except Exception:
                 REPORT["cleanup"] = "refresh revocation needs verification"
                 REPORT["status"] = "failed"

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 from conftest import MCP_HEADERS, base_claims, client_for, rpc
 
@@ -223,3 +226,16 @@ async def test_consolidation_advertises_buffer_deletion(app, control_plane, keyp
     assert tool["annotations"]["destructiveHint"] is True
     assert tool["annotations"]["readOnlyHint"] is False
     assert "clear" in tool["description"]
+
+
+async def test_submission_hints_match_the_discovered_hosted_catalog(app, control_plane, keypair):
+    """Prevent the reviewer import file from drifting from the real MCP response."""
+    submission = json.loads((Path(__file__).parents[1] / "chatgpt-app-submission.json").read_text(encoding="utf-8"))
+    async with client_for(app, control_plane) as http:
+        tools = {tool["name"]: tool for tool in await _tools(http, keypair.sign(base_claims()))}
+    assert set(submission["tools"]) == set(tools)
+    for name, declared in submission["tools"].items():
+        for hint in ("readOnlyHint", "destructiveHint", "openWorldHint"):
+            expected = declared["annotations"][hint]
+            assert isinstance(expected, bool)
+            assert tools[name]["annotations"][hint] is expected, (name, hint)
