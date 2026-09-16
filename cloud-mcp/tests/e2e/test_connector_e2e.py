@@ -105,7 +105,10 @@ async def test_tools_list_is_the_reviewed_profile(live_server):
     read_only = sorted(t.name for t in tools if t.annotations.read_only_hint)
     show("destructive tools", destructive)
     show("read-only tools", read_only)
-    assert destructive == ["kumiho_chat_clear", "kumiho_deprecate_item"]
+    assert destructive == [
+        "kumiho_chat_clear", "kumiho_deprecate_item", "kumiho_memory_consolidate",
+        "kumiho_memory_decompose", "kumiho_memory_reflect", "kumiho_memory_store",
+    ]
     assert len(read_only) == 10
 
 

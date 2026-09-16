@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 from conftest import MCP_HEADERS, base_claims, client_for, rpc
 
@@ -72,7 +75,10 @@ def test_destructive_tools_are_marked():
         for name, ann in CONNECTOR_TOOL_ANNOTATIONS.items()
         if ann["destructiveHint"]
     }
-    assert destructive == {"kumiho_deprecate_item", "kumiho_chat_clear"}
+    assert destructive == {
+        "kumiho_deprecate_item", "kumiho_chat_clear", "kumiho_memory_consolidate",
+        "kumiho_memory_store", "kumiho_memory_reflect", "kumiho_memory_decompose",
+    }
     assert CONNECTOR_TOOL_ANNOTATIONS["kumiho_deprecate_item"]["title"] == "Forget a memory"
 
 
@@ -196,3 +202,40 @@ async def test_every_tool_declares_oauth_for_chatgpt(app, control_plane, keypair
         expected = [{"type": "oauth2", "scopes": ["memory"]}]
         assert tool["securitySchemes"] == expected
         assert tool["_meta"]["securitySchemes"] == expected
+
+
+async def test_hosted_search_never_solicits_or_accepts_credentials(app, control_plane, keypair):
+    token = keypair.sign(base_claims())
+    async with client_for(app, control_plane) as http:
+        catalog = {tool["name"]: tool for tool in await _tools(http, token)}
+        assert "auth_token" not in catalog["kumiho_search_items"]["inputSchema"]["properties"]
+        response = await http.post(
+            "/mcp", json=rpc("tools/call", {"name": "kumiho_search_items", "arguments": {"auth_token": "test-secret-must-not-be-echoed"}}),
+            headers={**MCP_HEADERS, "authorization": f"Bearer {token}"},
+        )
+    assert response.json()["result"]["isError"] is True
+    assert "test-secret-must-not-be-echoed" not in response.text
+    assert "OAuth" in response.text
+
+
+async def test_consolidation_advertises_buffer_deletion(app, control_plane, keypair):
+    token = keypair.sign(base_claims())
+    async with client_for(app, control_plane) as http:
+        tools = {tool["name"]: tool for tool in await _tools(http, token)}
+    tool = tools["kumiho_memory_consolidate"]
+    assert tool["annotations"]["destructiveHint"] is True
+    assert tool["annotations"]["readOnlyHint"] is False
+    assert "clear" in tool["description"]
+
+
+async def test_submission_hints_match_the_discovered_hosted_catalog(app, control_plane, keypair):
+    """Prevent the reviewer import file from drifting from the real MCP response."""
+    submission = json.loads((Path(__file__).parents[1] / "chatgpt-app-submission.json").read_text(encoding="utf-8"))
+    async with client_for(app, control_plane) as http:
+        tools = {tool["name"]: tool for tool in await _tools(http, keypair.sign(base_claims()))}
+    assert set(submission["tools"]) == set(tools)
+    for name, declared in submission["tools"].items():
+        for hint in ("readOnlyHint", "destructiveHint", "openWorldHint"):
+            expected = declared["annotations"][hint]
+            assert isinstance(expected, bool)
+            assert tools[name]["annotations"][hint] is expected, (name, hint)

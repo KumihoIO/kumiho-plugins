@@ -10,9 +10,9 @@ routes = [
 
 [vars]
 ENVIRONMENT = "production"
-# Set only after validating origin DNS/SNI and the existing NLB TLS:8443 listener.
+# Verified on 2026-09-16 against ECS revision 21 and the NLB TLS:8443 listener.
 # /healthz reaches the origin; /edge-health checks only the Worker.
-ORIGIN_URL = "http://localhost:8080"
+ORIGIN_URL = "https://ap-northeast-2.kumiho.cloud:8443"
 # Requests per window per client IP. MCP is chatty (one HTTP request per
 # JSON-RPC call in stateless mode), so this is deliberately generous.
 RATE_LIMIT_REQUESTS = "600"
