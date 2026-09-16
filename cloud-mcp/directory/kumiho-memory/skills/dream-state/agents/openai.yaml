@@ -1,0 +1,11 @@
+interface:
+  display_name: "Dream State"
+  short_description: "Review and maintain bounded Kumiho memories"
+  default_prompt: "$dream-state Preview a bounded review of my Kumiho memories and show proposed changes."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "kumiho-memory"
+      description: "Read and apply approved bounded memory maintenance in Kumiho."
+      transport: "streamable_http"
+      url: "https://mcp.kumiho.cloud/mcp"

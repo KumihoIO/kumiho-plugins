@@ -1,0 +1,23 @@
+{
+  "name": "kumiho-memory",
+  "version": "0.1.1",
+  "description": "Save, recall and review private workspace memories, including reviewed imports from selected conversation history.",
+  "author": { "name": "Kumiho Inc.", "url": "https://kumiho.io" },
+  "homepage": "https://kumiho.io",
+  "license": "MIT",
+  "interface": {
+    "displayName": "Kumiho Memory",
+    "shortDescription": "Recall and save private Kumiho workspace context",
+    "longDescription": "Recall, preserve, review and selectively backfill private Kumiho workspace memories through the connected MCP.",
+    "developerName": "Kumiho Inc.",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://kumiho.io",
+    "defaultPrompt": [
+      "Recall the relevant saved Kumiho context.",
+      "Remember this decision after I approve the exact capture.",
+      "Preview a bounded review of my Kumiho memories."
+    ]
+  },
+  "skills": "./skills/"
+}

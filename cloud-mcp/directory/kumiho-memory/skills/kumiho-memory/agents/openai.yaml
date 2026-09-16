@@ -1,0 +1,11 @@
+interface:
+  display_name: "Kumiho Memory"
+  short_description: "Recall and save private Kumiho workspace context"
+  default_prompt: "$kumiho-memory Recall the relevant saved context, then help me decide what to preserve."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "kumiho-memory"
+      description: "Read and write the connected private Kumiho workspace."
+      transport: "streamable_http"
+      url: "https://mcp.kumiho.cloud/mcp"

@@ -1,0 +1,11 @@
+interface:
+  display_name: "Memory Capture"
+  short_description: "Save one approved fact or decision to Kumiho"
+  default_prompt: "$memory-capture Save this exact decision or preference to Kumiho."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "kumiho-memory"
+      description: "Store an explicitly approved capture in Kumiho."
+      transport: "streamable_http"
+      url: "https://mcp.kumiho.cloud/mcp"

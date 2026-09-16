@@ -1,0 +1,11 @@
+interface:
+  display_name: "Kumiho Onboard"
+  short_description: "Connect and check your Kumiho Memory workspace"
+  default_prompt: "$kumiho-onboard Connect Kumiho Memory and verify the workspace."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "kumiho-memory"
+      description: "Use the connected Kumiho workspace and OAuth session."
+      transport: "streamable_http"
+      url: "https://mcp.kumiho.cloud/mcp"
