@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 import pytest
 from conftest import MCP_HEADERS, base_claims, client_for, rpc
 
-from kumiho_cloud_mcp._compat import build_server
+from kumiho_cloud_mcp._compat import build_server, listed_tools
 from kumiho_cloud_mcp.app import create_app
 from kumiho_cloud_mcp.connector_profile import (
     CONNECTOR_INSTRUCTIONS,
@@ -16,9 +17,11 @@ from kumiho_cloud_mcp.connector_profile import (
     CONNECTOR_TOOL_COUNT,
     CONNECTOR_TOOL_DESCRIPTIONS,
     CONNECTOR_TOOLS,
+    HOSTED_RECALL_MODE,
     INSTRUCTIONS_LEAD_CHARS,
     MAX_INSTRUCTIONS_BYTES,
     MAX_TOOL_DESCRIPTION_CHARS,
+    RECALL_MODE_TOOLS,
 )
 from kumiho_cloud_mcp.sessions import SESSION_DESCRIPTION, SESSION_TOOLS
 
@@ -74,6 +77,18 @@ def _schema_descriptions(node):
     elif isinstance(node, list):
         for value in node:
             yield from _schema_descriptions(value)
+
+
+def _schema_keys(node):
+    """Every property name anywhere in an input schema."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "properties" and isinstance(value, dict):
+                yield from value
+            yield from _schema_keys(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _schema_keys(value)
 
 
 def test_profile_names_exactly_the_expected_tools():
@@ -376,6 +391,142 @@ async def test_hosted_search_never_solicits_or_accepts_credentials(app, control_
     assert response.json()["result"]["isError"] is True
     assert "test-secret-must-not-be-echoed" not in response.text
     assert "OAuth" in response.text
+
+
+async def test_no_served_schema_offers_a_recall_mode(app, control_plane, keypair):
+    """Hosted recall is pinned; the SDK's mode choice is not on offer anywhere."""
+    async with client_for(app, control_plane) as http:
+        token = keypair.sign(base_claims())
+        tools = await _tools(http, token)
+        instructions = await _instructions(http, token)
+    assert {tool["name"] for tool in tools} == set(CONNECTOR_TOOLS)
+    for tool in tools:
+        schema = tool["inputSchema"]
+        assert "recall_mode" not in set(_schema_keys(schema)), tool["name"]
+        assert "recall_mode" not in schema.get("required", []), tool["name"]
+        assert "recall_mode" not in json.dumps(tool), tool["name"]
+        for text in (tool.get("description") or "", *_schema_descriptions(schema)):
+            lowered = text.lower()
+            assert "artifact content" not in lowered, tool["name"]
+            assert "full mode" not in lowered and "'full'" not in lowered, tool["name"]
+    lowered = instructions.lower()
+    for term in ("recall_mode", "artifact", "full mode"):
+        assert term not in lowered, term
+    # The query argument itself survives the schema edit.
+    served = {tool["name"]: tool for tool in tools}
+    for name in RECALL_MODE_TOOLS:
+        assert "query" in served[name]["inputSchema"]["properties"], name
+        assert served[name]["inputSchema"]["required"] == ["query"], name
+
+
+async def test_recall_mode_tools_match_the_sdk(real_server):
+    """If the SDK adds recall_mode to another connector tool, the pin must follow."""
+    import kumiho.mcp_server as ms
+
+    upstream = await listed_tools(ms.create_mcp_server())
+    declared = {
+        tool.name for tool in upstream
+        if tool.name in CONNECTOR_TOOLS and "recall_mode" in (tool.input_schema or {}).get("properties", {})
+    }
+    assert declared == set(RECALL_MODE_TOOLS)
+
+
+class _RecallManager:
+    """Tenant memory manager stand-in whose recall hits carry sibling revisions."""
+
+    # An SDK default of "full" must not reach hosted results either.
+    recall_mode = "full"
+    _last_backend_error = None
+
+    def __init__(self):
+        self.context_modes = []
+
+    async def recall_memories(self, query, **kwargs):
+        return [{
+            "kref": "kref://CognitiveMemory/decisions/region.decision?r=3",
+            "title": "Chose the Seoul region on 2026-09-16",
+            "summary": "Seoul, for latency to the team.",
+            "score": 0.91,
+            "sibling_revisions": [
+                {"kref": "kref://CognitiveMemory/decisions/region.decision?r=2",
+                 "summary": "SIBLING-PROSE-R2 Tokyo, before the latency test."},
+                {"kref": "kref://CognitiveMemory/decisions/region.decision?r=1",
+                 "summary": "SIBLING-PROSE-R1 Undecided between regions."},
+            ],
+        }]
+
+    def build_recalled_context(self, results, query="", recall_mode=None):
+        self.context_modes.append(recall_mode)
+        return "Chose the Seoul region on 2026-09-16."
+
+
+@pytest.fixture
+def recall_manager(monkeypatch):
+    import kumiho_memory.mcp_tools as memory
+
+    manager = _RecallManager()
+    monkeypatch.setattr(memory, "_get_manager", lambda: manager)
+    return manager
+
+
+@pytest.fixture
+def compat_debug_log():
+    import logging
+
+    records = []
+
+    class _Keep(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    logger = logging.getLogger("kumiho.cloud_mcp.compat")
+    handler, level = _Keep(level=logging.DEBUG), logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(level)
+
+
+@pytest.mark.parametrize("name", sorted(RECALL_MODE_TOOLS))
+@pytest.mark.parametrize("requested", ["full", None])
+async def test_hosted_recall_is_always_summarized(
+    app, control_plane, keypair, recall_manager, compat_debug_log, name, requested,
+):
+    """Stale cached schemas and direct callers cannot select the other mode."""
+    marker = uuid.uuid4().hex  # unique per call, so the dedup guard never answers
+    arguments = {"query": f"which region did we choose {marker}"}
+    if requested is not None:
+        arguments["recall_mode"] = requested
+    async with client_for(app, control_plane) as http:
+        response = await http.post(
+            "/mcp", json=rpc("tools/call", {"name": name, "arguments": arguments}),
+            headers={**MCP_HEADERS, "authorization": f"Bearer {keypair.sign(base_claims())}"},
+        )
+    assert response.status_code == 200, response.text
+    result = response.json()["result"]
+    assert result.get("isError") is not True, result
+    payload = json.loads(result["content"][0]["text"])
+
+    assert payload["recall_mode"] == HOSTED_RECALL_MODE == "summarized"
+    assert payload["count"] == 1
+    if name == "kumiho_memory_engage":
+        assert recall_manager.context_modes == ["summarized"]
+        hit = payload["results"][0]
+        assert "sibling_revisions" not in hit
+        assert hit["sibling_count"] == 2
+        assert "SIBLING-PROSE" not in result["content"][0]["text"]
+
+    pinned = [r for r in compat_debug_log if "recall_mode pinned" in r.getMessage()]
+    if requested == "full":
+        assert len(pinned) == 1 and pinned[0].levelname == "DEBUG"
+        message = pinned[0].getMessage()
+        assert name in message
+        assert marker not in message and "full" not in message
+    else:
+        assert pinned == []
 
 
 async def test_consolidation_advertises_buffer_deletion(app, control_plane, keypair):

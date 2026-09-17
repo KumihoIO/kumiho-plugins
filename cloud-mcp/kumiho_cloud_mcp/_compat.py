@@ -229,6 +229,32 @@ def _apply_annotations(tool: Any) -> Any:
     return tool.model_copy(update=update)
 
 
+def _without_recall_mode(tool: Any) -> Any:
+    """Hide the SDK's recall-mode choice; hosted recall is pinned at dispatch."""
+    schema = tool.input_schema or {}
+    if "recall_mode" not in schema.get("properties", {}):
+        return tool
+    schema = copy.deepcopy(schema)
+    schema["properties"].pop("recall_mode")
+    if "required" in schema:
+        schema["required"] = [key for key in schema["required"] if key != "recall_mode"]
+    return tool.model_copy(update={"input_schema": schema})
+
+
+def _pin_recall_mode(params: Any) -> Any:
+    """Force summarized recall, whatever a cached schema or direct caller sends."""
+    from .connector_profile import HOSTED_RECALL_MODE, RECALL_MODE_TOOLS
+
+    arguments = params.arguments or {}
+    if params.name not in RECALL_MODE_TOOLS and "recall_mode" not in arguments:
+        return params
+    requested = arguments.get("recall_mode")
+    if requested is not None and requested != HOSTED_RECALL_MODE:
+        # The tool name only: the requested value is caller-supplied text.
+        logger.debug("recall_mode pinned to %s for %s", HOSTED_RECALL_MODE, params.name)
+    return params.model_copy(update={"arguments": {**arguments, "recall_mode": HOSTED_RECALL_MODE}})
+
+
 async def listed_tools(server: Any) -> list:
     """Read the static tool catalog using MCP 2.x's public handler API."""
     entry = server.get_request_handler("tools/list")
@@ -315,7 +341,7 @@ def build_server(
         tools.sort(key=lambda tool: order[tool.name])
         annotated = []
         for tool in tools:
-            tool = _apply_annotations(tool)
+            tool = _without_recall_mode(_apply_annotations(tool))
             if tool.name in CONNECTOR_TOOL_DESCRIPTIONS:
                 tool = tool.model_copy(update={"description": CONNECTOR_TOOL_DESCRIPTIONS[tool.name]})
             if tool.name == "kumiho_search_items":
@@ -354,6 +380,7 @@ def build_server(
             return types.CallToolResult(is_error=True, content=[types.TextContent(
                 type="text", text="Do not provide credentials in tool arguments. Connect your Kumiho account through OAuth, then retry without auth_token.",
             )])
+        params = _pin_recall_mode(params)
         request = current_request()
         if params.name in SESSION_TOOLS and request is not None:
             arguments = dict(params.arguments or {})

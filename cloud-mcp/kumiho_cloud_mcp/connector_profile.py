@@ -219,6 +219,19 @@ assert len(CONNECTOR_TOOLS) == CONNECTOR_TOOL_COUNT, (
     f"connector profile must expose exactly {CONNECTOR_TOOL_COUNT} tools"
 )
 
+#: Hosted recall is always summarized. The SDK's other mode reads artifacts
+#: back, and hosted deployments write none (kumiho_memory's
+#: ``_read_artifact_content`` returns "" when hosted), so its only effect here
+#: is keeping the prose of every earlier revision in engage results. Revision
+#: history stays reachable by reference. The local plugin keeps the choice.
+HOSTED_RECALL_MODE = "summarized"
+
+#: Connector tools whose SDK input schema declares ``recall_mode``.
+#: ``build_server`` hides that property from every served schema and pins the
+#: argument for these tools at dispatch, including when a caller omits it.
+#: tests/test_profile.py fails when the SDK's set drifts from this one.
+RECALL_MODE_TOOLS = frozenset({"kumiho_memory_engage", "kumiho_memory_recall"})
+
 
 #: Claude Code truncates each tool description at 2KB; keep a margin.
 MAX_TOOL_DESCRIPTION_CHARS = 1800
