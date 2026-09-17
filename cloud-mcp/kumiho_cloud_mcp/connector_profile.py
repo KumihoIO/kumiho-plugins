@@ -76,6 +76,18 @@ CONNECTOR_TOOL_ANNOTATIONS: Dict[str, Dict[str, object]] = {
 #   oldest memory, or with a query the oldest relevant match. Both honour
 #   space_paths and memory_types. The default search mode is relevance-ranked.
 #   tests/test_profile.py checks the served mode schema text for this release.
+# * A correction stacks onto the memory it corrects; nothing new on the server.
+#   kumiho-memory 1.5.0's reflect hands a capture's space_hint to the SDK store
+#   as an explicit space_path (verbatim, not slugged) and only asks for stacking
+#   when it is non-empty, so an unrouted correction always becomes a second
+#   item. The SDK's _normalize_space_path adds the project name only when the
+#   path does not already start with it, so a result's
+#   "/CognitiveMemory/preferences", "CognitiveMemory/preferences" and
+#   "preferences" name one space and never a doubled path. The gate also needs
+#   lexical overlap, which is why the correction keeps the memory's language
+#   and restates its subject. Reflect reports no stacked flag for one capture:
+#   a stacked write is a higher ?r= revision of the same item, a new item is
+#   ?r=1. tests/test_correction_stacking.py pins both on the real store path.
 #
 # The four session tools get SESSION_DESCRIPTION appended by _compat.build_server.
 CONNECTOR_TOOL_DESCRIPTIONS = {
@@ -139,23 +151,25 @@ CONNECTOR_TOOL_DESCRIPTIONS = {
         "such as weather, news or prices. Read-only."
     ),
     "kumiho_memory_reflect": (
-        "Saves distilled memories from this conversation to the user's private Kumiho "
-        "workspace and adds a short note of your reply to this conversation's temporary "
-        "working buffer. Useful when the user asks you to remember, save or note something "
-        "(\"remember this\", \"save this\", \"note that\", in any language), and at the "
-        "moment something durable is settled: a decision with its reason, a lasting "
-        "preference, a durable fact about the user's work or life, or a correction to "
-        "something recorded earlier. Not needed for routine turns, small talk or unsettled "
-        "brainstorming.\n\n"
-        "Arguments: response (required) is a one- or two-sentence gist of your reply, not "
-        "its full text. Each capture needs type (decision, preference, fact, correction and "
-        "so on), a short title with absolute dates (\"Chose the Seoul region on "
-        "2026-09-16\") and brief content in your own words; never transcripts or long "
-        "quotes. Put an existing space name, copied exactly, in space_hint or space_path so "
-        "a later update on the same subject becomes a new revision of that memory; "
-        "captures without a space are filed at the project root as separate items. "
-        "source_krefs links captures to the memories they came from. Stacking can move a "
-        "memory's published revision; earlier revisions stay in history.\n\n"
+        "Saves distilled memories to the user's private Kumiho workspace and a short note "
+        "of your reply to this conversation's temporary working buffer. Useful when the "
+        "user asks you to remember, save or note something (\"remember this\", \"save "
+        "this\", \"note that\", in any language), and when something durable is settled: a "
+        "decision with its reason, a lasting preference, a durable fact about the user, or "
+        "a correction to something saved earlier. Not needed for routine turns or small "
+        "talk.\n\n"
+        "Arguments: response (required) is a one- or two-sentence gist of your reply. Each "
+        "capture needs type (decision, preference, fact and so on), a short title with "
+        "absolute dates (\"Chose Seoul on 2026-09-16\") and brief content in your own "
+        "words, never transcripts. space_hint takes an existing space, copied exactly as "
+        "results show it (\"/CognitiveMemory/preferences\"); without one a capture is "
+        "filed at the project root as a separate item. source_krefs links captures to "
+        "their sources.\n\n"
+        "To correct a saved memory, capture the new value in that memory's space, type and "
+        "language, restating the subject in title and content. It should stack as that "
+        "memory's new published revision; earlier ones stay in history. If stored_krefs "
+        "has no new revision of that item (same reference before ?r=), it did not stack: "
+        "retire the old memory by its reference.\n\n"
         "Not for: passwords, access tokens, API keys, MFA or recovery codes, payment "
         "details, or anything the user asked not to keep, so do not call this tool for "
         "such requests."
@@ -195,10 +209,12 @@ CONNECTOR_TOOL_DESCRIPTIONS = {
     "kumiho_deprecate_item": (
         "Retires one saved memory so it no longer appears in normal searches. This is how "
         "a user's request to forget something is carried out. Useful when the user asks "
-        "you to forget, stop using or retire a specific memory. It changes what the user's "
-        "searches return, but it is reversible: the item and its revision history stay in "
-        "the workspace, and calling again with deprecated set to false restores it. It is "
-        "not permanent erasure; say so if the user expects deletion.\n\n"
+        "you to forget, stop using or retire a specific memory, and to retire the memory a "
+        "user's correction replaced when the correction did not stack as a new revision of "
+        "it. It changes what the user's searches return, but it is reversible: the item "
+        "and its revision history stay in the workspace, and calling again with deprecated "
+        "set to false restores it. It is not permanent erasure; say so if the user expects "
+        "deletion.\n\n"
         "Arguments: item_kref is the reference of the exact item "
         "(kref://project/space/item.kind; a trailing ?r= revision suffix is ignored). Make "
         "sure it is the memory the user means, and confirm with the user when more than "

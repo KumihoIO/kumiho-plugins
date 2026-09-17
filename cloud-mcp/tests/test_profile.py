@@ -336,6 +336,52 @@ async def test_memory_tool_descriptions_each_claim_their_own_intents(app, contro
     assert "space_paths" in tools["kumiho_memory_recall"]
 
 
+async def test_corrections_stack_onto_the_corrected_memory(app, control_plane, keypair):
+    """A correction reuses the old memory's space, type and language, then checks.
+
+    Regression (claude.ai, 2026-09-18): "fix it, my favorite color is black" was
+    captured with type correction and no space, so reflect never tried to stack
+    it and recall showed blue and black side by side. The fallback retire is
+    described by what it does, never by naming the forget tool: descriptions
+    carry no instructions about other tools.
+    """
+    token = keypair.sign(base_claims())
+    async with client_for(app, control_plane) as http:
+        tools = {tool["name"]: tool["description"] for tool in await _tools(http, token)}
+        instructions = await _instructions(http, token)
+
+    reflect = tools["kumiho_memory_reflect"]
+    lowered = reflect.lower()
+    # Same space, type and language, with the subject restated for the lexical gate.
+    assert "to correct a saved memory" in lowered
+    assert "in that memory's space, type and language" in lowered
+    assert "restating the subject in title and content" in lowered
+    # The verified space_hint form: a result's space, project prefix included.
+    assert 'copied exactly as results show it ("/CognitiveMemory/preferences")' in reflect
+    # "correction" is a reason to reflect, not the type to file it under.
+    types = reflect.split("Each capture needs type (", 1)[1].split(")", 1)[0]
+    assert "correction" not in types, types
+    # The not-stacked check and the retire fallback.
+    assert "stack as that memory's new published revision" in lowered
+    assert "earlier ones stay in history" in lowered
+    assert "stored_krefs has no new revision of that item (same reference before ?r=)" in reflect
+    assert "it did not stack: retire the old memory by its reference" in lowered
+    assert "kumiho_deprecate_item" not in reflect
+
+    deprecate = tools["kumiho_deprecate_item"].lower()
+    assert "retire the memory a user's correction replaced" in deprecate
+    assert "did not stack as a new revision" in deprecate
+    # The ambiguity rule still holds for that retire.
+    assert "confirm with the user when more than one memory could match" in deprecate
+
+    served_reflect = f"{CONNECTOR_TOOL_DESCRIPTIONS['kumiho_memory_reflect']}\n\n{SESSION_DESCRIPTION}"
+    assert reflect == served_reflect
+    for text in (reflect, tools["kumiho_deprecate_item"]):
+        assert len(text) <= MAX_TOOL_DESCRIPTION_CHARS < 2000
+        assert len(text.encode("utf-8")) <= MAX_TOOL_DESCRIPTION_CHARS
+    assert len(instructions.encode("utf-8")) <= MAX_INSTRUCTIONS_BYTES <= 2000
+
+
 async def test_instructions_route_the_same_intents(app, control_plane, keypair):
     async with client_for(app, control_plane) as http:
         instructions = await _instructions(http, keypair.sign(base_claims()))
