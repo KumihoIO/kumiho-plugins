@@ -59,6 +59,12 @@ CONNECTOR_TOOL_ANNOTATIONS: Dict[str, Dict[str, object]] = {
 #   workspaces, live information) is scoped to the tool that carries it.
 # * No instructions about general model behaviour; that stays in
 #   CONNECTOR_INSTRUCTIONS.
+# * Engage and reflect are the primary tools. Engage claims the recall intents
+#   (start of a conversation, the user referring back, "what did I save?") and
+#   reflect claims the capture intents ("remember this", a settled decision).
+#   Recall, retrieve and store describe their narrower uses and claim none of
+#   those intents, so a plain "remember this" never routes to store. Primacy
+#   comes from which intents a description claims, never from naming a tool.
 #
 # The four session tools get SESSION_DESCRIPTION appended by _compat.build_server.
 CONNECTOR_TOOL_DESCRIPTIONS = {
@@ -67,10 +73,12 @@ CONNECTOR_TOOL_DESCRIPTIONS = {
         "request. Returns a ready-to-use context summary, the matching memories and their "
         "references (source_krefs). Useful near the start of a conversation about the "
         "user's own ongoing work, projects, decisions or preferences when earlier saved "
-        "context could change the answer, and when the user refers back to something that "
-        "is not visible in this conversation (\"as we decided\", \"my usual setup\", an "
-        "unfamiliar project name). The returned references can be attached to a related "
-        "memory saved later, linking it to its sources.\n\n"
+        "context could change the answer; when the user refers back to something that is "
+        "not visible in this conversation (\"as we decided\", \"my usual setup\", an "
+        "unfamiliar project name); and when the user asks what was saved, decided or "
+        "remembered before (\"what did I save recently?\", \"what do you remember about "
+        "me?\"). The returned references can be attached to a related memory saved later, "
+        "linking it to its sources.\n\n"
         "Not for: saving, finding or checking passwords, access tokens, API keys, MFA or "
         "recovery codes, so do not call this tool for such requests, not even to check "
         "first; data from another organization or any workspace the connected account is "
@@ -81,31 +89,29 @@ CONNECTOR_TOOL_DESCRIPTIONS = {
         "result marked deduplicated; reuse the earlier results instead."
     ),
     "kumiho_memory_recall": (
-        "Semantic search over the user's saved Kumiho memories. Returns the best matches "
-        "with titles, summaries, relevance scores and references. Useful mid-conversation "
-        "when the user mentions something that is not in the current context and may have "
-        "been saved before: a past decision, a stated preference, a named project, person "
-        "or setup, or a question about what was decided or noted earlier.\n\n"
+        "Filtered semantic search over the user's saved Kumiho memories. Returns the best "
+        "matches with titles, summaries, relevance scores and references. Useful when the "
+        "search has to be limited by memory type (memory_types, for example [\"decision\"] "
+        "or [\"preference\"]) or by location (space_paths, for example one project's "
+        "space), such as listing the decisions filed in a known space.\n\n"
         "query: describe what you are looking for in natural language rather than guessing "
-        "exact keywords. Narrow with memory_types (for example [\"decision\"]) or "
-        "space_paths when the kind or location of the memory is known. Repeating an "
-        "identical query within a few seconds returns an empty result marked "
-        "deduplicated; vary the query or reuse the earlier results.\n\n"
+        "exact keywords. Repeating an identical query within a few seconds returns an "
+        "empty result marked deduplicated; vary the query or reuse the earlier results.\n\n"
         "Not for: saving, finding or checking passwords, access tokens, API keys, MFA or "
         "recovery codes, so do not call this tool for such requests; data outside the "
         "connected account's authorized workspace; general knowledge or live information "
         "such as weather, news or prices. Read-only."
     ),
     "kumiho_memory_retrieve": (
-        "Targeted lookup of saved memories by title words, keywords, topics, space or "
-        "memory type, with fuzzy matching and relevance ranking. Useful when you know "
-        "roughly which memory you need (a titled decision, a memory in a named space, the "
-        "earliest or latest entry) and need its exact reference, for example to read "
-        "its full revision, link to it or retire it. Returns item references, revision "
-        "references and scores, not the memory text itself.\n\n"
-        "Arguments: query takes the words you expect in the title or summary. mode is "
-        "\"search\" (default), \"first\" for the oldest match or \"latest\" for the newest. "
-        "space_paths and memory_types (for example [\"decision\"]) narrow the search.\n\n"
+        "Lookup that returns exact references for a memory identified by a known title, "
+        "keyword, topic or space, with fuzzy matching and relevance ranking. Useful when "
+        "you already know which memory you need and need its exact item or revision "
+        "reference, for example to read that revision, link to it or retire it. Returns "
+        "item references, revision references and scores, not the memory text itself.\n\n"
+        "Arguments: query takes the words you expect in the title or summary; keywords "
+        "and topics add terms. space_paths and memory_types (for example [\"decision\"]) "
+        "narrow the lookup. mode is \"search\" (default, fuzzy relevance), \"first\" "
+        "(oldest match by date) or \"latest\" (newest match by date).\n\n"
         "Not for: saving, finding or checking passwords, access tokens, API keys, MFA or "
         "recovery codes, so do not call this tool for such requests; data outside the "
         "connected account's authorized workspace; general knowledge or live information "
@@ -114,10 +120,11 @@ CONNECTOR_TOOL_DESCRIPTIONS = {
     "kumiho_memory_reflect": (
         "Saves distilled memories from this conversation to the user's private Kumiho "
         "workspace and adds a short note of your reply to this conversation's temporary "
-        "working buffer. Useful at the moment something durable is settled: the user makes "
-        "a decision and gives the reason, states a lasting preference, gives a durable fact "
-        "about their work or life, corrects something recorded earlier, or asks you to "
-        "remember something. Not needed for routine turns, small talk or unsettled "
+        "working buffer. Useful when the user asks you to remember, save or note something "
+        "(\"remember this\", \"save this\", \"note that\", in any language), and at the "
+        "moment something durable is settled: a decision with its reason, a lasting "
+        "preference, a durable fact about the user's work or life, or a correction to "
+        "something recorded earlier. Not needed for routine turns, small talk or unsettled "
         "brainstorming.\n\n"
         "Arguments: response (required) is a one- or two-sentence gist of your reply, not "
         "its full text. Each capture needs type (decision, preference, fact, correction and "
@@ -133,15 +140,15 @@ CONNECTOR_TOOL_DESCRIPTIONS = {
         "such requests."
     ),
     "kumiho_memory_store": (
-        "Saves one explicit item the user asks to keep (a decision, fact, preference or "
-        "note) as a memory in the user's private Kumiho workspace and returns its "
-        "reference. Useful when the user says \"remember this\", \"save this\" or \"note "
-        "that\" about a single, self-contained item. By default it looks for a similar "
-        "memory in the same space and adds a new revision to it, moving its published tag, "
-        "instead of creating a duplicate; earlier revisions are retained. Set "
-        "stack_revisions to false to always create a separate memory. May create the "
-        "space, a bundle and provenance links.\n\n"
-        "Arguments: user_text (required) is the brief item to save, in the user's words or "
+        "Writes one pre-formed memory entry to the user's private Kumiho workspace and "
+        "returns its reference. The entry arrives as it should be kept: its text plus, "
+        "optionally, a title, summary, memory type and space. Useful for a single "
+        "self-contained entry whose content and placement are already decided. By default "
+        "it looks for a similar memory in the same space and adds a new revision to it, "
+        "moving its published tag, instead of creating a duplicate; earlier revisions are "
+        "retained. Set stack_revisions to false to always create a separate memory. May "
+        "create the space, a bundle and provenance links.\n\n"
+        "Arguments: user_text (required) is the entry's brief text, in the user's words or "
         "a close paraphrase, never a conversation transcript. Add a short title, a "
         "one-sentence summary, memory_type (decision, fact, summary and so on) and an "
         "existing space name, copied exactly, in space_path or space_hint when known.\n\n"
@@ -222,8 +229,10 @@ INSTRUCTIONS_LEAD_CHARS = 512
 
 # Essentials first. The opening paragraph (under INSTRUCTIONS_LEAD_CHARS) is
 # the credential/authorization boundary plus the engage/reflect rhythm, so it
-# still works when a client keeps only the lead. Detail that does not fit the
-# byte budget belongs in the tool descriptions or the uploadable skill.
+# still works when a client keeps only the lead. Later paragraphs keep engage
+# and reflect as the entry points; recall, retrieve and store appear only as
+# narrower tools. Detail that does not fit the byte budget belongs in the tool
+# descriptions or the uploadable skill.
 CONNECTOR_INSTRUCTIONS = """\
 Kumiho Memory is the user's private memory across conversations. Never use it \
 for passwords, tokens, API keys, card details, MFA or recovery codes: refuse \
@@ -236,16 +245,17 @@ preference, fact or correction, call kumiho_memory_reflect.
 Send only brief, task-relevant text, never a transcript. Account access uses \
 OAuth.
 
-Recall: when the user mentions something not in context ("as we discussed", an \
-unfamiliar project), call kumiho_memory_recall with a natural-language \
-description. kumiho_memory_retrieve finds a known title or space and returns \
-references; read one with kumiho_get_revision_by_tag (item kref, tag "latest").
+Recall: engage also covers the user referring to something not in context \
+("as we discussed", an unfamiliar project) and asking what was saved or \
+decided before. Narrower: kumiho_memory_recall filters by memory type or \
+space; kumiho_memory_retrieve returns exact references for a known title or \
+space; read one with kumiho_get_revision_by_tag (item kref, tag "latest").
 
-Capture: reflect at the moment something is settled or the user asks you to \
-remember, not at the end and not on routine turns. Use brief typed captures, \
-absolute dates in titles, an existing space name in space_hint, and engage's \
-source_krefs. kumiho_memory_store saves one item the user explicitly asks to \
-keep.
+Capture: reflect when the user asks you to remember, save or note something, \
+and at the moment something is settled; not at the end and not on routine \
+turns. Use brief typed captures, absolute dates in titles, an existing space \
+name in space_hint, and engage's source_krefs. kumiho_memory_store is a \
+lower-level write of one pre-formed entry.
 
 Sessions: never invent a session_id or reuse another conversation's. If \
 reflect, consolidate or chat get/clear returns session_required with a new ID, \

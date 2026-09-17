@@ -259,6 +259,69 @@ async def test_memory_tools_carry_their_own_scoped_exclusions(app, control_plane
         assert "authorized" in text, name
 
 
+#: Phrases a user says to have something kept. Only reflect may claim them.
+CAPTURE_TRIGGERS = (
+    "remember this", "save this", "note that", "asks you to remember", "asks to remember",
+    "asks to keep", "asks to save", "remember, save or note",
+)
+#: Recall intents (referring back, "what did I save?"). Only engage may claim them.
+RECALL_INTENTS = (
+    "what did i save", "what was saved", "what do you remember", "recent",
+    "refers back", "not visible in this conversation", "not in the current context",
+    "as we decided", "what was decided", "noted earlier",
+)
+NARROW_TOOLS = ("kumiho_memory_store", "kumiho_memory_recall", "kumiho_memory_retrieve")
+
+
+async def test_engage_and_reflect_claim_the_common_memory_intents(app, control_plane, keypair):
+    """Engage owns recall intents and reflect owns capture intents, by description alone.
+
+    Regression: a store description that claimed "remember this" competed with
+    reflect for the most common capture request.
+    """
+    async with client_for(app, control_plane) as http:
+        tools = {tool["name"]: tool for tool in await _tools(http, keypair.sign(base_claims()))}
+
+    engage = tools["kumiho_memory_engage"]["description"].lower()
+    for phrase in ("start of a conversation", "refers back", "what was saved",
+                   "what did i save recently?", "what do you remember about me?"):
+        assert phrase in engage, phrase
+    assert not [phrase for phrase in CAPTURE_TRIGGERS if phrase in engage]
+
+    reflect = tools["kumiho_memory_reflect"]["description"].lower()
+    for phrase in ("remember this", "save this", "note that", "asks you to remember"):
+        assert phrase in reflect, phrase
+    for phrase in ("decision", "preference", "durable fact", "correction"):
+        assert phrase in reflect, phrase
+    assert not [phrase for phrase in RECALL_INTENTS if phrase in reflect]
+
+    for name in NARROW_TOOLS:
+        text = tools[name]["description"].lower()
+        assert not [phrase for phrase in CAPTURE_TRIGGERS if phrase in text], name
+        assert not [phrase for phrase in RECALL_INTENTS if phrase in text], name
+    assert "memory_types" in tools["kumiho_memory_recall"]["description"]
+    assert "space_paths" in tools["kumiho_memory_recall"]["description"]
+    assert "exact" in tools["kumiho_memory_retrieve"]["description"]
+
+
+async def test_instructions_keep_engage_and_reflect_as_the_entry_points(app, control_plane, keypair):
+    async with client_for(app, control_plane) as http:
+        instructions = await _instructions(http, keypair.sign(base_claims()))
+    lead = instructions.split("\n\n", 1)[0]
+    assert "kumiho_memory_engage" in lead and "kumiho_memory_reflect" in lead
+    for name in NARROW_TOOLS:
+        assert name not in lead, name
+    lowered = instructions.lower()
+    assert "what was saved" in lowered
+    assert "remember, save or note" in lowered
+    # No sentence that names a narrower tool claims a common intent for it.
+    sentences = [part for chunk in lowered.split("\n\n") for part in chunk.replace("; ", ". ").split(". ")]
+    for sentence in sentences:
+        if any(name in sentence for name in NARROW_TOOLS):
+            assert not [phrase for phrase in CAPTURE_TRIGGERS + RECALL_INTENTS if phrase in sentence], sentence
+            assert "explicitly asks" not in sentence, sentence
+
+
 async def test_session_tools_keep_the_session_required_wording(app, control_plane, keypair):
     assert SESSION_TOOLS <= set(CONNECTOR_TOOL_DESCRIPTIONS)
     async with client_for(app, control_plane) as http:
