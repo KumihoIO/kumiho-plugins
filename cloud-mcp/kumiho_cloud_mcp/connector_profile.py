@@ -66,10 +66,16 @@ CONNECTOR_TOOL_ANNOTATIONS: Dict[str, Dict[str, object]] = {
 #   oldest lookups ("what did I save recently?") besides exact references.
 #   Reflect owns capture ("remember this", a settled decision), so a plain
 #   "remember this" never routes to store. Store and recall claim none of these.
-# * Retrieve's recency wording must match the SDK: kumiho 0.13.0 has no
-#   separate "latest" branch. Results come newest first (by creation date) only
-#   when query, keywords and topics are empty; with a query they are ranked by
-#   relevance. "first" returns the single oldest memory, ignoring query and space.
+# * Retrieve's recency wording must match the SDK. kumiho 0.13.1 implements
+#   mode "latest": newest first by last update (the returned revision's
+#   created_at, so an updated memory moves forward), with a created_at list
+#   aligned with revision_krefs. A query, keywords or topics keep only relevant
+#   matches, still in date order; when nothing matches it falls back to the
+#   scoped listing (score 0.0), also in date order. Search is fuzzy, so even an
+#   unrelated query can return weak non-zero matches. "first" returns the single
+#   oldest memory, or with a query the oldest relevant match. Both honour
+#   space_paths and memory_types. The default search mode is relevance-ranked.
+#   tests/test_profile.py checks the served mode schema text for this release.
 #
 # The four session tools get SESSION_DESCRIPTION appended by _compat.build_server.
 CONNECTOR_TOOL_DESCRIPTIONS = {
@@ -116,13 +122,17 @@ CONNECTOR_TOOL_DESCRIPTIONS = {
         "which memory you need and need its exact item or revision reference, for example "
         "to link to it or retire it. Returns item references, revision references and "
         "scores, not the memory text; a returned revision can be read for its text.\n\n"
-        "Arguments: for the most recent memories, set mode to \"latest\" and leave query, "
-        "keywords and topics empty; results then come newest first by the date each memory "
-        "was created, narrowed by space_paths (for a topic, its space) and memory_types "
-        "(for example [\"decision\"]). With a query, results are ranked by relevance "
-        "instead. mode \"first\" returns the single oldest memory, optionally of one "
-        "memory type, whatever the query or space. Otherwise query takes the words you "
-        "expect in the title or summary; keywords and topics add terms.\n\n"
+        "Arguments: for the most recent memories, set mode to \"latest\". Results come "
+        "newest first by last update (an older memory that was updated moves forward) and "
+        "carry created_at dates. A query, keywords or topics narrow them to relevant "
+        "matches, still newest first: for \"my latest note on the launch plan\", set query "
+        "to \"launch plan\". Matching is fuzzy, and when nothing matches the newest memories "
+        "in scope come back with score 0, so check that results fit. mode \"first\" returns "
+        "the single oldest memory, or with a query the oldest relevant match. Both modes "
+        "honor space_paths (for example one project's space) and memory_types (for example "
+        "[\"decision\"]). In the default search mode, results are ranked by relevance; query "
+        "takes the words you expect in the title or summary, and keywords and topics add "
+        "terms.\n\n"
         "Not for: saving, finding or checking passwords, access tokens, API keys, MFA or "
         "recovery codes, so do not call this tool for such requests; data outside the "
         "connected account's authorized workspace; general knowledge or live information "
@@ -273,9 +283,10 @@ OAuth.
 Recall: engage also covers the user referring back ("as we discussed", an \
 unfamiliar project) and what was decided or noted before. For the newest or \
 oldest memories ("what did I save recently?"), call kumiho_memory_retrieve with \
-mode "latest" or "first" and no query; it also finds exact references by title \
-or space. kumiho_memory_recall filters search by memory type or space. Read a \
-result with kumiho_get_revision_by_tag (item kref, tag "latest").
+mode "latest" or "first" and, for a topic, a query; it also finds exact \
+references by title or space. kumiho_memory_recall filters search by memory \
+type or space. Read a result with kumiho_get_revision_by_tag (item kref, tag \
+"latest").
 
 Capture: reflect when the user asks you to remember, save or note something, \
 and at the moment something is settled; not at the end and not on routine \

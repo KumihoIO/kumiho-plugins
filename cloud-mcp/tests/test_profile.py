@@ -237,6 +237,8 @@ async def test_every_served_description_fits_claude_code(app, control_plane, key
         description = tool.get("description") or ""
         assert description.strip(), name
         assert len(description) <= MAX_TOOL_DESCRIPTION_CHARS, (name, len(description))
+        # The 2KB cut is in bytes; the margin must hold for non-ASCII text too.
+        assert len(description.encode("utf-8")) <= MAX_TOOL_DESCRIPTION_CHARS, name
 
 
 async def test_no_served_description_names_another_connector_tool(app, control_plane, keypair):
@@ -358,6 +360,51 @@ async def test_instructions_route_the_same_intents(app, control_plane, keypair):
         if "kumiho_memory_store" in sentence or "kumiho_memory_recall" in sentence:
             assert _without(sentence, CAPTURE_TRIGGERS + RECENCY_INTENTS + GENERAL_RECALL_INTENTS) == [], sentence
             assert "explicitly asks" not in sentence, sentence
+
+
+#: The kumiho 0.13.0 workaround: recency only held with an empty query.
+EMPTY_QUERY_WORKAROUND = (
+    "leave query", "leave the query", "query empty", "queries empty", "no query",
+    "keywords and topics empty", "without a query", "relevance instead", "whatever the query",
+)
+
+
+async def test_retrieve_recency_wording_matches_the_sdk(app, control_plane, keypair):
+    """kumiho 0.13.1 orders mode "latest" by date with or without a query.
+
+    Regression: under 0.13.0 a query switched results back to relevance order,
+    so the description told the model to leave the query empty. The served
+    schema's own mode text is the SDK's, so a downgrade fails here too.
+    """
+    token = keypair.sign(base_claims())
+    async with client_for(app, control_plane) as http:
+        tools = {tool["name"]: tool for tool in await _tools(http, token)}
+        instructions = await _instructions(http, token)
+
+    tool = tools["kumiho_memory_retrieve"]
+    retrieve = tool["description"]
+    lowered = retrieve.lower()
+    assert _without(lowered, EMPTY_QUERY_WORKAROUND) == []
+    # Recency still routes to mode "latest", and a query keeps date order.
+    assert 'set mode to "latest"' in retrieve
+    for phrase in ("newest first by last update", "narrow them to relevant matches",
+                   "still newest first", "created_at", "my latest note on the launch plan"):
+        assert phrase in lowered, phrase
+    assert 'mode "first"' in retrieve and "oldest relevant match" in lowered
+    assert len(retrieve.encode("utf-8")) <= MAX_TOOL_DESCRIPTION_CHARS < 2000
+
+    mode = tool["inputSchema"]["properties"]["mode"]["description"]
+    assert "latest: newest first by last update" in mode, mode
+    assert "with a query, relevant matches ordered by date" in mode, mode
+
+    assert len(instructions.encode("utf-8")) <= MAX_INSTRUCTIONS_BYTES <= 2000
+    sentences = [part for chunk in instructions.lower().split("\n\n")
+                 for part in chunk.replace("; ", ". ").split(". ")]
+    retrieve_sentences = [s for s in sentences if "kumiho_memory_retrieve" in s]
+    assert retrieve_sentences
+    for sentence in retrieve_sentences:
+        assert _without(sentence, EMPTY_QUERY_WORKAROUND) == [], sentence
+    assert 'mode "latest" or "first" and, for a topic, a query' in instructions
 
 
 async def test_session_tools_keep_the_session_required_wording(app, control_plane, keypair):
