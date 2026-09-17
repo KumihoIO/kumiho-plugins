@@ -279,61 +279,84 @@ CAPTURE_TRIGGERS = (
     "remember this", "save this", "note that", "asks you to remember", "asks to remember",
     "asks to keep", "asks to save", "remember, save or note",
 )
-#: Recall intents (referring back, "what did I save?"). Only engage may claim them.
-RECALL_INTENTS = (
-    "what did i save", "what was saved", "what do you remember", "recent",
-    "refers back", "not visible in this conversation", "not in the current context",
-    "as we decided", "what was decided", "noted earlier",
+#: General recall (referring back, what was decided). Only engage may claim it.
+GENERAL_RECALL_INTENTS = (
+    "refers back", "referring back", "not visible in this conversation",
+    "not in the current context", "as we decided", "as we discussed",
+    "what do you remember", "decided or noted before", "what was decided", "noted earlier",
 )
-NARROW_TOOLS = ("kumiho_memory_store", "kumiho_memory_recall", "kumiho_memory_retrieve")
+#: Newest and oldest lookups. Only retrieve may claim them.
+RECENCY_INTENTS = (
+    "recent", "latest", "newest", "what did i save", "what was saved",
+)
 
 
-async def test_engage_and_reflect_claim_the_common_memory_intents(app, control_plane, keypair):
-    """Engage owns recall intents and reflect owns capture intents, by description alone.
+def _without(text, phrases):
+    return [phrase for phrase in phrases if phrase in text]
 
-    Regression: a store description that claimed "remember this" competed with
-    reflect for the most common capture request.
+
+async def test_memory_tool_descriptions_each_claim_their_own_intents(app, control_plane, keypair):
+    """General recall -> engage, newest/oldest -> retrieve, capture -> reflect.
+
+    Regressions: a store description that claimed "remember this" competed with
+    reflect, and an engage description that claimed "what did I save recently?"
+    sent recency questions to a relevance-ranked search.
     """
     async with client_for(app, control_plane) as http:
-        tools = {tool["name"]: tool for tool in await _tools(http, keypair.sign(base_claims()))}
+        tools = {tool["name"]: tool["description"].lower()
+                 for tool in await _tools(http, keypair.sign(base_claims()))}
 
-    engage = tools["kumiho_memory_engage"]["description"].lower()
-    for phrase in ("start of a conversation", "refers back", "what was saved",
-                   "what did i save recently?", "what do you remember about me?"):
+    engage = tools["kumiho_memory_engage"]
+    for phrase in ("start of a conversation", "refers back", "what do you remember about me?",
+                   "decided or noted before"):
         assert phrase in engage, phrase
-    assert not [phrase for phrase in CAPTURE_TRIGGERS if phrase in engage]
+    assert _without(engage, RECENCY_INTENTS) == []
+    assert _without(engage, CAPTURE_TRIGGERS) == []
 
-    reflect = tools["kumiho_memory_reflect"]["description"].lower()
-    for phrase in ("remember this", "save this", "note that", "asks you to remember"):
+    retrieve = tools["kumiho_memory_retrieve"]
+    useful_when = retrieve.split("\n\n", 1)[0]
+    for phrase in ("most recent", "what did i save recently?", "newest"):
+        assert phrase in useful_when, phrase
+    assert 'mode to "latest"' in retrieve
+    assert "not the memory text" in retrieve and "exact" in retrieve
+    assert _without(retrieve, GENERAL_RECALL_INTENTS) == []
+    assert _without(retrieve, CAPTURE_TRIGGERS) == []
+
+    reflect = tools["kumiho_memory_reflect"]
+    for phrase in ("remember this", "save this", "note that", "asks you to remember",
+                   "decision", "preference", "durable fact", "correction"):
         assert phrase in reflect, phrase
-    for phrase in ("decision", "preference", "durable fact", "correction"):
-        assert phrase in reflect, phrase
-    assert not [phrase for phrase in RECALL_INTENTS if phrase in reflect]
+    assert _without(reflect, RECENCY_INTENTS + GENERAL_RECALL_INTENTS) == []
 
-    for name in NARROW_TOOLS:
-        text = tools[name]["description"].lower()
-        assert not [phrase for phrase in CAPTURE_TRIGGERS if phrase in text], name
-        assert not [phrase for phrase in RECALL_INTENTS if phrase in text], name
-    assert "memory_types" in tools["kumiho_memory_recall"]["description"]
-    assert "space_paths" in tools["kumiho_memory_recall"]["description"]
-    assert "exact" in tools["kumiho_memory_retrieve"]["description"]
+    for name in ("kumiho_memory_store", "kumiho_memory_recall"):
+        assert _without(tools[name], CAPTURE_TRIGGERS + RECENCY_INTENTS + GENERAL_RECALL_INTENTS) == [], name
+    assert "memory_types" in tools["kumiho_memory_recall"]
+    assert "space_paths" in tools["kumiho_memory_recall"]
 
 
-async def test_instructions_keep_engage_and_reflect_as_the_entry_points(app, control_plane, keypair):
+async def test_instructions_route_the_same_intents(app, control_plane, keypair):
     async with client_for(app, control_plane) as http:
         instructions = await _instructions(http, keypair.sign(base_claims()))
     lead = instructions.split("\n\n", 1)[0]
     assert "kumiho_memory_engage" in lead and "kumiho_memory_reflect" in lead
-    for name in NARROW_TOOLS:
+    for name in ("kumiho_memory_store", "kumiho_memory_recall", "kumiho_memory_retrieve"):
         assert name not in lead, name
     lowered = instructions.lower()
-    assert "what was saved" in lowered
     assert "remember, save or note" in lowered
-    # No sentence that names a narrower tool claims a common intent for it.
+
     sentences = [part for chunk in lowered.split("\n\n") for part in chunk.replace("; ", ". ").split(". ")]
+    retrieve = [s for s in sentences if "kumiho_memory_retrieve" in s]
+    assert any('mode "latest"' in s and "recent" in s for s in retrieve), retrieve
+    engage_recall = [s for s in sentences if "engage also covers" in s]
+    assert len(engage_recall) == 1
+    assert "referring back" in engage_recall[0] and "decided or noted before" in engage_recall[0]
     for sentence in sentences:
-        if any(name in sentence for name in NARROW_TOOLS):
-            assert not [phrase for phrase in CAPTURE_TRIGGERS + RECALL_INTENTS if phrase in sentence], sentence
+        if "engage" in sentence:
+            assert _without(sentence, RECENCY_INTENTS) == [], sentence
+        if "kumiho_memory_retrieve" in sentence:
+            assert _without(sentence, CAPTURE_TRIGGERS + GENERAL_RECALL_INTENTS) == [], sentence
+        if "kumiho_memory_store" in sentence or "kumiho_memory_recall" in sentence:
+            assert _without(sentence, CAPTURE_TRIGGERS + RECENCY_INTENTS + GENERAL_RECALL_INTENTS) == [], sentence
             assert "explicitly asks" not in sentence, sentence
 
 

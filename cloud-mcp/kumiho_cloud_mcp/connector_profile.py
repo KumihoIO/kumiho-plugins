@@ -59,12 +59,17 @@ CONNECTOR_TOOL_ANNOTATIONS: Dict[str, Dict[str, object]] = {
 #   workspaces, live information) is scoped to the tool that carries it.
 # * No instructions about general model behaviour; that stays in
 #   CONNECTOR_INSTRUCTIONS.
-# * Engage and reflect are the primary tools. Engage claims the recall intents
-#   (start of a conversation, the user referring back, "what did I save?") and
-#   reflect claims the capture intents ("remember this", a settled decision).
-#   Recall, retrieve and store describe their narrower uses and claim none of
-#   those intents, so a plain "remember this" never routes to store. Primacy
-#   comes from which intents a description claims, never from naming a tool.
+# * Each common intent has one owner, expressed only by which intents a
+#   description claims, never by naming a tool. Engage owns general recall
+#   (start of a conversation, the user referring back, what was decided or
+#   noted before) and claims nothing about recency. Retrieve owns newest and
+#   oldest lookups ("what did I save recently?") besides exact references.
+#   Reflect owns capture ("remember this", a settled decision), so a plain
+#   "remember this" never routes to store. Store and recall claim none of these.
+# * Retrieve's recency wording must match the SDK: kumiho 0.13.0 has no
+#   separate "latest" branch. Results come newest first (by creation date) only
+#   when query, keywords and topics are empty; with a query they are ranked by
+#   relevance. "first" returns the single oldest memory, ignoring query and space.
 #
 # The four session tools get SESSION_DESCRIPTION appended by _compat.build_server.
 CONNECTOR_TOOL_DESCRIPTIONS = {
@@ -75,10 +80,11 @@ CONNECTOR_TOOL_DESCRIPTIONS = {
         "user's own ongoing work, projects, decisions or preferences when earlier saved "
         "context could change the answer; when the user refers back to something that is "
         "not visible in this conversation (\"as we decided\", \"my usual setup\", an "
-        "unfamiliar project name); and when the user asks what was saved, decided or "
-        "remembered before (\"what did I save recently?\", \"what do you remember about "
-        "me?\"). The returned references can be attached to a related memory saved later, "
-        "linking it to its sources.\n\n"
+        "unfamiliar project name); and when the user asks what you remember about them or "
+        "what was decided or noted before on a topic (\"what do you remember about me?\", "
+        "\"what did we decide about pricing?\"). Matches are ranked by relevance to the "
+        "query, not by date. The returned references can be attached to a related memory "
+        "saved later, linking it to its sources.\n\n"
         "Not for: saving, finding or checking passwords, access tokens, API keys, MFA or "
         "recovery codes, so do not call this tool for such requests, not even to check "
         "first; data from another organization or any workspace the connected account is "
@@ -103,15 +109,20 @@ CONNECTOR_TOOL_DESCRIPTIONS = {
         "such as weather, news or prices. Read-only."
     ),
     "kumiho_memory_retrieve": (
-        "Lookup that returns exact references for a memory identified by a known title, "
-        "keyword, topic or space, with fuzzy matching and relevance ranking. Useful when "
-        "you already know which memory you need and need its exact item or revision "
-        "reference, for example to read that revision, link to it or retire it. Returns "
-        "item references, revision references and scores, not the memory text itself.\n\n"
-        "Arguments: query takes the words you expect in the title or summary; keywords "
-        "and topics add terms. space_paths and memory_types (for example [\"decision\"]) "
-        "narrow the lookup. mode is \"search\" (default, fuzzy relevance), \"first\" "
-        "(oldest match by date) or \"latest\" (newest match by date).\n\n"
+        "Lookup of the user's saved memories by date or by a known title, keyword, topic or "
+        "space. Useful when the user asks for their most recent or oldest memories (\"what "
+        "did I save recently?\", \"my latest note on the launch plan\", \"the newest "
+        "decision in this space\", \"the first thing I saved\"), and when you already know "
+        "which memory you need and need its exact item or revision reference, for example "
+        "to link to it or retire it. Returns item references, revision references and "
+        "scores, not the memory text; a returned revision can be read for its text.\n\n"
+        "Arguments: for the most recent memories, set mode to \"latest\" and leave query, "
+        "keywords and topics empty; results then come newest first by the date each memory "
+        "was created, narrowed by space_paths (for a topic, its space) and memory_types "
+        "(for example [\"decision\"]). With a query, results are ranked by relevance "
+        "instead. mode \"first\" returns the single oldest memory, optionally of one "
+        "memory type, whatever the query or space. Otherwise query takes the words you "
+        "expect in the title or summary; keywords and topics add terms.\n\n"
         "Not for: saving, finding or checking passwords, access tokens, API keys, MFA or "
         "recovery codes, so do not call this tool for such requests; data outside the "
         "connected account's authorized workspace; general knowledge or live information "
@@ -242,10 +253,11 @@ INSTRUCTIONS_LEAD_CHARS = 512
 
 # Essentials first. The opening paragraph (under INSTRUCTIONS_LEAD_CHARS) is
 # the credential/authorization boundary plus the engage/reflect rhythm, so it
-# still works when a client keeps only the lead. Later paragraphs keep engage
-# and reflect as the entry points; recall, retrieve and store appear only as
-# narrower tools. Detail that does not fit the byte budget belongs in the tool
-# descriptions or the uploadable skill.
+# still works when a client keeps only the lead. Later paragraphs route the
+# same intents as the descriptions: engage for general recall, retrieve for
+# newest or oldest memories, recall for type- or space-filtered search, reflect
+# for capture, store only as a lower-level write. Detail that does not fit the
+# byte budget belongs in the tool descriptions or the uploadable skill.
 CONNECTOR_INSTRUCTIONS = """\
 Kumiho Memory is the user's private memory across conversations. Never use it \
 for passwords, tokens, API keys, card details, MFA or recovery codes: refuse \
@@ -258,11 +270,12 @@ preference, fact or correction, call kumiho_memory_reflect.
 Send only brief, task-relevant text, never a transcript. Account access uses \
 OAuth.
 
-Recall: engage also covers the user referring to something not in context \
-("as we discussed", an unfamiliar project) and asking what was saved or \
-decided before. Narrower: kumiho_memory_recall filters by memory type or \
-space; kumiho_memory_retrieve returns exact references for a known title or \
-space; read one with kumiho_get_revision_by_tag (item kref, tag "latest").
+Recall: engage also covers the user referring back ("as we discussed", an \
+unfamiliar project) and what was decided or noted before. For the newest or \
+oldest memories ("what did I save recently?"), call kumiho_memory_retrieve with \
+mode "latest" or "first" and no query; it also finds exact references by title \
+or space. kumiho_memory_recall filters search by memory type or space. Read a \
+result with kumiho_get_revision_by_tag (item kref, tag "latest").
 
 Capture: reflect when the user asks you to remember, save or note something, \
 and at the moment something is settled; not at the end and not on routine \
