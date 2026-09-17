@@ -135,6 +135,225 @@ describe("KumihoClient memory retrieval", () => {
   });
 });
 
+describe("KumihoClient memory retrieval — the space of each revision", () => {
+  // `spaces_used` is the de-duplicated set of spaces the hits came from, not a
+  // list aligned with `revision_krefs`, so each entry's space must come from
+  // its own kref (or explicit metadata), never from spaces_used[i].
+  type Revision = { metadata?: Record<string, unknown>; fail?: boolean };
+
+  function retrieveTransport(
+    retrieve: Record<string, unknown>,
+    revisions: Record<string, Revision> = {},
+  ) {
+    return vi.fn(async (tool: string, params: Record<string, unknown>) => {
+      if (tool === "kumiho_memory_retrieve") return retrieve;
+      if (tool === "kumiho_get_revision") {
+        const kref = String(params.kref);
+        const revision = revisions[kref] ?? {};
+        if (revision.fail) throw new Error(`revision unavailable: ${kref}`);
+        return {
+          kref,
+          item_kref: kref.split("?")[0],
+          created_at: "2026-09-17T09:00:00Z",
+          metadata: { type: "decision", title: `title of ${kref}`, ...revision.metadata },
+        };
+      }
+      throw new Error(`unexpected tool ${tool}`);
+    });
+  }
+
+  async function spacesOf(
+    retrieve: Record<string, unknown>,
+    revisions: Record<string, Revision> = {},
+  ) {
+    const call = retrieveTransport(retrieve, revisions);
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+    const results = await client.memoryRetrieve({ query: "anything" });
+    return results.map((entry) => entry.space);
+  }
+
+  it("labels multi-space results by their own kref when spaces_used is deduped and shorter", async () => {
+    // Hits from [personal, personal, work] report spaces_used [personal, work].
+    // Indexing it labeled the second personal hit "work" and the work hit undefined.
+    const spaces = await spacesOf({
+      revision_krefs: [
+        "kref://CognitiveMemory/personal/editor-preference.preference?r=2",
+        "kref://CognitiveMemory/personal/timezone.fact?r=1",
+        "kref://CognitiveMemory/work/release-cadence.decision?r=5",
+      ],
+      spaces_used: ["CognitiveMemory/personal", "CognitiveMemory/work"],
+      scores: [0.91, 0.84, 0.77],
+    });
+
+    expect(spaces).toEqual([
+      "CognitiveMemory/personal",
+      "CognitiveMemory/personal",
+      "CognitiveMemory/work",
+    ]);
+  });
+
+  it("keeps each result's score aligned while deriving its space", async () => {
+    const call = retrieveTransport({
+      revision_krefs: [
+        "kref://CognitiveMemory/work/a.decision?r=1",
+        "kref://CognitiveMemory/personal/b.fact?r=1",
+      ],
+      spaces_used: ["CognitiveMemory/personal", "CognitiveMemory/work"],
+      scores: [0.9, 0.6],
+    });
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+
+    const results = await client.memoryRetrieve({ query: "anything" });
+
+    expect(results.map(({ kref, space, score }) => ({ kref, space, score }))).toEqual([
+      { kref: "kref://CognitiveMemory/work/a.decision?r=1", space: "CognitiveMemory/work", score: 0.9 },
+      { kref: "kref://CognitiveMemory/personal/b.fact?r=1", space: "CognitiveMemory/personal", score: 0.6 },
+    ]);
+  });
+
+  it("keeps every subspace segment of a nested kref", async () => {
+    const spaces = await spacesOf({
+      revision_krefs: [
+        "kref://CognitiveMemory/work/kumiho/plugins/openclaw-release.decision?r=4",
+        "kref://CognitiveMemory/blog-post-jan25/draft-outline.summary?r=1",
+      ],
+      // Deduped order need not follow the results either.
+      spaces_used: ["CognitiveMemory/blog-post-jan25", "CognitiveMemory/work/kumiho/plugins"],
+    });
+
+    expect(spaces).toEqual([
+      "CognitiveMemory/work/kumiho/plugins",
+      "CognitiveMemory/blog-post-jan25",
+    ]);
+  });
+
+  it("drops the query string, including an artifact (?r=N&a=...), and a dotted item name", async () => {
+    const spaces = await spacesOf({
+      revision_krefs: [
+        "kref://CognitiveMemory/personal/editor.preference?r=2&a=notes.md",
+        "kref://CognitiveMemory/work/v0.7.1.release-notes.summary?r=12",
+        "kref://CognitiveMemory/work/plain.fact",
+      ],
+      spaces_used: [],
+    });
+
+    expect(spaces).toEqual([
+      "CognitiveMemory/personal",
+      "CognitiveMemory/work",
+      "CognitiveMemory/work",
+    ]);
+  });
+
+  it("prefers an explicit metadata space over the kref-derived one", async () => {
+    const spaces = await spacesOf(
+      {
+        revision_krefs: [
+          "kref://CognitiveMemory/personal/team-norms.decision?r=3",
+          "kref://CognitiveMemory/personal/other.fact?r=1",
+        ],
+        spaces_used: ["CognitiveMemory/personal"],
+      },
+      {
+        "kref://CognitiveMemory/personal/team-norms.decision?r=3": {
+          metadata: { space: "CognitiveMemory/team/eng" },
+        },
+      },
+    );
+
+    expect(spaces).toEqual(["CognitiveMemory/team/eng", "CognitiveMemory/personal"]);
+  });
+
+  it("derives the space for the fallback entry when getRevision fails", async () => {
+    const call = retrieveTransport(
+      {
+        revision_krefs: [
+          "kref://CognitiveMemory/personal/ok.fact?r=1",
+          "kref://CognitiveMemory/work/projects/broken.decision?r=7&a=data",
+        ],
+        spaces_used: ["CognitiveMemory/work/projects", "CognitiveMemory/personal"],
+        scores: [0.8, 0.7],
+      },
+      { "kref://CognitiveMemory/work/projects/broken.decision?r=7&a=data": { fail: true } },
+    );
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+
+    const results = await client.memoryRetrieve({ query: "anything" });
+
+    expect(results[0].space).toBe("CognitiveMemory/personal");
+    expect(results[1]).toEqual({
+      kref: "kref://CognitiveMemory/work/projects/broken.decision?r=7&a=data",
+      type: "summary",
+      title: "",
+      summary: "",
+      topics: [],
+      space: "CognitiveMemory/work/projects",
+      score: 0.7,
+    });
+  });
+
+  it("leaves the space undefined when spaces_used is empty and the kref names no item", async () => {
+    const spaces = await spacesOf({
+      revision_krefs: [
+        "kref://CognitiveMemory/personal/known.fact?r=1",
+        "not-a-kref",
+        "kref://CognitiveMemory?r=1",
+      ],
+      spaces_used: [],
+    });
+
+    expect(spaces).toEqual(["CognitiveMemory/personal", undefined, undefined]);
+  });
+
+  it("falls back to spaces_used only when it names exactly one space", async () => {
+    const krefs = ["not-a-kref", "kref://CognitiveMemory/work/w.fact?r=1"];
+
+    // One space covers every hit, so it is unambiguous for an unparseable kref;
+    // a parseable kref still wins over it.
+    expect(
+      await spacesOf({ revision_krefs: krefs, spaces_used: ["CognitiveMemory/personal"] }),
+    ).toEqual(["CognitiveMemory/personal", "CognitiveMemory/work"]);
+
+    // Two spaces cannot be attributed to one hit, so none is guessed.
+    expect(
+      await spacesOf({
+        revision_krefs: krefs,
+        spaces_used: ["CognitiveMemory/personal", "CognitiveMemory/work"],
+      }),
+    ).toEqual([undefined, "CognitiveMemory/work"]);
+
+    // Same rule on the getRevision failure path.
+    expect(
+      await spacesOf(
+        { revision_krefs: ["not-a-kref"], spaces_used: ["CognitiveMemory/personal"] },
+        { "not-a-kref": { fail: true } },
+      ),
+    ).toEqual(["CognitiveMemory/personal"]);
+    expect(
+      await spacesOf(
+        { revision_krefs: ["not-a-kref"], spaces_used: ["CognitiveMemory/personal", "CognitiveMemory/work"] },
+        { "not-a-kref": { fail: true } },
+      ),
+    ).toEqual([undefined]);
+  });
+
+  it("does not change the retrieve request", async () => {
+    const call = retrieveTransport({ revision_krefs: [], spaces_used: ["CognitiveMemory/personal"] });
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+
+    await expect(
+      client.memoryRetrieve({ query: "q", limit: 3, spacePaths: ["CognitiveMemory/work"], memoryTypes: ["fact"] }),
+    ).resolves.toEqual([]);
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledWith("kumiho_memory_retrieve", {
+      project: "CognitiveMemory",
+      query: "q",
+      limit: 3,
+      space_paths: ["CognitiveMemory/work"],
+      memory_types: ["fact"],
+    });
+  });
+});
+
 describe("KumihoClient memory storage wire contract", () => {
   // kumiho_memory_store silently drops unknown args, so the exact wire
   // field names are load-bearing: `type`/`topics` used to be discarded
