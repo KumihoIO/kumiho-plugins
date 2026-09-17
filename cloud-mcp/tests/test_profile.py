@@ -14,8 +14,13 @@ from kumiho_cloud_mcp.connector_profile import (
     CONNECTOR_INSTRUCTIONS,
     CONNECTOR_TOOL_ANNOTATIONS,
     CONNECTOR_TOOL_COUNT,
+    CONNECTOR_TOOL_DESCRIPTIONS,
     CONNECTOR_TOOLS,
+    INSTRUCTIONS_LEAD_CHARS,
+    MAX_INSTRUCTIONS_BYTES,
+    MAX_TOOL_DESCRIPTION_CHARS,
 )
+from kumiho_cloud_mcp.sessions import SESSION_DESCRIPTION, SESSION_TOOLS
 
 pytestmark = pytest.mark.anyio
 
@@ -39,6 +44,36 @@ async def _tools(http, token):
     )
     assert response.status_code == 200, response.text
     return response.json()["result"]["tools"]
+
+
+async def _instructions(http, token):
+    response = await http.post(
+        "/mcp",
+        json=rpc(
+            "initialize",
+            {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "pytest", "version": "0"},
+            },
+        ),
+        headers={**MCP_HEADERS, "authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["result"]["instructions"]
+
+
+def _schema_descriptions(node):
+    """Every ``description`` string anywhere in an input schema."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "description" and isinstance(value, str):
+                yield value
+            else:
+                yield from _schema_descriptions(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _schema_descriptions(value)
 
 
 def test_profile_names_exactly_the_expected_tools():
@@ -150,28 +185,90 @@ async def test_exposed_tools_carry_annotations(app, control_plane, keypair):
 async def test_initialize_advertises_the_connector_instructions(app, control_plane, keypair):
     token = keypair.sign(base_claims())
     async with client_for(app, control_plane) as http:
-        response = await http.post(
-            "/mcp",
-            json=rpc(
-                "initialize",
-                {
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {},
-                    "clientInfo": {"name": "pytest", "version": "0"},
-                },
-            ),
-            headers={**MCP_HEADERS, "authorization": f"Bearer {token}"},
-        )
-    instructions = response.json()["result"]["instructions"]
-    # The SDK's CONNECTOR_INSTRUCTIONS wins when present; ours is the fallback.
-    # Either way the engage/reflect protocol has to be in there, because there
-    # is no skill or hook on a remote connector to carry it.
-    assert instructions
+        instructions = await _instructions(http, token)
+    # build_server always serves the hosted text, on the native path as well:
+    # it deliberately differs from the SDK's stdio-oriented default.
+    assert instructions == CONNECTOR_INSTRUCTIONS
     assert "kumiho_memory_engage" in instructions
     assert "kumiho_memory_reflect" in instructions
     assert instructions.startswith("Kumiho Memory")
-    if app.state.profile_source != "native":
-        assert instructions == CONNECTOR_INSTRUCTIONS
+
+
+async def test_served_instructions_fit_the_budget_with_a_standalone_lead(app, control_plane, keypair):
+    """Claude Code cuts instructions at 2KB; ChatGPT relies on the first 512 chars."""
+    async with client_for(app, control_plane) as http:
+        instructions = await _instructions(http, keypair.sign(base_claims()))
+    assert len(instructions.encode("utf-8")) <= MAX_INSTRUCTIONS_BYTES
+
+    lead = instructions[:INSTRUCTIONS_LEAD_CHARS]
+    # The whole opening paragraph fits in the lead, so nothing it says is cut mid-rule.
+    assert "\n\n" in lead
+    lead = lead.split("\n\n", 1)[0]
+    lowered = lead.lower()
+    for term in ("password", "token", "mfa", "recovery code", "weather"):
+        assert term in lowered, term
+    assert "without calling any Kumiho tool" in lead
+    # ...and the core recall-then-capture rhythm, not just the refusal.
+    assert "kumiho_memory_engage" in lead
+    assert "kumiho_memory_reflect" in lead
+
+
+async def test_every_served_description_fits_claude_code(app, control_plane, keypair):
+    """Measured on the tools/list response, including the session suffix."""
+    async with client_for(app, control_plane) as http:
+        tools = {tool["name"]: tool for tool in await _tools(http, keypair.sign(base_claims()))}
+    assert set(tools) == set(CONNECTOR_TOOLS)
+    for name, tool in tools.items():
+        description = tool.get("description") or ""
+        assert description.strip(), name
+        assert len(description) <= MAX_TOOL_DESCRIPTION_CHARS, (name, len(description))
+
+
+async def test_no_served_description_names_another_connector_tool(app, control_plane, keypair):
+    """Directory attestation: descriptions carry no instructions about other tools."""
+    async with client_for(app, control_plane) as http:
+        tools = await _tools(http, keypair.sign(base_claims()))
+    assert {tool["name"] for tool in tools} == set(CONNECTOR_TOOLS)
+    for tool in tools:
+        texts = [tool.get("description") or "", *_schema_descriptions(tool.get("inputSchema"))]
+        for text in texts:
+            for other in CONNECTOR_TOOLS:
+                if other != tool["name"]:
+                    assert other not in text, (tool["name"], other)
+            assert "other memory tool" not in text.lower(), tool["name"]
+
+
+async def test_memory_tools_carry_their_own_scoped_exclusions(app, control_plane, keypair):
+    """The credential/authorization/live-info boundary lives in each tool, not in one."""
+    async with client_for(app, control_plane) as http:
+        tools = {tool["name"]: tool for tool in await _tools(http, keypair.sign(base_claims()))}
+
+    credential_tools = {
+        "kumiho_memory_engage", "kumiho_memory_recall", "kumiho_memory_retrieve",
+        "kumiho_memory_store", "kumiho_memory_reflect", "kumiho_memory_consolidate",
+    }
+    for name in credential_tools:
+        text = tools[name]["description"].lower()
+        for term in ("password", "access token", "mfa", "recovery code"):
+            assert term in text, (name, term)
+    for name in credential_tools - {"kumiho_memory_consolidate"}:
+        assert "do not call this tool" in tools[name]["description"], name
+    for name in ("kumiho_memory_engage", "kumiho_memory_recall", "kumiho_memory_retrieve"):
+        text = tools[name]["description"]
+        assert "live information" in text, name
+        assert "authorized" in text, name
+
+
+async def test_session_tools_keep_the_session_required_wording(app, control_plane, keypair):
+    assert SESSION_TOOLS <= set(CONNECTOR_TOOL_DESCRIPTIONS)
+    async with client_for(app, control_plane) as http:
+        tools = {tool["name"]: tool for tool in await _tools(http, keypair.sign(base_claims()))}
+    for name in SESSION_TOOLS:
+        description = tools[name]["description"]
+        assert description.startswith(CONNECTOR_TOOL_DESCRIPTIONS[name]), name
+        assert description.endswith(SESSION_DESCRIPTION), name
+        assert "session_required" in description, name
+        assert tools[name]["inputSchema"]["properties"]["session_id"]["description"] == SESSION_DESCRIPTION
 
 
 async def test_resource_and_prompt_capabilities_are_not_advertised(app, control_plane, keypair):

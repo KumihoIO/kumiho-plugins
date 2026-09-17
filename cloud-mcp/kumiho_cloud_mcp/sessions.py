@@ -16,12 +16,9 @@ SESSION_DESCRIPTION = (
     "ID without reading or writing memory; retry with that ID. Never reuse an ID from "
     "another conversation or invent one."
 )
-SESSION_TOOL_DESCRIPTIONS = {
-    "kumiho_memory_reflect": "Buffer the brief relevant response and store user-authorized captures in the private workspace. Captures may move an existing memory to a new published revision; earlier revisions remain in history. Do not include credentials or full transcripts. ",
-    "kumiho_memory_consolidate": "Summarize this conversation into long-term memory and clear its buffer. Pass summary for keyless consolidation. ",
-    "kumiho_chat_get": "Read this conversation's working memory buffer. ",
-    "kumiho_chat_clear": "Clear this conversation's working memory buffer. ",
-}
+# Each session tool's hosted description lives in
+# connector_profile.CONNECTOR_TOOL_DESCRIPTIONS; build_server appends
+# SESSION_DESCRIPTION to it.
 _ISSUED_ID = re.compile(r"km1_[0-9a-f]{32}_[0-9a-f]{32,64}\Z")
 
 

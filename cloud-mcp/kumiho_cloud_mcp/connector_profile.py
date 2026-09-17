@@ -45,19 +45,149 @@ CONNECTOR_TOOL_ANNOTATIONS: Dict[str, Dict[str, object]] = {
 }
 
 # Hosted descriptions disclose optional destructive modes as well as defaults.
+#
+# On claude.ai, Claude Desktop and Claude mobile the server ``instructions`` are
+# not delivered to the model (anthropics/claude-ai-mcp#93), so these
+# descriptions are the only usage guidance those users get. Each one says what
+# the tool does, when it is useful, what it is not for and the argument detail
+# that prevents a failed call. Rules for descriptions, enforced by
+# tests/test_profile.py:
+#
+# * At most MAX_TOOL_DESCRIPTION_CHARS as served (session tools include the
+#   SESSION_DESCRIPTION suffix); Claude Code truncates longer ones.
+# * Never name or direct another tool. Each exclusion (credentials, other
+#   workspaces, live information) is scoped to the tool that carries it.
+# * No instructions about general model behaviour; that stays in
+#   CONNECTOR_INSTRUCTIONS.
+#
+# The four session tools get SESSION_DESCRIPTION appended by _compat.build_server.
 CONNECTOR_TOOL_DESCRIPTIONS = {
     "kumiho_memory_engage": (
-        "Retrieve relevant prior memories and their references when the user wants "
-        "help with an authorized private-workspace memory task. Use a brief, non-sensitive "
-        "query. Do not call this or any other memory tool to handle requests to store "
-        "passwords, tokens or MFA recovery codes, access an unauthorized workspace, "
-        "or answer unrelated live-information questions. It does not store a conversation buffer."
+        "Searches the user's saved Kumiho memories for context relevant to the current "
+        "request. Returns a ready-to-use context summary, the matching memories and their "
+        "references (source_krefs). Useful near the start of a conversation about the "
+        "user's own ongoing work, projects, decisions or preferences when earlier saved "
+        "context could change the answer, and when the user refers back to something that "
+        "is not visible in this conversation (\"as we decided\", \"my usual setup\", an "
+        "unfamiliar project name). The returned references can be attached to a related "
+        "memory saved later, linking it to its sources.\n\n"
+        "Not for: saving, finding or checking passwords, access tokens, API keys, MFA or "
+        "recovery codes, so do not call this tool for such requests, not even to check "
+        "first; data from another organization or any workspace the connected account is "
+        "not authorized for; general knowledge or live information such as weather, news "
+        "or prices. It reads only this account's saved memories and writes nothing.\n\n"
+        "query: a brief natural-language description of what you are looking for, with no "
+        "secrets in it. Repeating an identical query within a few seconds returns an empty "
+        "result marked deduplicated; reuse the earlier results instead."
+    ),
+    "kumiho_memory_recall": (
+        "Semantic search over the user's saved Kumiho memories. Returns the best matches "
+        "with titles, summaries, relevance scores and references. Useful mid-conversation "
+        "when the user mentions something that is not in the current context and may have "
+        "been saved before: a past decision, a stated preference, a named project, person "
+        "or setup, or a question about what was decided or noted earlier.\n\n"
+        "query: describe what you are looking for in natural language rather than guessing "
+        "exact keywords. Narrow with memory_types (for example [\"decision\"]) or "
+        "space_paths when the kind or location of the memory is known. Repeating an "
+        "identical query within a few seconds returns an empty result marked "
+        "deduplicated; vary the query or reuse the earlier results.\n\n"
+        "Not for: saving, finding or checking passwords, access tokens, API keys, MFA or "
+        "recovery codes, so do not call this tool for such requests; data outside the "
+        "connected account's authorized workspace; general knowledge or live information "
+        "such as weather, news or prices. Read-only."
+    ),
+    "kumiho_memory_retrieve": (
+        "Targeted lookup of saved memories by title words, keywords, topics, space or "
+        "memory type, with fuzzy matching and relevance ranking. Useful when you know "
+        "roughly which memory you need (a titled decision, a memory in a named space, the "
+        "earliest or latest entry) and need its exact reference, for example to read "
+        "its full revision, link to it or retire it. Returns item references, revision "
+        "references and scores, not the memory text itself.\n\n"
+        "Arguments: query takes the words you expect in the title or summary. mode is "
+        "\"search\" (default), \"first\" for the oldest match or \"latest\" for the newest. "
+        "space_paths and memory_types (for example [\"decision\"]) narrow the search.\n\n"
+        "Not for: saving, finding or checking passwords, access tokens, API keys, MFA or "
+        "recovery codes, so do not call this tool for such requests; data outside the "
+        "connected account's authorized workspace; general knowledge or live information "
+        "such as weather, news or prices. Read-only."
+    ),
+    "kumiho_memory_reflect": (
+        "Saves distilled memories from this conversation to the user's private Kumiho "
+        "workspace and adds a short note of your reply to this conversation's temporary "
+        "working buffer. Useful at the moment something durable is settled: the user makes "
+        "a decision and gives the reason, states a lasting preference, gives a durable fact "
+        "about their work or life, corrects something recorded earlier, or asks you to "
+        "remember something. Not needed for routine turns, small talk or unsettled "
+        "brainstorming.\n\n"
+        "Arguments: response (required) is a one- or two-sentence gist of your reply, not "
+        "its full text. Each capture needs type (decision, preference, fact, correction and "
+        "so on), a short title with absolute dates (\"Chose the Seoul region on "
+        "2026-09-16\") and brief content in your own words; never transcripts or long "
+        "quotes. Put an existing space name, copied exactly, in space_hint or space_path so "
+        "a later update on the same subject becomes a new revision of that memory; "
+        "captures without a space are filed at the project root as separate items. "
+        "source_krefs links captures to the memories they came from. Stacking can move a "
+        "memory's published revision; earlier revisions stay in history.\n\n"
+        "Not for: passwords, access tokens, API keys, MFA or recovery codes, payment "
+        "details, or anything the user asked not to keep, so do not call this tool for "
+        "such requests."
     ),
     "kumiho_memory_store": (
-        "Store a user-authorized memory in the private workspace. Provide only the brief "
-        "relevant text, never credentials or a full conversation transcript. Creates a "
-        "revision and may move an existing memory's published tag to it when stacking; "
-        "earlier revisions are retained. May create spaces, bundles and provenance links."
+        "Saves one explicit item the user asks to keep (a decision, fact, preference or "
+        "note) as a memory in the user's private Kumiho workspace and returns its "
+        "reference. Useful when the user says \"remember this\", \"save this\" or \"note "
+        "that\" about a single, self-contained item. By default it looks for a similar "
+        "memory in the same space and adds a new revision to it, moving its published tag, "
+        "instead of creating a duplicate; earlier revisions are retained. Set "
+        "stack_revisions to false to always create a separate memory. May create the "
+        "space, a bundle and provenance links.\n\n"
+        "Arguments: user_text (required) is the brief item to save, in the user's words or "
+        "a close paraphrase, never a conversation transcript. Add a short title, a "
+        "one-sentence summary, memory_type (decision, fact, summary and so on) and an "
+        "existing space name, copied exactly, in space_path or space_hint when known.\n\n"
+        "Not for: passwords, access tokens, API keys, MFA or recovery codes, or payment "
+        "details, so do not call this tool for such requests; text that looks like a "
+        "credential is rejected."
+    ),
+    "kumiho_memory_consolidate": (
+        "Saves a summary of this conversation as one long-term memory in the user's "
+        "private Kumiho workspace, then clears this conversation's temporary working "
+        "buffer. Useful when the user asks to save a summary of the conversation, to wrap "
+        "up, or to keep a record of what was decided before leaving. Clearing the buffer "
+        "cannot be undone; the saved summary remains.\n\n"
+        "Arguments: always pass summary. This service does not write summaries itself, so "
+        "a call without one fails; with one, the call works even when the buffer is empty. "
+        "Write the summary for a reader who was not there: what was decided and why, "
+        "durable facts, open items. Plain text works; an object with title, summary and "
+        "knowledge (facts, decisions, actions, open_questions) is recalled better. Keep it "
+        "brief and distilled, never the transcript.\n\n"
+        "Not for: passwords, access tokens, API keys, MFA or recovery codes; leave such "
+        "values out of the summary."
+    ),
+    "kumiho_deprecate_item": (
+        "Retires one saved memory so it no longer appears in normal searches. This is how "
+        "a user's request to forget something is carried out. Useful when the user asks "
+        "you to forget, stop using or retire a specific memory. It changes what the user's "
+        "searches return, but it is reversible: the item and its revision history stay in "
+        "the workspace, and calling again with deprecated set to false restores it. It is "
+        "not permanent erasure; say so if the user expects deletion.\n\n"
+        "Arguments: item_kref is the reference of the exact item "
+        "(kref://project/space/item.kind; a trailing ?r= revision suffix is ignored). Make "
+        "sure it is the memory the user means, and confirm with the user when more than "
+        "one memory could match. Each call retires one item."
+    ),
+    "kumiho_chat_get": (
+        "Reads the messages held in this conversation's temporary working buffer, with "
+        "their count and the buffer's remaining time to live. Useful when the user asks "
+        "what the buffer for this conversation currently holds, or before summarizing or "
+        "clearing it. The buffer is short-lived and separate from saved long-term "
+        "memories. Read-only."
+    ),
+    "kumiho_chat_clear": (
+        "Deletes the messages in this conversation's temporary working buffer. Useful when "
+        "the user asks to clear or reset the buffer for this conversation. Saved long-term "
+        "memories and other conversations' buffers are not affected. Cleared messages "
+        "cannot be recovered."
     ),
     "kumiho_memory_decompose": (
         "Add typed entities, facts and relationships to a stored workspace memory. "
@@ -83,52 +213,49 @@ assert len(CONNECTOR_TOOLS) == CONNECTOR_TOOL_COUNT, (
 )
 
 
+#: Claude Code truncates each tool description at 2KB; keep a margin.
+MAX_TOOL_DESCRIPTION_CHARS = 1800
+#: Claude Code truncates server instructions at 2KB (measured in UTF-8 bytes).
+MAX_INSTRUCTIONS_BYTES = 2000
+#: OpenAI: the first 512 characters of the instructions must stand alone.
+INSTRUCTIONS_LEAD_CHARS = 512
+
+# Essentials first. The opening paragraph (under INSTRUCTIONS_LEAD_CHARS) is
+# the credential/authorization boundary plus the engage/reflect rhythm, so it
+# still works when a client keeps only the lead. Detail that does not fit the
+# byte budget belongs in the tool descriptions or the uploadable skill.
 CONNECTOR_INSTRUCTIONS = """\
-Kumiho Memory gives you a persistent, graph-native memory that survives across \
-conversations. There is no local hook or skill here — the protocol below is \
-yours to run.
+Kumiho Memory is the user's private memory across conversations. Never use it \
+for passwords, tokens, API keys, card details, MFA or recovery codes: refuse \
+without calling any Kumiho tool (not even engage) or asking for them. \
+Unauthorized workspace data or live information like weather must not trigger \
+Kumiho tools. Otherwise, when earlier context could matter, call \
+kumiho_memory_engage once with a brief query; when the user settles a decision, \
+preference, fact or correction, call kumiho_memory_reflect.
 
-Only send the brief, task-relevant information the user intends to store or \
-retrieve. Never request passwords, access tokens, payment credentials or an \
-entire conversation transcript. All account authentication uses OAuth.
+Send only brief, task-relevant text, never a transcript. Account access uses \
+OAuth.
 
-Before any tool call, check whether the request is an authorized memory task. \
-If it asks to store credentials (passwords, tokens, MFA or recovery codes), \
-refuse without calling any memory tool, including engage, and do not ask for \
-the secret values. Do not transmit a secret even as a search query. Requests \
-for another organization's unauthorized data or unrelated live information \
-(such as current weather) must not trigger any Kumiho tool. These rules take \
-priority over the engage/recall/reflect protocol below.
+Recall: when the user mentions something not in context ("as we discussed", an \
+unfamiliar project), call kumiho_memory_recall with a natural-language \
+description. kumiho_memory_retrieve finds a known title or space and returns \
+references; read one with kumiho_get_revision_by_tag (item kref, tag "latest").
 
-At the start of a conversation that might have history, call \
-`kumiho_memory_engage` once with a brief relevant, non-sensitive `query`. It \
-returns the most relevant prior memories and the krefs they came from; keep \
-those krefs for `kumiho_memory_reflect`.
+Capture: reflect at the moment something is settled or the user asks you to \
+remember, not at the end and not on routine turns. Use brief typed captures, \
+absolute dates in titles, an existing space name in space_hint, and engage's \
+source_krefs. kumiho_memory_store saves one item the user explicitly asks to \
+keep.
 
-Never invent a `session_id` or reuse one from another conversation. If the \
-host supplies no conversation ID, the first session-scoped call without one \
-returns `session_required` and a new ID without accessing memory. Retry the \
-same call with that ID, then pass it on every reflect, consolidate, chat-get \
-or chat-clear call in this conversation. Session results echo the ID. \
-Engage is read-only and needs no buffer ID. Never infer a conversation ID \
-from the user's identity or an active-session pointer.
+Sessions: never invent a session_id or reuse another conversation's. If \
+reflect, consolidate or chat get/clear returns session_required with a new ID, \
+retry the same call with it and reuse it in this conversation only. Engage \
+takes none.
 
-During the conversation, call `kumiho_memory_recall` when the user refers to \
-something you do not have in context ("like we discussed", "the usual setup", \
-a project name you have not seen). Recall is semantic — describe what you are \
-looking for in natural language rather than guessing at keywords.
+Wrap-up: when the user asks to save a summary or wrap up, \
+kumiho_memory_consolidate stores the summary you write and clears this \
+conversation's buffer. To forget, confirm the exact item, then call \
+kumiho_deprecate_item; it retires the item reversibly and does not erase it.
 
-When something is settled — a decision with its rationale, a stable preference, \
-a durable fact, or a correction to something you had wrong — call \
-`kumiho_memory_reflect` with typed captures. Reflect at the moment the thing is \
-settled, not at the end. Do not store transient chatter, secrets, credentials, \
-or anything the user asked you not to keep.
-
-`kumiho_memory_consolidate` folds the session into long-term memory and \
-`kumiho_memory_decompose` splits an overloaded memory into the typed graph; \
-`kumiho_deprecate_item` is how a user forgets something — treat it as \
-destructive and confirm first.
-
-Never announce memory operations. Use what you recall; do not narrate that you \
-recalled it.
+Use recalled context naturally; do not narrate memory operations.
 """

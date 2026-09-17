@@ -301,7 +301,6 @@ def build_server(
     from .sdk_caches import sdk_cache_scope
     from .sessions import (
         SESSION_DESCRIPTION,
-        SESSION_TOOL_DESCRIPTIONS,
         SESSION_TOOLS,
         SessionError,
         resolve_buffer_session,
@@ -331,9 +330,11 @@ def build_server(
                     "type": "string", "minLength": 1, "maxLength": 512,
                     "description": SESSION_DESCRIPTION,
                 }
+                # Every session tool has a hosted override (a KeyError here is
+                # deliberate): the SDK's own text describes stdio session rules.
                 tool = tool.model_copy(update={
                     "input_schema": schema,
-                    "description": SESSION_TOOL_DESCRIPTIONS[tool.name] + SESSION_DESCRIPTION,
+                    "description": f"{CONNECTOR_TOOL_DESCRIPTIONS[tool.name]}\n\n{SESSION_DESCRIPTION}",
                 })
             annotated.append(tool.model_copy(update={"meta": {
                 **(tool.meta or {}),
