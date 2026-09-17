@@ -390,12 +390,13 @@ Re-verified against the running service and Anthropic's current review criteria.
 **Annotations are correct and need no change.** The hosted service does not use
 the SDK's `TOOL_ANNOTATIONS`: `kumiho_cloud_mcp/connector_profile.py` defines
 `CONNECTOR_TOOL_ANNOTATIONS`, which `_compat.py::_apply_annotations` applies over
-any upstream default. That table already marks `kumiho_memory_store`,
-`kumiho_memory_consolidate`, `kumiho_memory_reflect` and `kumiho_memory_decompose`
-`destructiveHint: true`, matching the justifications locked in
-`chatgpt-app-submission.json`. Only `kumiho_create_space` and
-`kumiho_memory_space_profile` are additive writes, which is correct. Anyone
-auditing this connector must read `connector_profile.py`, never the SDK defaults.
+any upstream default. That table already marks six tools `destructiveHint: true`
+— `kumiho_memory_store`, `kumiho_memory_reflect`, `kumiho_memory_consolidate`,
+`kumiho_memory_decompose`, `kumiho_deprecate_item` and `kumiho_chat_clear` —
+matching the justifications locked in `chatgpt-app-submission.json`. Only
+`kumiho_create_space` and `kumiho_memory_space_profile` are additive writes,
+which is correct. Anyone auditing this connector must read
+`connector_profile.py`, never the SDK defaults.
 
 Current review criteria also note that submissions are auto-scanned and listed as
 **Community** by default; Anthropic escalates to **Verified** on its own and
