@@ -167,7 +167,7 @@ CONNECTOR_TOOL_DESCRIPTIONS = {
         "their sources.\n\n"
         "To correct a saved memory, capture the new value in that memory's space, type and "
         "language, restating the subject in title and content. It should stack as that "
-        "memory's new published revision; earlier ones stay in history. If stored_krefs "
+        "memory's new current revision; earlier ones stay in history. If stored_krefs "
         "has no new revision of that item (same reference before ?r=), it did not stack: "
         "retire the old memory by its reference.\n\n"
         "Not for: passwords, access tokens, API keys, MFA or recovery codes, payment "

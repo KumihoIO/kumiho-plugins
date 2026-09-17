@@ -362,7 +362,7 @@ async def test_corrections_stack_onto_the_corrected_memory(app, control_plane, k
     types = reflect.split("Each capture needs type (", 1)[1].split(")", 1)[0]
     assert "correction" not in types, types
     # The not-stacked check and the retire fallback.
-    assert "stack as that memory's new published revision" in lowered
+    assert "stack as that memory's new current revision" in lowered
     assert "earlier ones stay in history" in lowered
     assert "stored_krefs has no new revision of that item (same reference before ?r=)" in reflect
     assert "it did not stack: retire the old memory by its reference" in lowered
