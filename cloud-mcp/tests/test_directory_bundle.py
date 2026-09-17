@@ -52,7 +52,7 @@ def test_claude_and_codex_manifests_describe_the_same_plugin():
     assert claude["displayName"] == "Kumiho Memory Cloud"
     # Already submitted to OpenAI under this name; unaffected by the Claude rename.
     assert codex["name"] == "kumiho-memory"
-    assert claude["version"] == codex["version"]
+    assert claude["version"] == codex["version"] == "0.1.3"
     assert claude["license"] == codex["license"]
 
 
