@@ -1,6 +1,6 @@
 {
   "name": "kumiho-memory",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Save, recall and review private workspace memories, including reviewed imports from selected conversation history.",
   "author": { "name": "Kumiho Inc.", "url": "https://kumiho.io" },
   "homepage": "https://kumiho.io",

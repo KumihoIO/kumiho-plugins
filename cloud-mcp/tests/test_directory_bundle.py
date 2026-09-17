@@ -95,6 +95,59 @@ def test_skills_reference_only_tools_the_connector_exposes():
     assert referenced <= set(CONNECTOR_TOOLS), sorted(referenced - set(CONNECTOR_TOOLS))
 
 
+# General recall belongs to engage and "remember this" to reflect. Recall and store
+# are lower-level tools: a skill may still use them deliberately (for example store
+# inside an approval flow), but never as the answer to those two intents.
+GENERAL_RECALL_CUES = ("like we discussed", "as we discussed", "the usual setup", "not in your context")
+REMEMBER_CUES = ("remember this", "remember something", "asks you to remember", "asks to remember")
+
+
+def _steps(text):
+    """Paragraphs and top-level list items, with line wrapping collapsed."""
+    blocks = re.split(r"\n\s*\n|\n(?=(?:\d+\.|-) )", text)
+    return [" ".join(block.split()) for block in blocks if block.strip()]
+
+
+def _misrouted(text):
+    found = []
+    for step in _steps(text):
+        lowered = step.lower()
+        if "kumiho_memory_recall" in lowered and any(cue in lowered for cue in GENERAL_RECALL_CUES):
+            found.append(("kumiho_memory_recall", step))
+        if "kumiho_memory_store" in lowered and any(cue in lowered for cue in REMEMBER_CUES):
+            found.append(("kumiho_memory_store", step))
+    return found
+
+
+def test_misrouting_check_catches_the_routing_the_skill_once_shipped():
+    shipped = (
+        "2. When the user refers to something not in your context (\"like we discussed\",\n"
+        "   \"the usual setup\", a project name you have not seen), call\n"
+        "   `kumiho_memory_recall` with a natural-language description of what you need\n"
+    )
+    assert [tool for tool, _ in _misrouted(shipped)] == ["kumiho_memory_recall"]
+    store = "- When the user asks you to remember something, call `kumiho_memory_store`.\n"
+    assert [tool for tool, _ in _misrouted(store)] == ["kumiho_memory_store"]
+
+
+def test_skills_route_general_recall_to_engage_and_remember_this_to_reflect():
+    for skill in SKILL_DIRS:
+        assert _misrouted((skill / "SKILL.md").read_text(encoding="utf-8")) == [], skill.name
+
+    steps = _steps((BUNDLE / "skills" / "kumiho-memory" / "SKILL.md").read_text(encoding="utf-8"))
+
+    def step_with(cue):
+        matches = [step for step in steps if cue in step]
+        assert len(matches) == 1, (cue, matches)
+        return matches[0]
+
+    assert "`kumiho_memory_engage`" in step_with("like we discussed")
+    latest = step_with("most recent")
+    assert "`kumiho_memory_retrieve` with mode \"latest\"" in latest
+    assert "`space_paths`" in latest and "`memory_types`" in latest
+    assert "`kumiho_memory_reflect`" in step_with("asks you to remember something")
+
+
 def test_claude_code_backfill_keeps_the_conversation_and_drops_harness_records():
     def user(content, **flags):
         return {"type": "user", "timestamp": "t", "message": {"role": "user", "content": content}, **flags}
@@ -149,7 +202,7 @@ def test_core_skill_carries_the_whole_protocol_on_its_own():
     text = (BUNDLE / "skills" / "kumiho-memory" / "SKILL.md").read_text(encoding="utf-8")
     for needle in (
         "kumiho_memory_engage",
-        "kumiho_memory_recall",
+        "kumiho_memory_retrieve",
         "kumiho_memory_reflect",
         "kumiho_memory_consolidate",
         "kumiho_deprecate_item",
