@@ -1,6 +1,6 @@
 ---
 name: kumiho-backfill
-description: Import useful memories from selected past Codex or Claude conversations, a user-provided ChatGPT export, or supplied conversation excerpts. Preview distilled captures before storing them through the connected Kumiho MCP.
+description: Import useful memories from selected past Codex or Claude Code sessions, a user-provided ChatGPT export, or supplied conversation excerpts. Preview distilled captures before storing them through the connected Kumiho MCP.
 ---
 
 # Kumiho History Backfill
@@ -11,13 +11,20 @@ separate API key or background process is required. User scope overrides default
 
 ## Choose accessible input
 
-- In a local Codex environment, read only user-selected session files or an
-  explicitly authorized date/source selection. A default history location is not
-  permission to scan it. Codex and Claude histories are separate opt-in sources.
+- In a local Codex or Claude Code environment, read only user-selected session
+  files or an explicitly authorized date/source selection. A default history
+  location is not permission to scan it. Codex and Claude Code histories are
+  separate opt-in sources. A Claude Code session is one top-level `.jsonl` file
+  per conversation; files under a session's `subagents/` folder are not.
+- In Cowork, use only files the user has shared with the session, such as a
+  copied session file or export in a folder they selected. Do not claim access
+  to history elsewhere on their computer.
 - In ChatGPT, use a user-provided export or excerpts that are actually accessible
   in the conversation. Do not claim access to all prior ChatGPT chats or the
   user's computer. If file processing is unavailable, accept a small selected
   excerpt; do not invent a terminal or request a whole archive unnecessarily.
+- The helper does not parse a claude.ai account data export. For claude.ai chats,
+  accept small selected excerpts instead.
 - Explain that selected text is processed by the current host's model provider;
   only approved distilled captures are sent to the connected Kumiho workspace.
   Inspection/extraction does not authorize ingestion.
@@ -34,10 +41,13 @@ python <skill>/scripts/prepare_backfill.py prepare --source codex --input <selec
 python <skill>/scripts/prepare_backfill.py prepare --source chatgpt --input <conversations.json> --conversation <selected-id> --out <new-batch-directory>
 ```
 
-For Claude use `--source claude`. Repeat `--input` for explicitly selected files,
-at most five. A multi-conversation ChatGPT export requires explicit conversation
-IDs; `inventory --source chatgpt --input <file>` lists sanitized IDs/titles to
-choose after authorization to inspect the export. It does not ingest anything.
+For a Claude Code session file use `--source claude`; the helper keeps user and
+assistant text and drops tool results, sub-agent turns, injected context,
+compaction summaries and harness notices. Repeat `--input` for explicitly
+selected files, at most five. A multi-conversation ChatGPT export requires
+explicit conversation IDs; `inventory --source chatgpt --input <file>` lists
+sanitized IDs/titles to choose after authorization to inspect the export. It does
+not ingest anything.
 The helper follows only the selected branch of a ChatGPT export. Incomplete or
 ambiguous branches require clarification instead of merging alternate answers.
 

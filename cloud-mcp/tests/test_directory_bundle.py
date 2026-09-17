@@ -1,0 +1,184 @@
+"""The hosted directory plugin bundle shared by the Claude and Codex manifests."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+import zipfile
+from pathlib import Path
+
+from kumiho_cloud_mcp.connector_profile import CONNECTOR_TOOLS
+
+DIRECTORY = Path(__file__).resolve().parents[1] / "directory"
+BUNDLE = DIRECTORY / "kumiho-memory"
+SKILL_DIRS = sorted(path.parent for path in BUNDLE.glob("skills/*/SKILL.md"))
+BACKFILL = BUNDLE / "skills" / "kumiho-backfill" / "scripts" / "prepare_backfill.py"
+PACKAGER = DIRECTORY / "scripts" / "package_web_skill.py"
+
+
+def _json(path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _frontmatter(path):
+    match = re.match(r"---\n(.*?)\n---\n", path.read_text(encoding="utf-8"), re.S)
+    assert match, f"{path} has no frontmatter"
+    return dict(line.split(": ", 1) for line in match.group(1).splitlines())
+
+
+def _load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _backfill():
+    return _load("prepare_backfill", BACKFILL)
+
+
+def _packager():
+    return _load("package_web_skill", PACKAGER)
+
+
+def test_claude_and_codex_manifests_describe_the_same_plugin():
+    claude = _json(BUNDLE / ".claude-plugin" / "plugin.json")
+    codex = _json(BUNDLE / ".codex-plugin" / "plugin.json")
+    assert claude["name"] == codex["name"] == "kumiho-memory"
+    assert claude["version"] == codex["version"]
+    assert claude["license"] == codex["license"]
+
+
+def test_mcp_json_declares_only_the_hosted_connector():
+    assert _json(BUNDLE / ".mcp.json") == {
+        "kumiho-memory": {"type": "http", "url": "https://mcp.kumiho.cloud/mcp"}
+    }
+
+
+def test_every_skill_has_a_matching_name_and_a_description():
+    assert [path.name for path in SKILL_DIRS] == [
+        "dream-state",
+        "kumiho-backfill",
+        "kumiho-memory",
+        "kumiho-onboard",
+        "kumiho-personalize",
+        "memory-capture",
+    ]
+    for skill in SKILL_DIRS:
+        meta = _frontmatter(skill / "SKILL.md")
+        assert meta.get("name") == skill.name
+        assert meta.get("description"), skill.name
+
+
+def test_skills_reference_only_tools_the_connector_exposes():
+    referenced = set()
+    for skill in SKILL_DIRS:
+        text = (skill / "SKILL.md").read_text(encoding="utf-8")
+        referenced |= set(re.findall(r"\bkumiho_[a-z_]+\b", text))
+    assert referenced
+    assert referenced <= set(CONNECTOR_TOOLS), sorted(referenced - set(CONNECTOR_TOOLS))
+
+
+def test_claude_code_backfill_keeps_the_conversation_and_drops_harness_records():
+    def user(content, **flags):
+        return {"type": "user", "timestamp": "t", "message": {"role": "user", "content": content}, **flags}
+
+    records = [
+        user("<system-reminder>queued notice</system-reminder>\nWe chose Postgres."),
+        user("<task-notification><task-id>a</task-id><summary>done</summary></task-notification>"),
+        user("<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>"),
+        user([{"type": "text", "text": "Base directory for this skill"}], isMeta=True),
+        user("This session is being continued from a previous conversation.", isCompactSummary=True),
+        user([{"type": "tool_result", "tool_use_id": "x", "content": "ls output"}], toolUseResult={}),
+        {"type": "assistant", "isSidechain": True, "message": {"role": "assistant", "content": "sub-agent"}},
+        {"type": "assistant", "timestamp": "t", "message": {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "private"},
+            {"type": "text", "text": "Noted."},
+            {"type": "tool_use", "id": "x", "name": "Bash", "input": {}},
+        ]}},
+    ]
+    raw = "\n".join(json.dumps(record) for record in records)
+    turns = _backfill().local_turns(raw, "claude")
+    assert [(role, text.strip()) for _, role, text in turns] == [
+        ("user", "We chose Postgres."),
+        ("assistant", "Noted."),
+    ]
+
+
+def test_codex_backfill_is_not_affected_by_claude_harness_stripping():
+    record = {"type": "response_item", "timestamp": "t", "payload": {
+        "type": "message", "role": "user",
+        "content": [{"type": "input_text", "text": "<system-reminder>kept</system-reminder> as typed"}],
+    }}
+    turns = _backfill().local_turns(json.dumps(record), "codex")
+    assert [text for _, _, text in turns] == ["<system-reminder>kept</system-reminder> as typed"]
+
+
+def test_inventory_output_survives_a_narrow_stdout_encoding(tmp_path):
+    export = tmp_path / "conversations.json"
+    export.write_text(json.dumps([{"id": "c1", "title": "Launch \U0001F680 plan"}]), encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(BACKFILL), "inventory", "--source", "chatgpt", "--input", str(export)],
+        capture_output=True,
+        env={**os.environ, "PYTHONIOENCODING": "ascii"},
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.decode("utf-8")) == {"id": "c1", "title": "Launch \U0001F680 plan"}
+
+
+def test_core_skill_carries_the_whole_protocol_on_its_own():
+    # claude.ai web and Desktop chat drop the MCP server `instructions` field
+    # (anthropics/claude-ai-mcp#93), so an uploaded skill is the only protocol there.
+    text = (BUNDLE / "skills" / "kumiho-memory" / "SKILL.md").read_text(encoding="utf-8")
+    for needle in (
+        "kumiho_memory_engage",
+        "kumiho_memory_recall",
+        "kumiho_memory_reflect",
+        "kumiho_memory_consolidate",
+        "kumiho_deprecate_item",
+        "session_required",
+        "does not authorize recording every conversation",
+    ):
+        assert needle in text, needle
+
+
+def test_web_skill_zip_is_one_skill_folder_and_reproducible(tmp_path):
+    packager = _packager()
+    first = packager.build("kumiho-memory", tmp_path / "a")
+    second = packager.build("kumiho-memory", tmp_path / "b")
+    assert first.name == "kumiho-memory-skill.zip"
+    assert first.read_bytes() == second.read_bytes()
+    with zipfile.ZipFile(first) as archive:
+        assert archive.namelist() == ["kumiho-memory/", "kumiho-memory/SKILL.md"]
+        assert {info.date_time for info in archive.infolist()} == {(1980, 1, 1, 0, 0, 0)}
+        assert b"\r\n" not in archive.read("kumiho-memory/SKILL.md")
+
+
+def test_web_skill_zip_does_not_depend_on_checkout_line_endings(tmp_path, monkeypatch):
+    packager = _packager()
+    reference = packager.build("kumiho-memory", tmp_path / "reference")
+
+    skill = tmp_path / "skills" / "kumiho-memory"
+    (skill / "agents").mkdir(parents=True)
+    (skill / "agents" / "openai.yaml").write_text("interface: {}\n", encoding="utf-8")
+    source = (BUNDLE / "skills" / "kumiho-memory" / "SKILL.md").read_bytes().replace(b"\r\n", b"\n")
+    (skill / "SKILL.md").write_bytes(source.replace(b"\n", b"\r\n"))
+    monkeypatch.setattr(packager, "SKILLS", tmp_path / "skills")
+
+    assert packager.build("kumiho-memory", tmp_path / "crlf").read_bytes() == reference.read_bytes()
+
+
+def test_web_skill_validation_applies_the_upload_limits():
+    validate = _packager().validate
+    ok = "---\nname: demo\ndescription: Short and specific.\n---\n# Demo\n"
+    assert validate("demo", ok) == []
+    assert validate("other", ok)
+    assert validate("demo", ok.replace("name: demo", "name: Demo"))
+    assert validate("demo", ok.replace("Short and specific.", "x" * 201))
+    assert validate("demo", ok.replace("\n---\n# Demo", "\nlicense: MIT\n---\n# Demo"))
+    assert validate("demo", ok + "line\n" * 500)

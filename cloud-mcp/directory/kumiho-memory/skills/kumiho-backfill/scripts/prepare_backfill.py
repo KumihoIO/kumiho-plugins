@@ -23,6 +23,14 @@ SECRET = re.compile(
     r"\s*[:=]\s*[^\s,;]+"
     r"|https?://[^\s/@]+:[^\s/@]+@[^\s]+", re.I | re.S)
 PII = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b|\b\d{3}-\d{2}-\d{4}\b")
+# Claude Code stores harness notices (background task notifications, slash-command
+# echoes, local command output, system reminders) as user-type records. They are
+# not the human speaking. A real prompt can follow a leading reminder, so only
+# complete leading blocks are removed and any remaining text is kept.
+CLAUDE_HARNESS = re.compile(
+    r"\s*<(system-reminder|task-notification|command-name|command-message|command-args"
+    r"|local-command-caveat|local-command-stdout|local-command-stderr"
+    r"|bash-input|bash-stdout|bash-stderr)>.*?</\1>", re.S)
 
 
 def canonical(value):
@@ -66,6 +74,14 @@ def text_parts(value):
             if isinstance(text, str):
                 parts.append(text)
     return "\n".join(parts)
+
+
+def strip_claude_harness(text):
+    while True:
+        match = CLAUDE_HARNESS.match(text)
+        if not match:
+            return text
+        text = text[match.end():]
 
 
 def chatgpt_conversations(raw):
@@ -136,7 +152,10 @@ def local_turns(raw, source):
             if msg.get("recipient", "all") not in {None, "all"}:
                 continue
         else:
-            if record.get("type") not in {"user", "assistant"} or record.get("isSidechain"):
+            # Sub-agent turns, injected skill/context records and compaction
+            # summaries are not the conversation between the user and Claude.
+            if (record.get("type") not in {"user", "assistant"} or record.get("isSidechain")
+                    or record.get("isMeta") or record.get("isCompactSummary")):
                 continue
             msg = record.get("message")
             if not isinstance(msg, dict):
@@ -145,6 +164,8 @@ def local_turns(raw, source):
         if role not in {"user", "assistant"}:
             continue
         text = text_parts(msg.get("content"))
+        if source == "claude" and role == "user":
+            text = strip_claude_harness(text)
         if not text.strip() or text.lstrip().startswith(("# AGENTS.md", "<environment_context>",
                                                        "<permissions instructions>", "<turn_aborted>")):
             continue
@@ -279,6 +300,10 @@ def main(argv=None):
     part.add_argument("--session", required=True)
     part.add_argument("--captures", required=True)
     args = parser.parse_args(argv)
+    if hasattr(sys.stdout, "reconfigure"):
+        # Piped output on Windows defaults to a legacy code page that cannot encode
+        # every title or path; hosts read this output as UTF-8.
+        sys.stdout.reconfigure(encoding="utf-8")
     try:
         if args.command == "prepare":
             prepare(args)
