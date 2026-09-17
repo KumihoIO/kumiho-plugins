@@ -210,6 +210,7 @@ export interface MemoryStoreResult {
 export interface MemoryRetrieveResult {
   item_krefs: string[];
   revision_krefs: string[];
+  /** De-duplicated spaces the hits came from; NOT aligned with revision_krefs. */
   spaces_used: string[];
 }
 

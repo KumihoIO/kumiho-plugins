@@ -115,6 +115,20 @@ function toItemKref(kref: string): string {
   return kref.split("?")[0];
 }
 
+/**
+ * The space an item or revision kref lives in, project included:
+ * `kref://CognitiveMemory/work/kumiho/release.decision?r=4&a=notes` ->
+ * `CognitiveMemory/work/kumiho`. Undefined when the kref does not end in an
+ * `<item>.<kind>` below a project (a project or space kref, or not a kref).
+ */
+function spaceFromKref(kref: string): string | undefined {
+  const itemKref = toItemKref(kref);
+  if (!itemKref.startsWith("kref://")) return undefined;
+  const segments = itemKref.slice("kref://".length).split("/").filter(Boolean);
+  if (segments.length < 2 || !segments[segments.length - 1].includes(".")) return undefined;
+  return segments.slice(0, -1).join("/");
+}
+
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -580,13 +594,22 @@ export class KumihoClient {
     const krefs = raw.revision_krefs ?? [];
     if (krefs.length === 0) return [];
 
+    // `spaces_used` is the de-duplicated set of spaces the hits came from, not
+    // a list aligned with revision_krefs: hits from [A, A, B] report [A, B].
+    // Each hit's space comes from its own kref; the set is only a last resort,
+    // and only when it names a single space, which then covers every hit.
+    const soleSpace = Array.isArray(raw.spaces_used) && raw.spaces_used.length === 1
+      ? coerceString(raw.spaces_used[0]) || undefined
+      : undefined;
+    const spaceOf = (kref: string) => spaceFromKref(kref) ?? soleSpace;
+
     const entries = await Promise.all(
       krefs.map((kref, i) =>
         this.getRevision(kref)
           .then((entry) => ({
             ...entry,
             score: raw.scores?.[i],
-            space: entry.space || raw.spaces_used?.[i],
+            space: entry.space || spaceOf(kref),
           }))
           .catch(() => ({
             kref,
@@ -594,7 +617,7 @@ export class KumihoClient {
             title: "",
             summary: "",
             topics: [] as string[],
-            space: raw.spaces_used?.[i],
+            space: spaceOf(kref),
             score: raw.scores?.[i],
           })),
       ),

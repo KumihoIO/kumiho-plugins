@@ -7,6 +7,13 @@ const mockState = vi.hoisted(() => {
     timestamp: string;
   }
 
+  // What the fake backend answers to kumiho_memory_retrieve / kumiho_get_revision.
+  // Reset before each test; the default is an empty recall.
+  const retrieveFixture: {
+    response: Record<string, unknown> | null;
+    revisionMetadata: Record<string, Record<string, unknown>>;
+  } = { response: null, revisionMetadata: {} };
+
   class FakeMcpTransport {
     started = false;
     startCalls = 0;
@@ -66,12 +73,22 @@ const mockState = vi.hoisted(() => {
         }
 
         case "kumiho_memory_retrieve":
-          return {
+          return (retrieveFixture.response ?? {
             item_krefs: [],
             revision_krefs: [],
             spaces_used: [],
             scores: [],
+          }) as T;
+
+        case "kumiho_get_revision": {
+          const kref = String(params.kref ?? "");
+          return {
+            kref,
+            item_kref: kref.split("?")[0],
+            created_at: "2026-09-17T09:00:00Z",
+            metadata: retrieveFixture.revisionMetadata[kref] ?? {},
           } as T;
+        }
 
         case "kumiho_memory_store":
           return {
@@ -102,6 +119,7 @@ const mockState = vi.hoisted(() => {
     FakeMcpTransport,
     createTransport,
     transports,
+    retrieveFixture,
   };
 });
 
@@ -191,6 +209,8 @@ describe("OpenClaw prompt hooks", () => {
     vi.resetModules();
     vi.clearAllMocks();
     mockState.transports.length = 0;
+    mockState.retrieveFixture.response = null;
+    mockState.retrieveFixture.revisionMetadata = {};
   });
 
   afterEach(() => {
@@ -236,6 +256,49 @@ describe("OpenClaw prompt hooks", () => {
         String(message).includes("Bridge not initialized"),
       ),
     ).toBe(false);
+  });
+
+  it("sorts recalled memories into personal and project sections by each memory's own space", async () => {
+    // Hits from [personal, personal, project] come back with a DEDUPED
+    // spaces_used [personal, project]. Indexing it by position filed the second
+    // personal memory under <kumiho_project> and the project item under
+    // <kumiho_memory> (space undefined).
+    const personalA = "kref://CognitiveMemory/personal/editor.preference?r=2";
+    const personalB = "kref://CognitiveMemory/personal/timezone.fact?r=1";
+    const project = "kref://CognitiveMemory/blog-post-jan25/draft-outline.decision?r=3&a=outline.md";
+    mockState.retrieveFixture.response = {
+      item_krefs: [personalA, personalB, project].map((kref) => kref.split("?")[0]),
+      revision_krefs: [personalA, personalB, project],
+      spaces_used: ["CognitiveMemory/personal", "CognitiveMemory/blog-post-jan25"],
+      scores: [0.92, 0.88, 0.81],
+    };
+    mockState.retrieveFixture.revisionMetadata = {
+      [personalA]: { type: "fact", title: "Editor", summary: "Prefers Neovim." },
+      [personalB]: { type: "fact", title: "Timezone", summary: "Works in KST." },
+      [project]: { type: "decision", title: "Outline", summary: "Three-part structure." },
+    };
+
+    const { default: plugin } = await import("../index.js");
+    const api = makeApi();
+    plugin.register(api as never);
+
+    const result = (await api.events.get("before_prompt_build")?.(
+      { messages: [{ role: "user", content: "What editor do I use for the blog post?" }] },
+      {},
+    )) as { prependContext?: string } | undefined;
+
+    const context = result?.prependContext ?? "";
+    const section = (tag: string) =>
+      context.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`))?.[1] ?? "";
+    const personal = section("kumiho_memory");
+    const projects = section("kumiho_project");
+
+    expect(personal).toContain(`Kref: ${personalA}`);
+    expect(personal).toContain(`Kref: ${personalB}`);
+    expect(personal).not.toContain(project);
+    expect(projects).toContain(`Kref: ${project}`);
+    expect(projects).not.toContain(personalA);
+    expect(projects).not.toContain(personalB);
   });
 
   it("uses host LLM credentials from the OpenClaw runtime config when available", async () => {
