@@ -134,9 +134,9 @@ asked for:
   There are no headers, secrets or `userConfig`; the client discovers the
   authorization server through the MCP authorization spec (OAuth 2.1, CIMD and
   DCR, PKCE S256). Sign-in and consent happen at `control.kumiho.cloud`.
-- **Tools.** The connector exposes 18 tools. The skills reference 11 of them, all
-  inside that set: `kumiho_memory_engage`, `kumiho_memory_recall`,
-  `kumiho_memory_retrieve`, `kumiho_memory_reflect`, `kumiho_memory_consolidate`,
+- **Tools.** The connector exposes 18 tools. The skills reference 10 of them, all
+  inside that set: `kumiho_memory_engage`, `kumiho_memory_retrieve`,
+  `kumiho_memory_reflect`, `kumiho_memory_consolidate`,
   `kumiho_get_revision_by_tag`, `kumiho_deprecate_item`, `kumiho_chat_get`,
   `kumiho_chat_clear`, `kumiho_list_projects`, `kumiho_get_spaces`.
   `cloud-mcp/tests/test_directory_bundle.py` enforces this.
