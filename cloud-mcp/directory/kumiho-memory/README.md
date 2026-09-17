@@ -4,10 +4,10 @@ This bundle packages the hosted Kumiho Memory MCP connector
 (`https://mcp.kumiho.cloud/mcp`) with six focused skills. One `skills/` directory
 is shared by two manifests:
 
-| Manifest | Hosts |
-|---|---|
-| `.claude-plugin/plugin.json` + `.mcp.json` | Claude Code and Cowork |
-| `.codex-plugin/plugin.json` + `skills/*/agents/openai.yaml` | ChatGPT and Codex |
+| Manifest | Plugin name | Hosts |
+|---|---|---|
+| `.claude-plugin/plugin.json` + `.mcp.json` | `kumiho-memory-cloud` (Kumiho Memory Cloud) | Claude Code and Cowork |
+| `.codex-plugin/plugin.json` + `skills/*/agents/openai.yaml` | `kumiho-memory` (Kumiho Memory) | ChatGPT and Codex |
 
 ## Requirements
 
@@ -19,8 +19,10 @@ is shared by two manifests:
   [`claude/`](https://github.com/KumihoIO/kumiho-plugins/tree/main/claude) for
   Claude Code (`kumiho-memory@kumiho-plugins`) and
   [`codex/`](https://github.com/KumihoIO/kumiho-plugins/tree/main/codex) for Codex.
-  The local Claude Code plugin has the same name, `kumiho-memory`; keep only one
-  of the two enabled.
+  The local Claude Code plugin is named `kumiho-memory` and this one
+  `kumiho-memory-cloud`, so their tool, server and skill names do not collide.
+  Still enable only one of the two: each runs its own memory protocol, so with
+  both enabled Claude would recall and capture everything twice.
 - No local server, Python SDK, hook, background job or extra model API key.
 
 ## Skills
@@ -38,14 +40,14 @@ is shared by two manifests:
 
 ### Claude Code
 
-1. Run `/plugin`, find **Kumiho Memory** in Anthropic's official marketplace
+1. Run `/plugin`, find **Kumiho Memory Cloud** in Anthropic's official marketplace
    (`claude-plugins-official`) and install it, or run
-   `claude plugin install kumiho-memory@claude-plugins-official`.
-2. Run `/mcp`, select `plugin:kumiho-memory:kumiho-memory` and authenticate. Your
-   browser opens the Kumiho sign-in and consent page. Use the same menu to
+   `claude plugin install kumiho-memory-cloud@claude-plugins-official`.
+2. Run `/mcp`, select `plugin:kumiho-memory-cloud:kumiho-memory` and authenticate.
+   Your browser opens the Kumiho sign-in and consent page. Use the same menu to
    re-authenticate after a login expires.
-3. Run `/kumiho-memory:kumiho-onboard` to verify the workspace, or ask Claude to
-   list your Kumiho projects.
+3. Run `/kumiho-memory-cloud:kumiho-onboard` to verify the workspace, or ask
+   Claude to list your Kumiho projects.
 
 To load this directory from a local checkout for one session instead:
 
@@ -55,7 +57,7 @@ claude --plugin-dir cloud-mcp/directory/kumiho-memory
 
 ### Cowork
 
-Install **Kumiho Memory** from the Claude plugin directory, then connect the
+Install **Kumiho Memory Cloud** from the Claude plugin directory, then connect the
 Kumiho Memory connector when prompted or from Customize > Connectors. The
 connector requires the same Kumiho Cloud sign-in.
 

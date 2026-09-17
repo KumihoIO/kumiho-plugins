@@ -48,9 +48,21 @@ def _packager():
 def test_claude_and_codex_manifests_describe_the_same_plugin():
     claude = _json(BUNDLE / ".claude-plugin" / "plugin.json")
     codex = _json(BUNDLE / ".codex-plugin" / "plugin.json")
-    assert claude["name"] == codex["name"] == "kumiho-memory"
+    assert claude["name"] == "kumiho-memory-cloud"
+    assert claude["displayName"] == "Kumiho Memory Cloud"
+    # Already submitted to OpenAI under this name; unaffected by the Claude rename.
+    assert codex["name"] == "kumiho-memory"
     assert claude["version"] == codex["version"]
     assert claude["license"] == codex["license"]
+
+
+def test_hosted_claude_plugin_name_differs_from_the_local_claude_plugin():
+    # Claude Code namespaces MCP tools (mcp__plugin_<name>_<server>__*), the /mcp
+    # server id (plugin:<name>:<server>) and skills (<name>:<skill>) by plugin name
+    # alone, so two enabled plugins sharing a name collide on all three.
+    hosted = _json(BUNDLE / ".claude-plugin" / "plugin.json")
+    local = _json(DIRECTORY.parents[1] / "claude" / ".claude-plugin" / "plugin.json")
+    assert hosted["name"] != local["name"], hosted["name"]
 
 
 def test_mcp_json_declares_only_the_hosted_connector():

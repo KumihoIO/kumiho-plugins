@@ -1,4 +1,4 @@
-# Kumiho Memory — Claude plugin directory submission
+# Kumiho Memory Cloud — Claude plugin directory submission
 
 Answers for the plugin submission form at
 `claude.ai/admin-settings/directory/submissions/plugins/new` (Claude Code and
@@ -23,9 +23,10 @@ that pack is `cloud-mcp/DIRECTORY.md`.
 https://github.com/KumihoIO/kumiho-plugins/tree/main/cloud-mcp/directory/kumiho-memory
 ```
 
-This URL becomes valid once the branch `feat/claude-directory-plugin` merges to
-`main`. Before that, the directory on `main` has no `.claude-plugin/plugin.json`
-or `.mcp.json`. The official marketplace lists subdirectory plugins as
+The bundle is on `main` since #105. The plugin name below is on `main` once
+`chore/rename-hosted-plugin-cloud` merges; submit after that, or the form reads
+the old name. The folder keeps its name, so this link does not change. The
+official marketplace lists subdirectory plugins as
 `{"source": "git-subdir", "url": "https://github.com/KumihoIO/kumiho-plugins.git", "path": "cloud-mcp/directory/kumiho-memory", ...}`,
 the same shape it uses for Airtable's `plugins/airtable`.
 
@@ -40,22 +41,44 @@ Returned 200 on 2026-09-17 (redirects to `/en/docs/connect/claude`).
 ### Plugin name *
 
 ```
-kumiho-memory
+kumiho-memory-cloud
 ```
 
-Display name in the manifest: **Kumiho Memory**.
+Display name in the manifest: **Kumiho Memory Cloud**. The directory plugin ID
+would be `kumiho-memory-cloud@claude-plugins-official`, and the Claude Code MCP
+server id `plugin:kumiho-memory-cloud:kumiho-memory` (the `.mcp.json` server key
+stays `kumiho-memory`).
 
 Availability check, 2026-09-17, against
 `anthropics/claude-plugins-official` `.claude-plugin/marketplace.json` at
-`ea0a38e1d671aa18a30431c9160e31193dc9860b` (308 plugins): no plugin is named
-`kumiho-memory` or `kumiho`, no entry mentions "kumiho" anywhere, and no plugin
-name or display name contains "memory". "Kumiho" is Kumiho Inc.'s own brand.
+`ea0a38e1d671aa18a30431c9160e31193dc9860b` (head of `main`, 308 plugins, no
+duplicate names): no plugin is named `kumiho-memory-cloud`, `kumiho-memory` or
+`kumiho`, no entry mentions "kumiho" anywhere, and no plugin name or display name
+contains "memory". The names that contain "cloud" (`cloud-sql-mysql`,
+`cloud-sql-postgresql`, `cloud-sql-sqlserver`, `cloudflare`, `cloudinary`,
+`google-cloud-storage`, `grafana-cloud-mcp`, `netsuite-suitecloud`) are
+unrelated. "Kumiho" is Kumiho Inc.'s own brand.
 
-The same name is used by the local plugin in Kumiho's own marketplace
-(`kumiho-memory@kumiho-plugins`). Plugin IDs include the marketplace, so the
-directory listing would be `kumiho-memory@claude-plugins-official`. Users should
-enable only one of the two in Claude Code; the README and the onboarding skill
-say so.
+Why not `kumiho-memory`: the local plugin in Kumiho's own marketplace
+(`kumiho-memory@kumiho-plugins`, the `claude/` directory) already has that name.
+Claude Code namespaces plugin components by plugin name, not by marketplace, so
+two plugins named `kumiho-memory` would register identical MCP tool names
+(`mcp__plugin_kumiho-memory_kumiho-memory__kumiho_*`), the same `/mcp` server id
+(`plugin:kumiho-memory:kumiho-memory`) and the same skill names
+(`kumiho-memory:dream-state`, `:memory-capture`, `:kumiho-onboard`,
+`:kumiho-personalize`, `:kumiho-backfill`). `kumiho-memory-cloud` removes the
+collision and says what this plugin is: the OAuth connection to Kumiho Cloud.
+`cloud-mcp/tests/test_directory_bundle.py` fails if the two names ever match
+again.
+
+Users should still enable only one of the two in Claude Code: each runs its own
+memory protocol, so with both enabled every recall and capture would happen
+twice. The README and the onboarding skill say so.
+
+Deliberately unchanged: the folder `cloud-mcp/directory/kumiho-memory/` (the link
+above and the OpenAI bundle), `.codex-plugin/plugin.json` (still named
+`kumiho-memory`; already submitted to OpenAI), the skill names, and the claude.ai
+upload `kumiho-memory-skill.zip`.
 
 ### Plugin description *
 
