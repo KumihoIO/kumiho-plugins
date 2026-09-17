@@ -111,11 +111,18 @@ asked for:
   There are no headers, secrets or `userConfig`; the client discovers the
   authorization server through the MCP authorization spec (OAuth 2.1, CIMD and
   DCR, PKCE S256). Sign-in and consent happen at `control.kumiho.cloud`.
-- **Tools.** The connector exposes 18 tools. The skills reference 8 of them, all
-  inside that set: `kumiho_memory_engage`, `kumiho_memory_retrieve`,
-  `kumiho_memory_reflect`, `kumiho_memory_consolidate`, `kumiho_get_revision_by_tag`,
-  `kumiho_deprecate_item`, `kumiho_list_projects`, `kumiho_get_spaces`.
+- **Tools.** The connector exposes 18 tools. The skills reference 11 of them, all
+  inside that set: `kumiho_memory_engage`, `kumiho_memory_recall`,
+  `kumiho_memory_retrieve`, `kumiho_memory_reflect`, `kumiho_memory_consolidate`,
+  `kumiho_get_revision_by_tag`, `kumiho_deprecate_item`, `kumiho_chat_get`,
+  `kumiho_chat_clear`, `kumiho_list_projects`, `kumiho_get_spaces`.
   `cloud-mcp/tests/test_directory_bundle.py` enforces this.
+- **Standalone core skill.** claude.ai web and Claude Desktop chat do not pass MCP
+  server `instructions` to the model
+  ([anthropics/claude-ai-mcp#93](https://github.com/anthropics/claude-ai-mcp/issues/93)),
+  so `skills/kumiho-memory/SKILL.md` carries the full recall, capture, session,
+  forget and credential-refusal protocol itself. It is also packaged for upload
+  to claude.ai by `cloud-mcp/directory/scripts/package_web_skill.py`.
 - **No hooks, agents or commands.** The plugin is skills plus one remote MCP
   server. The only script is the backfill helper, which reads only files passed to
   it, makes no network calls and writes only inside the batch directory it

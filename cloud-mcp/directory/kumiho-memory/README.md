@@ -59,6 +59,25 @@ Install **Kumiho Memory** from the Claude plugin directory, then connect the
 Kumiho Memory connector when prompted or from Customize > Connectors. The
 connector requires the same Kumiho Cloud sign-in.
 
+### claude.ai and Claude Desktop chat
+
+Plugins do not install there. Connect the Kumiho Memory connector under
+Customize > Connectors, then upload the core `kumiho-memory` skill under
+Customize > Skills (skills need code execution enabled in the app's
+capabilities settings). These surfaces do not pass the connector's own usage
+instructions to Claude
+([anthropics/claude-ai-mcp#93](https://github.com/anthropics/claude-ai-mcp/issues/93)),
+so `skills/kumiho-memory/SKILL.md` is written as the complete, standalone
+protocol. Build the upload with:
+
+```bash
+python cloud-mcp/directory/scripts/package_web_skill.py
+```
+
+It writes `cloud-mcp/directory/dist/kumiho-memory-skill.zip` (a single
+`kumiho-memory/` folder, without `agents/openai.yaml`). The archive is
+reproducible, so its SHA-256 changes only when the skill does.
+
 ## Install in ChatGPT and Codex
 
 Add the Kumiho Memory plugin in the host and use its Connect flow. The

@@ -8,13 +8,16 @@ import os
 import re
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 from kumiho_cloud_mcp.connector_profile import CONNECTOR_TOOLS
 
-BUNDLE = Path(__file__).resolve().parents[1] / "directory" / "kumiho-memory"
+DIRECTORY = Path(__file__).resolve().parents[1] / "directory"
+BUNDLE = DIRECTORY / "kumiho-memory"
 SKILL_DIRS = sorted(path.parent for path in BUNDLE.glob("skills/*/SKILL.md"))
 BACKFILL = BUNDLE / "skills" / "kumiho-backfill" / "scripts" / "prepare_backfill.py"
+PACKAGER = DIRECTORY / "scripts" / "package_web_skill.py"
 
 
 def _json(path):
@@ -27,11 +30,19 @@ def _frontmatter(path):
     return dict(line.split(": ", 1) for line in match.group(1).splitlines())
 
 
-def _backfill():
-    spec = importlib.util.spec_from_file_location("prepare_backfill", BACKFILL)
+def _load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _backfill():
+    return _load("prepare_backfill", BACKFILL)
+
+
+def _packager():
+    return _load("package_web_skill", PACKAGER)
 
 
 def test_claude_and_codex_manifests_describe_the_same_plugin():
@@ -118,3 +129,56 @@ def test_inventory_output_survives_a_narrow_stdout_encoding(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout.decode("utf-8")) == {"id": "c1", "title": "Launch \U0001F680 plan"}
+
+
+def test_core_skill_carries_the_whole_protocol_on_its_own():
+    # claude.ai web and Desktop chat drop the MCP server `instructions` field
+    # (anthropics/claude-ai-mcp#93), so an uploaded skill is the only protocol there.
+    text = (BUNDLE / "skills" / "kumiho-memory" / "SKILL.md").read_text(encoding="utf-8")
+    for needle in (
+        "kumiho_memory_engage",
+        "kumiho_memory_recall",
+        "kumiho_memory_reflect",
+        "kumiho_memory_consolidate",
+        "kumiho_deprecate_item",
+        "session_required",
+        "does not authorize recording every conversation",
+    ):
+        assert needle in text, needle
+
+
+def test_web_skill_zip_is_one_skill_folder_and_reproducible(tmp_path):
+    packager = _packager()
+    first = packager.build("kumiho-memory", tmp_path / "a")
+    second = packager.build("kumiho-memory", tmp_path / "b")
+    assert first.name == "kumiho-memory-skill.zip"
+    assert first.read_bytes() == second.read_bytes()
+    with zipfile.ZipFile(first) as archive:
+        assert archive.namelist() == ["kumiho-memory/", "kumiho-memory/SKILL.md"]
+        assert {info.date_time for info in archive.infolist()} == {(1980, 1, 1, 0, 0, 0)}
+        assert b"\r\n" not in archive.read("kumiho-memory/SKILL.md")
+
+
+def test_web_skill_zip_does_not_depend_on_checkout_line_endings(tmp_path, monkeypatch):
+    packager = _packager()
+    reference = packager.build("kumiho-memory", tmp_path / "reference")
+
+    skill = tmp_path / "skills" / "kumiho-memory"
+    (skill / "agents").mkdir(parents=True)
+    (skill / "agents" / "openai.yaml").write_text("interface: {}\n", encoding="utf-8")
+    source = (BUNDLE / "skills" / "kumiho-memory" / "SKILL.md").read_bytes().replace(b"\r\n", b"\n")
+    (skill / "SKILL.md").write_bytes(source.replace(b"\n", b"\r\n"))
+    monkeypatch.setattr(packager, "SKILLS", tmp_path / "skills")
+
+    assert packager.build("kumiho-memory", tmp_path / "crlf").read_bytes() == reference.read_bytes()
+
+
+def test_web_skill_validation_applies_the_upload_limits():
+    validate = _packager().validate
+    ok = "---\nname: demo\ndescription: Short and specific.\n---\n# Demo\n"
+    assert validate("demo", ok) == []
+    assert validate("other", ok)
+    assert validate("demo", ok.replace("name: demo", "name: Demo"))
+    assert validate("demo", ok.replace("Short and specific.", "x" * 201))
+    assert validate("demo", ok.replace("\n---\n# Demo", "\nlicense: MIT\n---\n# Demo"))
+    assert validate("demo", ok + "line\n" * 500)
