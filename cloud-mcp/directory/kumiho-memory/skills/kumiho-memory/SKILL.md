@@ -1,6 +1,6 @@
 ---
 name: kumiho-memory
-description: Persistent memory via Kumiho Memory. Use when the user asks to remember, recall or forget something, refers to earlier conversations, decisions or preferences, or settles something worth keeping.
+description: Kumiho Memory. Use when the user asks what you know about them or their preferences (what's my...), refers to earlier chats, or asks to remember, save, forget, correct or list recent memories.
 ---
 
 # Kumiho Memory
@@ -68,6 +68,18 @@ them; a proposal is not an accepted decision. Keep only relevant returned
 `source_krefs`, including the superseded memory for a correction, and set
 `discover_edges: false` when no additional assessment is requested. A correction
 does not delete the earlier memory; do not claim it did.
+
+When the user corrects or updates something already saved, first find that memory
+with engage or in results already in this conversation. Save the correction with
+`kumiho_memory_reflect` in the same space as that memory: pass the `space` on its
+result, such as `/CognitiveMemory/preferences` or `/CognitiveMemory/work/infra`,
+unchanged as `space_hint`. Keep its memory type (a changed preference stays
+`preference`, not `correction`) and its language, restate the subject in the title
+and content, and leave out `tags`, so the correction becomes a new revision of that
+memory instead of a second one. If the kref in `stored_krefs` ends in `?r=1` or
+names a different item, retire the old memory with `kumiho_deprecate_item`. The
+user asked for the change, so this needs no further confirmation unless more than
+one memory could be the one meant.
 
 Check returned application errors and krefs before claiming a save. Do not blindly
 retry an uncertain write or save a second memory merely to record that the first

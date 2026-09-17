@@ -147,6 +147,31 @@ def test_skills_route_general_recall_to_engage_and_remember_this_to_reflect():
     assert "`space_paths`" in latest and "`memory_types`" in latest
     assert "`kumiho_memory_reflect`" in step_with("asks you to remember something")
 
+    # Reflect stacks a capture onto a similar memory only inside the space it is
+    # given, and a stacked revision takes the published tag only when the capture
+    # has no tags. A correction without that memory's space was filed at the
+    # project root as a second item, and recall returned both values.
+    correction = step_with("corrects or updates something already saved")
+    assert "`kumiho_memory_reflect` in the same space as that memory" in correction
+    assert "unchanged as `space_hint`" in correction
+    assert "Keep its memory type" in correction and "not `correction`" in correction
+    assert "leave out `tags`" in correction
+    assert "`?r=1`" in correction and "`kumiho_deprecate_item`" in correction
+    for name in ("memory-capture", "kumiho-personalize", "dream-state"):
+        text = " ".join((BUNDLE / "skills" / name / "SKILL.md").read_text(encoding="utf-8").split())
+        assert "type: correction" not in text, name
+        assert "as `space_hint`" in text and "`?r=1`" in text, name
+        assert "`tags`" in text, name
+
+    # claude.ai has no session-start hook and drops MCP server instructions, so the
+    # description is what makes Claude load the uploaded skill. Uploads cap it at 200.
+    meta = _frontmatter(BUNDLE / "skills" / "kumiho-memory" / "SKILL.md")
+    assert meta["name"] == "kumiho-memory"
+    assert len(meta["description"]) <= 200, len(meta["description"])
+    for cue in ("what you know about them", "preferences", "what's my", "earlier chats",
+                "remember", "save", "forget", "correct", "recent memories"):
+        assert cue in meta["description"], cue
+
 
 def test_claude_code_backfill_keeps_the_conversation_and_drops_harness_records():
     def user(content, **flags):
