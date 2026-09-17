@@ -22,8 +22,8 @@ write. Explicit user instructions override remembered preferences.
    exact preference-space name (otherwise `preferences`), tags
    `["personalization"]`, and `discover_edges: false`. To change a saved
    preference, instead pass that preference's space (its `space`, or its kref path
-   before the item name) as `space_hint`, keep its language, restate the subject
-   and leave out `tags`, so the change becomes a new revision of that memory.
+   before the item name) as `space_hint`, keep its language and restate the
+   subject, so the change becomes a new revision of that memory.
    Include the relevant old kref in `source_krefs` and say which preference this
    corrects. If the returned kref ends in `?r=1` or names a different item, retire
    the old preference with `kumiho_deprecate_item`. Do not claim the previous item

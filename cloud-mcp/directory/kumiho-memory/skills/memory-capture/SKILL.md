@@ -17,10 +17,9 @@ description: Save one explicitly supplied fact, preference or decision to the co
    `facts`, `preferences` or `decisions` space. Include `event_date` only if known
    and set `discover_edges: false`. Include only relevant returned `source_krefs`.
    If the item corrects or updates a memory already saved, use that memory's
-   `space` as `space_hint` and its type and language, restate the subject and leave
-   out `tags`, so it becomes a new revision of that memory. If the returned kref
-   ends in `?r=1` or names a different item, retire the old memory with
-   `kumiho_deprecate_item`.
+   `space` as `space_hint` and its type and language, and restate the subject, so
+   it becomes a new revision of that memory. If the returned kref ends in `?r=1`
+   or names a different item, retire the old memory with `kumiho_deprecate_item`.
 4. Omit `session_id` initially. On `session_required`, retry with the returned ID
    and retain it only in this conversation. Never borrow a historical session ID
    or pass `user_id`/`context` to change the identity of the session.

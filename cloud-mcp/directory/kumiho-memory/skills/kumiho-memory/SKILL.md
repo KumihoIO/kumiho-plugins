@@ -74,9 +74,9 @@ with engage or in results already in this conversation. Save the correction with
 `kumiho_memory_reflect` in the same space as that memory: pass the `space` on its
 result, such as `/CognitiveMemory/preferences` or `/CognitiveMemory/work/infra`,
 unchanged as `space_hint`. Keep its memory type (a changed preference stays
-`preference`, not `correction`) and its language, restate the subject in the title
-and content, and leave out `tags`, so the correction becomes a new revision of that
-memory instead of a second one. If the kref in `stored_krefs` ends in `?r=1` or
+`preference`, not `correction`) and its language, and restate the subject in the
+title and content, so the correction becomes a new revision of that memory
+instead of a second one. If the kref in `stored_krefs` ends in `?r=1` or
 names a different item, retire the old memory with `kumiho_deprecate_item`. The
 user asked for the change, so this needs no further confirmation unless more than
 one memory could be the one meant.

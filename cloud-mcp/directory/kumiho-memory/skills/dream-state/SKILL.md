@@ -35,8 +35,8 @@ request to authorize bulk retirement. Never retire all copies of information.
 
 - Use `kumiho_memory_reflect` for a user-approved correction with relevant
   `source_krefs`, the corrected memory's `space` as `space_hint`, its memory type
-  and language, the subject restated, no `tags`, and `discover_edges: false`, so it
-  becomes a new revision of that memory. If the returned kref ends in `?r=1` or
+  and language, the subject restated, and `discover_edges: false`, so it becomes a
+  new revision of that memory. If the returned kref ends in `?r=1` or
   names a different item, the old memory is still recalled until its approved
   retirement. Omit session ID initially and follow a returned `session_required`
   ID for this conversation only.
