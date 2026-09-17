@@ -1,0 +1,25 @@
+{
+  "name": "kumiho-memory",
+  "displayName": "Kumiho Memory",
+  "version": "0.1.1",
+  "description": "Persistent memory for Claude across conversations. Recall and save decisions, preferences and facts in your private Kumiho workspace, review stored memories, and import reviewed memories from selected past conversations. Bundles the hosted Kumiho Memory MCP connector (OAuth) and six skills. Requires a paid Kumiho Cloud account.",
+  "author": {
+    "name": "Kumiho Inc.",
+    "url": "https://kumiho.io"
+  },
+  "homepage": "https://kumiho.io/docs/connect/claude",
+  "repository": "https://github.com/KumihoIO/kumiho-plugins",
+  "license": "MIT",
+  "keywords": [
+    "kumiho",
+    "memory",
+    "persistent-memory",
+    "knowledge-graph",
+    "decisions",
+    "preferences",
+    "context",
+    "recall",
+    "productivity",
+    "mcp"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "kumiho-memory": {
+    "type": "http",
+    "url": "https://mcp.kumiho.cloud/mcp"
+  }
+}
