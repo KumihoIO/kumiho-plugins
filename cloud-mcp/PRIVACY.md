@@ -2,7 +2,7 @@
 
 > **Draft for review.** This is the engineering description of what the hosted
 > Kumiho Memory connector actually does with data, written so it can become the
-> published policy at `https://kumiho.io/privacy`. It has not been through legal
+> published policy at `https://kumiho.io/en/legal`. It has not been through legal
 > review. Placeholders are marked **[TBD]**. Do not link the Claude Connectors
 > Directory submission at this file — link the published page.
 
@@ -125,7 +125,7 @@ are executed with each sub-processor]**.
 | Google Firebase | Authentication |
 | Cloudflare | Edge routing and DDoS protection |
 
-We publish changes to this list at `https://kumiho.io/privacy#subprocessors`
+We publish changes to this list at `https://kumiho.io/en/legal`
 **[TBD]** and notify workspace owners before a new sub-processor starts
 processing.
 

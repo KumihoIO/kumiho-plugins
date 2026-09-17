@@ -49,12 +49,12 @@ What you get:
 • Consolidation that merges near-duplicates instead of hoarding them
 • Explicit forgetting — you can tell Claude to forget something and it does
 
-Your memories live in your own Kumiho workspace, isolated per tenant, and are
-never used to train models. You can read, export, or delete everything from the
-Kumiho dashboard at any time.
+Your memories live in your own Kumiho workspace, isolated per tenant. You can
+read, export or delete everything from the Kumiho dashboard at any time; how
+Kumiho handles that data is set out at https://kumiho.io/en/legal.
 
-Kumiho Memory is free to start. Sign in with your Kumiho account when you
-connect; a workspace is created for you if you do not have one.
+Connecting requires a Kumiho Cloud account. Sign in when you connect and a
+workspace is created for you if you do not have one.
 ```
 
 **Categories** (1–5)
@@ -75,8 +75,9 @@ https://mcp.kumiho.cloud/mcp
 **Authentication**: OAuth 2.1 — `oauth_dcr` and `oauth_cimd` both supported.
 The authorization server is `https://control.kumiho.cloud`; its RFC 8414
 metadata advertises `code_challenge_methods_supported: ["S256"]`,
-`token_endpoint_auth_methods_supported: ["none", "client_secret_post"]` and
-`client_id_metadata_document_supported: true`, so Claude may select CIMD.
+`token_endpoint_auth_methods_supported: ["none"]` and
+`client_id_metadata_document_supported: true`, so Claude selects CIMD — the
+path Anthropic prefers over DCR for directory traffic.
 `oauth_anthropic_creds` can be added later by emailing `mcp-review@anthropic.com`.
 
 **Permanent slug**
@@ -87,10 +88,10 @@ kumiho-memory
 
 | Field | Value |
 |---|---|
-| Documentation URL | `https://kumiho.io/docs/connect/claude` **[needs Morpheus]** |
-| Privacy policy URL | `https://kumiho.io/privacy` — draft in [`PRIVACY.md`](PRIVACY.md) **[needs Morpheus]** |
-| Support contact | `support@kumiho.io` **[needs Morpheus]** |
-| Icon | 512×512 PNG, transparent background **[needs Morpheus]** |
+| Documentation URL | `https://kumiho.io/docs/connect/claude` — **404 as of 2026-09-17**; page drafted on `kumiho-web` branch `docs/claude-connector`. This URL is also served in production as `resource_documentation` (PRM) and `service_documentation` (AS metadata), so it must go live before submission. |
+| Privacy policy URL | `https://kumiho.io/en/legal#privacy` — verified 200. **Do not use `https://kumiho.io/privacy`; it 404s.** |
+| Support contact | `support@kumiho.io` — listed on `https://kumiho.io/contact` |
+| Icon | `submission-assets/kumiho-fox.png`, 1254×1254 PNG |
 
 ---
 
@@ -176,8 +177,10 @@ that memory. It is a destructive tool; Claude confirms first.
 
 ## 4. Before you connect
 
-- **You need a Kumiho account.** Signing in during the connect flow creates a
-  free workspace if you do not have one. No credit card.
+- **You need a paid Kumiho Cloud account.** Cloud starts at $7/month; signing in
+  during the connect flow creates the workspace if you do not have one. The free
+  self-hosted Community Edition is *not* reachable from Claude on the web or the
+  Claude mobile apps — this connector serves Cloud workspaces only.
 - **Memories are stored on Kumiho's servers**, in a graph database isolated per
   workspace, in the region your workspace is provisioned in. They are not stored
   in Claude.
@@ -186,7 +189,10 @@ that memory. It is a destructive tool; Claude confirms first.
   something and it will not.
 - **Everything is reviewable.** Read, export or delete any memory from the
   Kumiho dashboard, or ask Claude to forget it in conversation.
-- **Nothing is used to train models** — not Kumiho's, not anyone's.
+- **Not used to train models.** **[Publish before submitting]** — the live
+  policy at `https://kumiho.io/en/legal` currently makes no training statement,
+  so a reviewer comparing this listing against the policy will find a gap. Either
+  add the statement to the published policy or drop this bullet.
 - **Team and Enterprise admins** can connect Kumiho once for the whole
   organisation using a workspace API key; see §7.
 
@@ -231,7 +237,7 @@ No. Not by Kumiho and not by any third party.
 AWS (compute, region-local storage), Neo4j Aura or self-managed Neo4j on AWS
 (graph), Upstash (Redis buffer), Supabase (accounts and workspace directory),
 Google Firebase (authentication), Cloudflare (edge). Current list:
-`https://kumiho.io/privacy#subprocessors` **[needs Morpheus]**.
+`https://kumiho.io/en/legal`.
 
 **Deletion**
 Per memory from the dashboard or by asking Claude to forget it; whole-workspace
@@ -363,7 +369,42 @@ remembers is there in Claude Code the next morning.
 
 ---
 
-## 9. Pre-submission checklist
+## 9. Live audit — 2026-09-17
+
+Re-verified against the running service and Anthropic's current review criteria.
+
+| Check | Result |
+|---|---|
+| Unauthenticated `POST /mcp` | `401` with the `resource_metadata` challenge and `scope="memory"` |
+| PRM `resource` | exactly `https://mcp.kumiho.cloud/mcp` |
+| PRM `authorization_servers[0]` | `https://control.kumiho.cloud` |
+| AS metadata | RFC 8414, `S256`, `offline_access`, CIMD advertised |
+| AS discovery latency | 0.85 s (limit 10 s) |
+| `/healthz` | 18 tools, `profile_source: native`, kumiho 0.13.0, kumiho-memory 1.5.0 |
+| Tool annotations | all 18 carry a `title`; longest name 29 chars (limit 64) |
+| Read/write separation | no catch-all `api_request`-style tool |
+| `support@kumiho.io` | listed on `https://kumiho.io/contact` |
+| `https://kumiho.io/docs/connect/claude` | **404 — blocker** |
+| `https://kumiho.io/privacy` | **404 — use `/en/legal#privacy`** |
+
+**Annotations are correct and need no change.** The hosted service does not use
+the SDK's `TOOL_ANNOTATIONS`: `kumiho_cloud_mcp/connector_profile.py` defines
+`CONNECTOR_TOOL_ANNOTATIONS`, which `_compat.py::_apply_annotations` applies over
+any upstream default. That table already marks `kumiho_memory_store`,
+`kumiho_memory_consolidate`, `kumiho_memory_reflect` and `kumiho_memory_decompose`
+`destructiveHint: true`, matching the justifications locked in
+`chatgpt-app-submission.json`. Only `kumiho_create_space` and
+`kumiho_memory_space_profile` are additive writes, which is correct. Anyone
+auditing this connector must read `connector_profile.py`, never the SDK defaults.
+
+Current review criteria also note that submissions are auto-scanned and listed as
+**Community** by default; Anthropic escalates to **Verified** on its own and
+there is nothing to request. Testing has no staging environment — add the server
+as a custom connector in Claude and exercise every tool before submitting.
+
+---
+
+## 10. Pre-submission checklist
 
 - [ ] Claude.ai Team/Enterprise org with the Owner role **[Morpheus]**
 - [ ] `mcp.kumiho.cloud` resolves to the edge worker; App Runner origin healthy
