@@ -8,8 +8,10 @@ Three things this covers that nothing else does:
   tool list);
 * ``x-kumiho-dev-tenant`` must move the tenant in dev mode and be inert
   everywhere else;
-* ``/healthz`` must report the per-tenant memory-manager count, which is the
-  only externally visible proof that hosted mode is not a singleton.
+* ``/healthz`` must report the per-tenant memory-manager count in dev mode,
+  which is the check that hosted mode is not a singleton — and must *not*
+  report it, the client-pool size or the stacking gate in production, where the
+  endpoint is unauthenticated.
 """
 
 from __future__ import annotations
@@ -174,7 +176,26 @@ async def test_dev_tenant_header_is_ignored_outside_dev_mode(
 # ---------------------------------------------------------------------------
 
 
-async def test_healthz_reports_tenant_managers(settings, control_plane, fake_clients):
+PUBLIC_HEALTHZ_KEYS = {
+    "status",
+    "service",
+    "version",
+    "mcp_endpoint",
+    "dev_mode",
+    "profile_source",
+    "tools",
+    "expected_tools",
+    "sdk",
+}
+
+OPERATIONAL_HEALTHZ_KEYS = {"tenant_managers", "clients", "stacking"}
+
+
+async def test_healthz_reports_tenant_managers_in_dev_mode(control_plane, fake_clients):
+    settings = _settings(
+        KUMIHO_MCP_DEV_MODE="ce",
+        KUMIHO_LOCAL_SERVER_ENDPOINT="127.0.0.1:9190",
+    )
     app = create_app(settings, server_factory=build_stub_server)
     async with client_for(app, control_plane) as http:
         payload = (await http.get("/healthz")).json()
@@ -185,4 +206,24 @@ async def test_healthz_reports_tenant_managers(settings, control_plane, fake_cli
     assert isinstance(managers["count"], int)
     # Hosted mode must never build the process-wide singleton.
     assert managers["process_singleton"] is False
+    assert payload["sdk"]["kumiho"] is not None
+
+
+async def test_healthz_hides_operational_detail_in_production(
+    settings, control_plane, fake_clients
+):
+    """The unauthenticated endpoint answers "right build, right tool list" only.
+
+    Manager counts, the client-pool size and the stacking gate say how a shared
+    process is behaving internally; nobody on the public internet needs them,
+    so production must not volunteer them to an anonymous GET.
+    """
+    app = create_app(settings, server_factory=build_stub_server)
+    async with client_for(app, control_plane) as http:
+        payload = (await http.get("/healthz")).json()
+
+    assert payload["status"] == "ok"
+    assert payload["dev_mode"] is None
+    assert set(payload) == PUBLIC_HEALTHZ_KEYS
+    assert set(payload).isdisjoint(OPERATIONAL_HEALTHZ_KEYS)
     assert payload["sdk"]["kumiho"] is not None

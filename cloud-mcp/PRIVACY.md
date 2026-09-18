@@ -16,8 +16,7 @@ Kumiho **[legal entity name, registered address — TBD]** ("Kumiho", "we")
 operates the Kumiho memory platform, including the hosted Claude connector at
 `https://mcp.kumiho.cloud`.
 
-Data protection contact: **privacy@kumiho.io** **[TBD — confirm the address
-exists and is monitored]**.
+Data protection contact: **privacy@kumiho.io**.
 
 ## What this policy covers
 
@@ -206,11 +205,10 @@ establishment]**
 ## Open items before publication
 
 1. Legal entity name, registered address, and EU/UK Art. 27 representative.
-2. Confirm `privacy@kumiho.io` exists and is monitored.
-3. Confirm actual retention for request logs and Cloudflare edge logs.
-4. Confirm the Supabase project region and whether SCCs are executed with every
+2. Confirm actual retention for request logs and Cloudflare edge logs.
+3. Confirm the Supabase project region and whether SCCs are executed with every
    sub-processor.
-5. Legal review of the GDPR/CCPA sections.
-6. Decide whether the workspace-export feature promised above exists yet; if it
+4. Legal review of the GDPR/CCPA sections.
+5. Decide whether the workspace-export feature promised above exists yet; if it
    does not, either build it or soften the wording before publishing.
-7. Publish the sub-processor list at a stable anchor and keep it current.
+6. Publish the sub-processor list at a stable anchor and keep it current.

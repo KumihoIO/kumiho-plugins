@@ -414,35 +414,41 @@ def create_app(settings: Optional[Settings] = None, *, server_factory=None) -> S
     # ---- plain routes --------------------------------------------------
 
     async def healthz(_request: Request) -> JSONResponse:
-        return JSONResponse(
-            {
-                "status": "ok",
-                "service": "kumiho-cloud-mcp",
-                "version": __version__,
-                "mcp_endpoint": settings.public_url,
-                "dev_mode": settings.dev_mode,
-                "profile_source": profile_source,
-                "tools": len(getattr(_request.app.state, "exposed_tools", []) or []),
-                "expected_tools": CONNECTOR_TOOL_COUNT,
-                # How many tenants currently hold a memory manager in this
-                # process. The number is the load-bearing evidence that hosted
-                # mode is per-tenant and not a singleton: it must track the
-                # number of distinct tenants seen, never stick at 1.
-                "tenant_managers": _tenant_manager_stats(),
-                "clients": _pool_size(pool),
-                # Which revision-stacking gate the SDK will apply to the next
-                # store. Read from the live environment rather than from
-                # ``settings`` so the answer is the one the SDK will actually
-                # give itself; `stack_mode` on every store result is the
-                # matching per-write telemetry.
-                "stacking": {"middle_band": middle_band_enabled()},
-                "sdk": {
-                    "kumiho": _installed_version("kumiho"),
-                    "kumiho_memory": _installed_version("kumiho_memory"),
-                    "upstream_request_context": HAVE_UPSTREAM_REQUEST_CONTEXT,
-                },
-            }
-        )
+        # Unauthenticated, so this stays at "is the right build up and serving
+        # the right tool list". The per-tenant manager counts, the client-pool
+        # size and the stacking gate are operational internals of a shared
+        # process; they are only useful to whoever runs the box, and they are
+        # served to nobody on the public internet. Dev mode still reports them,
+        # which is where the tests and the local checks read them from.
+        payload = {
+            "status": "ok",
+            "service": "kumiho-cloud-mcp",
+            "version": __version__,
+            "mcp_endpoint": settings.public_url,
+            "dev_mode": settings.dev_mode,
+            "profile_source": profile_source,
+            "tools": len(getattr(_request.app.state, "exposed_tools", []) or []),
+            "expected_tools": CONNECTOR_TOOL_COUNT,
+            "sdk": {
+                "kumiho": _installed_version("kumiho"),
+                "kumiho_memory": _installed_version("kumiho_memory"),
+                "upstream_request_context": HAVE_UPSTREAM_REQUEST_CONTEXT,
+            },
+        }
+        if settings.dev_mode is not None:
+            # How many tenants currently hold a memory manager in this
+            # process. The number is the load-bearing evidence that hosted
+            # mode is per-tenant and not a singleton: it must track the
+            # number of distinct tenants seen, never stick at 1.
+            payload["tenant_managers"] = _tenant_manager_stats()
+            payload["clients"] = _pool_size(pool)
+            # Which revision-stacking gate the SDK will apply to the next
+            # store. Read from the live environment rather than from
+            # ``settings`` so the answer is the one the SDK will actually
+            # give itself; `stack_mode` on every store result is the
+            # matching per-write telemetry.
+            payload["stacking"] = {"middle_band": middle_band_enabled()}
+        return JSONResponse(payload)
 
     async def index(_request: Request) -> HTMLResponse:
         return HTMLResponse(

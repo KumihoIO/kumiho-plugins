@@ -173,8 +173,20 @@ def test_dev_mode_stacks_on_the_production_gate(stack_env, fake_clients):
 # ---------------------------------------------------------------------------
 
 
-async def test_healthz_reports_the_stacking_mode(settings, control_plane, fake_clients, stack_env):
-    app = create_app(settings, server_factory=build_stub_server)
+def _dev_settings():
+    """Dev mode, which is where ``/healthz`` reports the gate.
+
+    Production keeps the endpoint unauthenticated and therefore says nothing
+    about how the process is behaving internally (see test_hardening).
+    """
+    return _settings(
+        KUMIHO_MCP_DEV_MODE="ce",
+        KUMIHO_LOCAL_SERVER_ENDPOINT="127.0.0.1:9190",
+    )
+
+
+async def test_healthz_reports_the_stacking_mode(control_plane, fake_clients, stack_env):
+    app = create_app(_dev_settings(), server_factory=build_stub_server)
     async with client_for(app, control_plane) as http:
         payload = (await http.get("/healthz")).json()
 
@@ -182,12 +194,23 @@ async def test_healthz_reports_the_stacking_mode(settings, control_plane, fake_c
 
 
 async def test_healthz_follows_the_environment_not_the_snapshot(
-    settings, control_plane, fake_clients, stack_env
+    control_plane, fake_clients, stack_env
 ):
     """Read live, so the endpoint cannot report a mode the SDK is not in."""
-    app = create_app(settings, server_factory=build_stub_server)
+    app = create_app(_dev_settings(), server_factory=build_stub_server)
     stack_env.set("1")
     async with client_for(app, control_plane) as http:
         payload = (await http.get("/healthz")).json()
 
     assert payload["stacking"] == {"middle_band": True}
+
+
+async def test_healthz_does_not_publish_the_gate_in_production(
+    settings, control_plane, fake_clients, stack_env
+):
+    """`stack_mode` on each store result is the telemetry; the public endpoint isn't."""
+    app = create_app(settings, server_factory=build_stub_server)
+    async with client_for(app, control_plane) as http:
+        payload = (await http.get("/healthz")).json()
+
+    assert "stacking" not in payload

@@ -185,8 +185,7 @@ both. `KUMIHO_STACK_MIDDLE_BAND` (kumiho-SDKs #168) selects which bands apply.
 writes that default into its own environment at startup — in dev mode too, so a
 dev run stacks on the same gate production does. An explicit value in the
 environment wins. The image, `deploy/bootstrap-apprunner.ps1` and
-`deploy-cloud-mcp.yml` all pin it as well, and the deploy smoke test fails if
-`/healthz` reports anything else.
+`deploy-cloud-mcp.yml` all pin it as well.
 
 The reason is that the bands were calibrated on one corpus. The middle band is
 where an unrelated same-type neighbour in a topically homogeneous space scores,
@@ -197,9 +196,10 @@ whatever capture length they write.
 
 `stack_mode` in every store result (`"strong-only"` / `"two-band"`) tells
 telemetry which gate fired, alongside `stack_score`, `stack_runner_up` and
-`stack_overlap`. `GET /healthz` reports the process-wide answer as
-`{"stacking": {"middle_band": false}}`. Turn the band back on per deployment
-once those numbers justify it — not before.
+`stack_overlap`. A dev run also reports the process-wide answer on `/healthz`
+as `{"stacking": {"middle_band": false}}`; production does not, because that
+endpoint is unauthenticated. Turn the band back on per deployment once those
+numbers justify it — not before.
 
 ### Transport and conversation identity
 
@@ -255,7 +255,7 @@ SDK's tenant-keyed caches. That has to fail the deploy, not the tenants.
 | Route | Auth | Notes |
 |---|---|---|
 | `GET /` | none | Human-readable pointer to the docs. |
-| `GET /healthz` | none | `{"status":"ok", "tools": n, "expected_tools": 18, "tenant_managers": {...}, "clients": n, "stacking": {"middle_band": false}, "sdk": {...}}`. `tenant_managers.count` is how many tenants hold a live memory manager, and `tenant_managers.process_singleton` must stay `false`. `stacking.middle_band` is the revision-stacking gate the next store will use — `false` is strong-only. |
+| `GET /healthz` | none | `{"status":"ok", "service", "version", "mcp_endpoint", "dev_mode", "profile_source", "tools": n, "expected_tools": 18, "sdk": {...}}` — enough to tell whether the right build is up and serving the right tool list. The endpoint is unauthenticated, so it reports nothing about how the shared process is behaving internally. **In dev mode only** (`dev_mode` set) it also carries `tenant_managers` (`count` is how many tenants hold a live memory manager; `process_singleton` must stay `false`), `clients`, and `stacking` (`middle_band` is the revision-stacking gate the next store will use — `false` is strong-only). |
 | `GET /.well-known/oauth-protected-resource` | none | RFC 9728. `Access-Control-Allow-Origin: *`. |
 | `GET /.well-known/oauth-protected-resource/mcp` | none | Same document, path-suffixed form. |
 | `GET\|POST\|DELETE /mcp` | required | Streamable HTTP, `stateless=True`. |
@@ -293,6 +293,8 @@ introspection key is configured, the request is refused rather than trusted.
 
 ```powershell
 # One time: ECR repo, IAM roles, App Runner service, autoscaling
+# AwsAccountId is required: pass -AwsAccountId or set AWS_ACCOUNT_ID.
+$env:AWS_ACCOUNT_ID = "<account-id>"
 pwsh ./deploy/bootstrap-apprunner.ps1 -UpdateGitHubSecret
 ```
 
