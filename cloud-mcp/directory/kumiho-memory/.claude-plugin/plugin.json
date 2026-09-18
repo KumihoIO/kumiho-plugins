@@ -1,7 +1,7 @@
 {
   "name": "kumiho-memory-cloud",
   "displayName": "Kumiho Memory Cloud",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Persistent memory for Claude across conversations. Recall and save decisions, preferences and facts in your private Kumiho workspace, review stored memories, and import reviewed memories from selected past conversations. Bundles the hosted Kumiho Memory MCP connector (OAuth) and six skills. Requires a paid Kumiho Cloud account.",
   "author": {
     "name": "Kumiho Inc.",
