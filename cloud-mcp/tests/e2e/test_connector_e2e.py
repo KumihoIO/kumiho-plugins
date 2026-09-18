@@ -60,20 +60,21 @@ def item_kref(revision_kref: str) -> str:
 
 
 async def test_initialize_carries_the_connector_instructions(live_server):
-    from kumiho.mcp_server import CONNECTOR_INSTRUCTIONS
+    from kumiho_cloud_mcp.connector_profile import CONNECTOR_INSTRUCTIONS, MAX_INSTRUCTIONS_BYTES
 
     async with connect(live_server.url) as conn:
         info = conn.init.server_info
         show("serverInfo", {"name": info.name, "version": info.version})
         show("instructions[:240]", (conn.init.instructions or "")[:240])
 
-        assert info.version == "0.13.0", "the connector must report the SDK release"
-        # Byte-identical, not "looks similar": these instructions are the only
-        # protocol the model gets (no hook, no skill), so a stale copy shipped
-        # by the RS instead of the SDK's is a behaviour change nobody reviews.
+        assert info.version == "0.13.1", "the connector must report the SDK release"
+        # Byte-identical, not "looks similar": the hosted service deliberately
+        # serves its reviewed text rather than the SDK's stdio-oriented
+        # default, so any other copy is a behaviour change nobody reviewed.
         assert conn.init.instructions == CONNECTOR_INSTRUCTIONS
+        assert len(conn.init.instructions.encode("utf-8")) <= MAX_INSTRUCTIONS_BYTES
         assert "kumiho_memory_engage" in conn.init.instructions
-        assert "Never invent a session_id" in conn.init.instructions
+        assert "never invent a session_id" in conn.init.instructions
 
 
 async def test_tools_list_is_the_reviewed_profile(live_server):

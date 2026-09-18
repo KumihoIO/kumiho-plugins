@@ -229,6 +229,62 @@ def _apply_annotations(tool: Any) -> Any:
     return tool.model_copy(update=update)
 
 
+def _without_recall_mode(tool: Any) -> Any:
+    """Hide the SDK's recall-mode choice; hosted recall is pinned at dispatch."""
+    schema = tool.input_schema or {}
+    if "recall_mode" not in schema.get("properties", {}):
+        return tool
+    schema = copy.deepcopy(schema)
+    schema["properties"].pop("recall_mode")
+    if "required" in schema:
+        schema["required"] = [key for key in schema["required"] if key != "recall_mode"]
+    return tool.model_copy(update={"input_schema": schema})
+
+
+def _rewrite_identity_hints(tool: Any) -> Any:
+    """Restate the SDK's ``user_id`` hint without naming an unhosted tool.
+
+    Upstream sends the caller through the ``kumiho_memory_ingest`` workflow,
+    which the connector does not expose, so the served text would point at a
+    tool no client can call. :mod:`kumiho_cloud_mcp.sessions` owns the wording.
+    """
+    from .sessions import USER_ID_DESCRIPTION
+
+    properties = (tool.input_schema or {}).get("properties") or {}
+    if not isinstance(properties.get("user_id"), dict):
+        return tool
+    schema = copy.deepcopy(tool.input_schema)
+    schema["properties"]["user_id"]["description"] = USER_ID_DESCRIPTION
+    return tool.model_copy(update={"input_schema": schema})
+
+
+def _pin_recall_mode(params: Any) -> Any:
+    """Pin hosted recall; strip the argument from tools that never take it.
+
+    No served schema offers ``recall_mode``, so a value here came from a stale
+    cached schema or a direct caller. The tools whose SDK schema declares it
+    get the hosted mode pinned, requested or not. On any other tool the stray
+    argument is dropped: injecting it would hand the SDK handler a keyword its
+    own input schema does not describe.
+    """
+    from .connector_profile import HOSTED_RECALL_MODE, RECALL_MODE_TOOLS
+
+    arguments = params.arguments or {}
+    if params.name not in RECALL_MODE_TOOLS:
+        if "recall_mode" not in arguments:
+            return params
+        # The tool name only: the requested value is caller-supplied text.
+        logger.debug("recall_mode dropped for %s", params.name)
+        return params.model_copy(update={
+            "arguments": {key: value for key, value in arguments.items() if key != "recall_mode"},
+        })
+    requested = arguments.get("recall_mode")
+    if requested is not None and requested != HOSTED_RECALL_MODE:
+        # The tool name only: the requested value is caller-supplied text.
+        logger.debug("recall_mode pinned to %s for %s", HOSTED_RECALL_MODE, params.name)
+    return params.model_copy(update={"arguments": {**arguments, "recall_mode": HOSTED_RECALL_MODE}})
+
+
 async def listed_tools(server: Any) -> list:
     """Read the static tool catalog using MCP 2.x's public handler API."""
     entry = server.get_request_handler("tools/list")
@@ -301,7 +357,6 @@ def build_server(
     from .sdk_caches import sdk_cache_scope
     from .sessions import (
         SESSION_DESCRIPTION,
-        SESSION_TOOL_DESCRIPTIONS,
         SESSION_TOOLS,
         SessionError,
         resolve_buffer_session,
@@ -316,7 +371,7 @@ def build_server(
         tools.sort(key=lambda tool: order[tool.name])
         annotated = []
         for tool in tools:
-            tool = _apply_annotations(tool)
+            tool = _rewrite_identity_hints(_without_recall_mode(_apply_annotations(tool)))
             if tool.name in CONNECTOR_TOOL_DESCRIPTIONS:
                 tool = tool.model_copy(update={"description": CONNECTOR_TOOL_DESCRIPTIONS[tool.name]})
             if tool.name == "kumiho_search_items":
@@ -331,9 +386,11 @@ def build_server(
                     "type": "string", "minLength": 1, "maxLength": 512,
                     "description": SESSION_DESCRIPTION,
                 }
+                # Every session tool has a hosted override (a KeyError here is
+                # deliberate): the SDK's own text describes stdio session rules.
                 tool = tool.model_copy(update={
                     "input_schema": schema,
-                    "description": SESSION_TOOL_DESCRIPTIONS[tool.name] + SESSION_DESCRIPTION,
+                    "description": f"{CONNECTOR_TOOL_DESCRIPTIONS[tool.name]}\n\n{SESSION_DESCRIPTION}",
                 })
             annotated.append(tool.model_copy(update={"meta": {
                 **(tool.meta or {}),
@@ -353,6 +410,7 @@ def build_server(
             return types.CallToolResult(is_error=True, content=[types.TextContent(
                 type="text", text="Do not provide credentials in tool arguments. Connect your Kumiho account through OAuth, then retry without auth_token.",
             )])
+        params = _pin_recall_mode(params)
         request = current_request()
         if params.name in SESSION_TOOLS and request is not None:
             arguments = dict(params.arguments or {})

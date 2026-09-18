@@ -9,7 +9,7 @@ review fixes; see [ADVERSARIAL-REVIEW.md](ADVERSARIAL-REVIEW.md).
 ## Implemented
 
 - Native **MCP SDK 2.x** server integration (`mcp>=2.2.0,<3`), locked to **2.2.0**
-  in the Linux image. Kumiho 0.13.0 / kumiho-memory 1.5.0 are locked with hashes.
+  in the Linux image. Kumiho 0.13.1 / kumiho-memory 1.5.0 are locked with hashes.
 - MCP 2.x constructor handlers and public `get_request_handler` API, full result
   models and snake_case fields; no old `request_handlers` maps or global monkey patches.
 - The Kumiho SDK's existing v2 input validation and tenant-aware execution remain
