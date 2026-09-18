@@ -145,27 +145,30 @@ def test_skills_route_general_recall_to_engage_and_remember_this_to_reflect():
     latest = step_with("most recent")
     assert "`kumiho_memory_retrieve` with mode \"latest\"" in latest
     assert "`space_paths`" in latest and "`memory_types`" in latest
+    # kumiho_get_revision_by_tag has no default tag, so the skill has to name one.
+    assert "pass `latest`" in latest
     assert "`kumiho_memory_reflect`" in step_with("asks you to remember something")
 
-    # Reflect stacks a capture onto a similar memory only inside the space it is
-    # given. A correction without that memory's space was filed at the project
-    # root as a second item, and recall returned both values.
+    # A capture carrying `revises` becomes that memory's next revision whatever its
+    # similarity or space. Placed by `space_hint` alone, a correction that did not
+    # look similar enough became a second item and recall returned both values.
     correction = step_with("corrects or updates something already saved")
-    assert "`kumiho_memory_reflect` in the same space as that memory" in correction
-    assert "unchanged as `space_hint`" in correction
+    assert "`kumiho_memory_reflect`, setting the capture's `revises`" in correction
+    assert "no `space_hint` is needed" in correction
     assert "Keep its memory type" in correction and "not `correction`" in correction
-    assert "`?r=1`" in correction and "`kumiho_deprecate_item`" in correction
+    assert "`kumiho_deprecate_item` when the result is a separate item" in correction
     for name in ("memory-capture", "kumiho-personalize", "dream-state"):
         text = " ".join((BUNDLE / "skills" / name / "SKILL.md").read_text(encoding="utf-8").split())
         assert "type: correction" not in text, name
-        assert "as `space_hint`" in text and "`?r=1`" in text, name
+        assert "`revises`" in text and "a separate item" in text, name
+        assert "?r=1" not in text and "as `space_hint`" not in text, name
 
     # claude.ai has no session-start hook and drops MCP server instructions, so the
     # description is what makes Claude load the uploaded skill. Uploads cap it at 200.
     meta = _frontmatter(BUNDLE / "skills" / "kumiho-memory" / "SKILL.md")
     assert meta["name"] == "kumiho-memory"
     assert len(meta["description"]) <= 200, len(meta["description"])
-    for cue in ("what you know about them", "preferences", "what's my", "earlier chats",
+    for cue in ("what you know about them", "preference", "what's my", "earlier chats",
                 "remember", "save", "forget", "correct", "recent memories"):
         assert cue in meta["description"], cue
 

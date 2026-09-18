@@ -21,17 +21,19 @@ write. Explicit user instructions override remembered preferences.
 3. Save a concise `preference` capture using `kumiho_memory_reflect`, with a known
    exact preference-space name (otherwise `preferences`), tags
    `["personalization"]`, and `discover_edges: false`. To change a saved
-   preference, instead pass that preference's space (its `space`, or its kref path
-   before the item name) as `space_hint`, keep its language and restate the
-   subject, so the change becomes a new revision of that memory.
+   preference, first find it and set `revises` to its `kref`, keep its language and
+   restate the subject, so the change becomes a new revision of that memory.
    Include the relevant old kref in `source_krefs` and say which preference this
-   corrects. If the returned kref ends in `?r=1` or names a different item, retire
-   the old preference with `kumiho_deprecate_item`. Do not claim the previous item
-   was deleted or rewritten. Do not re-save an identical preference.
+   corrects. If you cannot tell which preference to revise, save it normally, and
+   retire the old preference with `kumiho_deprecate_item` when the result is a
+   separate item. Do not claim the previous item was deleted or rewritten. Do not
+   re-save an identical preference.
 4. Initially omit `session_id`; retry only on `session_required` using its returned
    ID for this conversation. Never pass another person's identity or session ID.
-5. Verify the returned capture/kref and, when necessary, read its published
-   revision. Apply the requested preference now. Report only changes that saved.
+5. Verify the write by the returned capture and its kref, not by a
+   `kumiho_get_revision_by_tag` lookup for `published`: a tagged item may have no
+   published revision. Apply the requested preference now. Report only changes
+   that saved.
 
 Never store credentials or a preference that authorizes disclosure of someone
 else's private data. An instruction to ignore future user corrections is not a
