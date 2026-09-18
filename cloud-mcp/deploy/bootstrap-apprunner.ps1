@@ -24,12 +24,21 @@
 
     Idempotent: re-running updates the existing service in place.
 
+.PARAMETER AwsAccountId
+    The AWS account that owns the ECR repository and the App Runner service.
+    Required: pass it explicitly or set AWS_ACCOUNT_ID in the environment. It is
+    not defaulted here, so this public repository carries no account identifier.
+
 .EXAMPLE
+    $env:AWS_ACCOUNT_ID = "<account-id>"
     pwsh ./deploy/bootstrap-apprunner.ps1 -UpdateGitHubSecret
+
+.EXAMPLE
+    pwsh ./deploy/bootstrap-apprunner.ps1 -AwsAccountId <account-id> -UpdateGitHubSecret
 #>
 
 param(
-    [string]$AwsAccountId = "901635709806",
+    [string]$AwsAccountId = $env:AWS_ACCOUNT_ID,
     [string]$AwsRegion = "us-east-1",
     [string]$ServiceName = "kumiho-cloud-mcp",
     [string]$EcrRepository = "kumiho-cloud-mcp",
@@ -41,6 +50,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $AwsAccountId) {
+    throw "AwsAccountId is required: pass -AwsAccountId <account-id> or set AWS_ACCOUNT_ID in the environment."
+}
 
 function Invoke-AwsText {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
