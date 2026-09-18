@@ -162,6 +162,7 @@ the payload it asserted on.
 | `KUMIHO_MCP_DISCOVERY_CACHE_SECONDS` | `600` | Per-tenant routing cache. |
 | `KUMIHO_MCP_CLIENT_CACHE_MAX` | `1024` | gRPC clients held, keyed by `(tenant_id, token_id)`. |
 | `KUMIHO_STACK_MIDDLE_BAND` | `0` | Read by the SDK, not by this service. `0` — the hosted default, pinned into the environment at startup — is **strong-only** revision stacking; `1` restores the SDK's two-band gate. See below. |
+| `KUMIHO_CLOUD_MCP_JUDGED_DELIVERY` | `0` | Arms per-tenant judged engage delivery. `1`/`true`/`yes`/`on` turns it on; anything else, or unset, leaves every request exactly as it is. See below. |
 | `KUMIHO_MCP_ENABLE_SSE` | `0` | Must remain `0`. Setting `1` fails startup; use Streamable HTTP. |
 | `KUMIHO_MCP_JSON_RESPONSE` | `0` | Answer POSTs with JSON instead of SSE (tests use this). |
 | `KUMIHO_MCP_LOG_LEVEL` | `INFO` | Root log level. |
@@ -172,6 +173,36 @@ every tenant one ambient identity: `KUMIHO_AUTH_TOKEN`, `KUMIHO_SERVICE_TOKEN`,
 `KUMIHO_LOCAL_REDIS_URL` (dev-only direct Redis), `KUMIHO_MCP_ALLOW_SHIM`, and
 `KUMIHO_MEMORY_DECISIONS` (Decision Memory assumes a local git checkout; the
 service drops it with a warning if present).
+
+### Judged engage delivery is decided per tenant
+
+`kumiho-memory`'s context optimization widens an engage recall and has the
+Kumiho server's `Evaluate` RPC decide which candidates are delivered, instead of
+handing over whatever came back ranked first. `Evaluate` is entitled per tenant,
+so on this shared server the answer to "is it on?" belongs to the caller: an
+unentitled tenant otherwise pays for a widened recall and a refused RPC once per
+back-off window.
+
+The decision is the verified `tenant_tier` claim — `STUDIO`, `STUDIO_PRO` or
+`ENTERPRISE`, matched case-insensitively and exactly — and it is bound for one
+request through `kumiho_memory.context_optimization.judged_delivery`, a
+contextvar, alongside the tenant context itself. Every other tier, an unknown
+one and a token with no tier claim all get it off. Nothing is read from or
+written to `os.environ` per request; that would be a cross-tenant leak by
+construction.
+
+`KUMIHO_CLOUD_MCP_JUDGED_DELIVERY` is the operator switch and it is **off by
+default**, so deploying this changes nothing until it is turned on. While it is
+off, no override is set at all and `kumiho-memory` keeps reading its own
+`KUMIHO_MEMORY_CONTEXT_OPT_*` environment exactly as before; while it is on, the
+tier decides and that per-request answer wins over
+`KUMIHO_MEMORY_CONTEXT_OPT_ENABLED` in both directions. The candidate pool and
+thresholds stay deployment-wide `KUMIHO_MEMORY_CONTEXT_OPT_*` settings — tiers
+differ by the server's monthly limit, not by pool size.
+
+The override arrived in `kumiho-memory` after the version this service pins, so
+a build whose `kumiho-memory` does not carry it serves every request exactly as
+it does today and says so once at startup if the switch was on.
 
 ### Hosted runs strong-only revision stacking
 
