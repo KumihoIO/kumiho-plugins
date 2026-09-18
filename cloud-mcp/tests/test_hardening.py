@@ -98,8 +98,8 @@ def test_create_app_raises_before_building_a_server(monkeypatch):
 
 
 def test_minimum_versions_match_the_pins():
-    assert MIN_KUMIHO_VERSION == (0, 13, 1)
-    assert MIN_KUMIHO_MEMORY_VERSION == (1, 4, 0)
+    assert MIN_KUMIHO_VERSION == (0, 13, 2)
+    assert MIN_KUMIHO_MEMORY_VERSION == (1, 5, 1)
 
 
 # ---------------------------------------------------------------------------

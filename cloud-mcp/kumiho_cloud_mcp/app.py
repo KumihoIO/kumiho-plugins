@@ -163,8 +163,8 @@ def _pool_size(pool: Any) -> int:
 
 
 #: Minimum sibling releases the connector contract (plan §2.1-§2.3) needs.
-MIN_KUMIHO_VERSION = (0, 13, 1)
-MIN_KUMIHO_MEMORY_VERSION = (1, 4, 0)
+MIN_KUMIHO_VERSION = (0, 13, 2)
+MIN_KUMIHO_MEMORY_VERSION = (1, 5, 1)
 
 
 class StartupContractError(RuntimeError):
@@ -369,7 +369,10 @@ def create_app(settings: Optional[Settings] = None, *, server_factory=None) -> S
                     "actual": len(names),
                     "missing": sorted(set(CONNECTOR_TOOLS) - set(names)),
                     "unexpected": sorted(set(names) - set(CONNECTOR_TOOLS)),
-                    "hint": "pin kumiho-memory>=1.3.0 and kumiho>=0.13.0",
+                    "hint": (
+                        f"pin kumiho-memory>={'.'.join(map(str, MIN_KUMIHO_MEMORY_VERSION))} "
+                        f"and kumiho>={'.'.join(map(str, MIN_KUMIHO_VERSION))}"
+                    ),
                 },
             )
         return names
