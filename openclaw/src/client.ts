@@ -88,17 +88,35 @@ function coerceMetadata(value: unknown): Record<string, unknown> {
   return {};
 }
 
+/**
+ * The single shape `MemoryEntry.space` is ever set to: no leading or trailing
+ * slash, no empty segments, project-prefixed — `CognitiveMemory/work/infra`,
+ * spelled exactly as `spaces_used` and the kref path spell it, so a recalled
+ * entry's space can be compared against either without re-parsing.
+ */
+function normalizeSpace(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.trim().split("/").filter(Boolean).join("/");
+  return normalized || undefined;
+}
+
 function mapMemoryEntry(
   value: Record<string, unknown>,
   fallback?: { kref?: string; score?: number; space?: string },
 ): MemoryEntry {
   const metadata = coerceMetadata(value.metadata);
+  const kref = coerceString(value.kref) || fallback?.kref || "";
+  // The kref is authoritative. `metadata.space` is the WRITER's intended
+  // space, computed before stacking picked which item the text landed on, so
+  // a stacked revision can declare a space it does not live in. Every memory
+  // the SDK writes carries one, which is why it has to lose to the kref
+  // rather than merely fill in behind it.
   const space =
-    coerceString(value.space) ||
-    coerceString(metadata.space) ||
-    fallback?.space;
+    spaceFromKref(kref) ??
+    normalizeSpace(coerceString(value.space) || coerceString(metadata.space)) ??
+    normalizeSpace(fallback?.space);
   return {
-    kref: coerceString(value.kref) || fallback?.kref || "",
+    kref,
     type: coerceMemoryType(value.type ?? metadata.type),
     title: coerceString(value.title) || coerceString(metadata.title),
     summary: coerceString(value.summary) || coerceString(metadata.summary),
@@ -116,10 +134,18 @@ function toItemKref(kref: string): string {
 }
 
 /**
- * The space an item or revision kref lives in, project included:
+ * The space an item or revision kref lives in, project included and in the
+ * `normalizeSpace` shape:
  * `kref://CognitiveMemory/work/kumiho/release.decision?r=4&a=notes` ->
  * `CognitiveMemory/work/kumiho`. Undefined when the kref does not end in an
  * `<item>.<kind>` below a project (a project or space kref, or not a kref).
+ *
+ * The only test for "this is an item" is a dot in the last segment, so a
+ * kref addressing a SPACE whose own leaf name is dotted reads as an item and
+ * yields that space's PARENT: `kref://CognitiveMemory/releases/v0.7.1` ->
+ * `CognitiveMemory/releases`. Recall only ever hands back item and revision
+ * krefs, where the leaf really is the item, so this misreads nothing on the
+ * retrieval path — but do not reach for it to classify an arbitrary kref.
  */
 function spaceFromKref(kref: string): string | undefined {
   const itemKref = toItemKref(kref);
@@ -583,9 +609,19 @@ export class KumihoClient {
       memory_types: params.memoryTypes,
     });
 
+    // `spaces_used` is the de-duplicated set of spaces the hits came from, not
+    // a list aligned with revision_krefs: hits from [A, A, B] report [A, B].
+    // Each hit's space comes from its own kref; the set is only a last resort,
+    // and only when it names a single space, which then covers every hit.
+    const soleSpace = Array.isArray(raw.spaces_used) && raw.spaces_used.length === 1
+      ? normalizeSpace(coerceString(raw.spaces_used[0]))
+      : undefined;
+
     if (Array.isArray(raw.results) && raw.results.length > 0) {
+      // mapMemoryEntry already prefers each result's own kref over the space
+      // the writer declared; `soleSpace` only fills a result neither names.
       return raw.results
-        .map((result) => mapMemoryEntry(result))
+        .map((result) => mapMemoryEntry(result, { space: soleSpace }))
         .filter((entry) => Boolean(entry.kref));
     }
 
@@ -594,13 +630,6 @@ export class KumihoClient {
     const krefs = raw.revision_krefs ?? [];
     if (krefs.length === 0) return [];
 
-    // `spaces_used` is the de-duplicated set of spaces the hits came from, not
-    // a list aligned with revision_krefs: hits from [A, A, B] report [A, B].
-    // Each hit's space comes from its own kref; the set is only a last resort,
-    // and only when it names a single space, which then covers every hit.
-    const soleSpace = Array.isArray(raw.spaces_used) && raw.spaces_used.length === 1
-      ? coerceString(raw.spaces_used[0]) || undefined
-      : undefined;
     const spaceOf = (kref: string) => spaceFromKref(kref) ?? soleSpace;
 
     const entries = await Promise.all(
@@ -609,7 +638,9 @@ export class KumihoClient {
           .then((entry) => ({
             ...entry,
             score: raw.scores?.[i],
-            space: entry.space || spaceOf(kref),
+            // Same precedence as mapMemoryEntry, re-stated against the kref we
+            // asked for rather than the one the revision echoed back.
+            space: spaceFromKref(kref) ?? entry.space ?? soleSpace,
           }))
           .catch(() => ({
             kref,

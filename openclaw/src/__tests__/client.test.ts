@@ -136,9 +136,10 @@ describe("KumihoClient memory retrieval", () => {
 });
 
 describe("KumihoClient memory retrieval — the space of each revision", () => {
-  // `spaces_used` is the de-duplicated set of spaces the hits came from, not a
-  // list aligned with `revision_krefs`, so each entry's space must come from
-  // its own kref (or explicit metadata), never from spaces_used[i].
+  // The kref is authoritative: it names where the revision that came back
+  // actually lives. A declared `space`/`metadata.space` is only the writer's
+  // intent, and `spaces_used` is the de-duplicated set of spaces the hits came
+  // from, not a list aligned with `revision_krefs` — never spaces_used[i].
   type Revision = { metadata?: Record<string, unknown>; fail?: boolean };
 
   function retrieveTransport(
@@ -244,7 +245,11 @@ describe("KumihoClient memory retrieval — the space of each revision", () => {
     ]);
   });
 
-  it("prefers an explicit metadata space over the kref-derived one", async () => {
+  it("takes the kref's space over a metadata space that disagrees with it", async () => {
+    // `metadata.space` is the writer's intended space, fixed before stacking
+    // chose which item the text landed on, so the revision handed back can
+    // live somewhere else. Every memory the SDK writes carries one, so
+    // preferring it left the kref path all but unreachable.
     const spaces = await spacesOf(
       {
         revision_krefs: [
@@ -260,7 +265,81 @@ describe("KumihoClient memory retrieval — the space of each revision", () => {
       },
     );
 
-    expect(spaces).toEqual(["CognitiveMemory/team/eng", "CognitiveMemory/personal"]);
+    expect(spaces).toEqual(["CognitiveMemory/personal", "CognitiveMemory/personal"]);
+  });
+
+  it("uses a declared space only when the kref names none", async () => {
+    const spaces = await spacesOf(
+      {
+        revision_krefs: ["kref://memory/item/1?r=3", "kref://memory/item/2?r=1"],
+        spaces_used: [],
+      },
+      { "kref://memory/item/1?r=3": { metadata: { space: "CognitiveMemory/team/eng" } } },
+    );
+
+    expect(spaces).toEqual(["CognitiveMemory/team/eng", undefined]);
+  });
+
+  it("normalizes every space it sets to the `spaces_used` shape", async () => {
+    // One shape everywhere: no leading or trailing slash, no empty segments,
+    // project-prefixed — so an entry's space compares directly against
+    // `spaces_used` and against a space parsed out of a kref.
+    expect(
+      await spacesOf(
+        { revision_krefs: ["kref://memory/item/1?r=3"], spaces_used: [] },
+        { "kref://memory/item/1?r=3": { metadata: { space: "/CognitiveMemory/work/infra/" } } },
+      ),
+    ).toEqual(["CognitiveMemory/work/infra"]);
+
+    // …including the sole-`spaces_used` last resort.
+    expect(
+      await spacesOf({ revision_krefs: ["not-a-kref"], spaces_used: ["/CognitiveMemory/x"] }),
+    ).toEqual(["CognitiveMemory/x"]);
+
+    // …and on the getRevision failure path.
+    expect(
+      await spacesOf(
+        { revision_krefs: ["not-a-kref"], spaces_used: ["/CognitiveMemory/x/"] },
+        { "not-a-kref": { fail: true } },
+      ),
+    ).toEqual(["CognitiveMemory/x"]);
+  });
+
+  it("applies the same precedence to the rich `results` branch", async () => {
+    const call = vi.fn().mockResolvedValue({
+      results: [
+        {
+          kref: "kref://CognitiveMemory/work/infra/runbook.decision?r=2",
+          metadata: { space: "CognitiveMemory/personal" },
+        },
+        { kref: "kref://memory/legacy/1?r=1", space: "/CognitiveMemory/work/infra" },
+        { kref: "kref://memory/legacy/2?r=1" },
+      ],
+      spaces_used: ["CognitiveMemory/work/infra"],
+      count: 3,
+    });
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+
+    const results = await client.memoryRetrieve({ query: "runbook" });
+
+    expect(results.map((entry) => entry.space)).toEqual([
+      "CognitiveMemory/work/infra", // its own kref, not the space it declares
+      "CognitiveMemory/work/infra", // declared, normalized
+      "CognitiveMemory/work/infra", // the one space the whole recall used
+    ]);
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a `results` entry unlabelled when two spaces were used and its kref names none", async () => {
+    const call = vi.fn().mockResolvedValue({
+      results: [{ kref: "kref://memory/legacy/1?r=1" }],
+      spaces_used: ["CognitiveMemory/personal", "CognitiveMemory/work"],
+    });
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+
+    const results = await client.memoryRetrieve({ query: "q" });
+
+    expect(results[0].space).toBeUndefined();
   });
 
   it("derives the space for the fallback entry when getRevision fails", async () => {
@@ -496,6 +575,40 @@ describe("KumihoClient memoryEngage", () => {
     expect(result.results[0].title).toBe("Dark mode");
     expect(result.results[0].timestamp).toBe("2026-07-01T00:00:00Z");
     expect(result.deduplicated).toBe(false);
+  });
+
+  it("takes each recalled memory's space from its own kref", async () => {
+    // engage carries no `spaces_used`, so before this the space came from
+    // whatever the writer declared — the one field that can name a space the
+    // stacked revision does not live in.
+    const call = vi.fn().mockResolvedValue({
+      context: "recalled context",
+      results: [
+        {
+          kref: "kref://CognitiveMemory/work/infra/runbook.decision?r=2",
+          type: "decision",
+          title: "Runbook",
+          metadata: { space: "CognitiveMemory/personal" },
+        },
+        {
+          kref: "kref://memory/legacy/1?r=1",
+          type: "fact",
+          title: "Legacy",
+          space: "/CognitiveMemory/personal",
+        },
+        { kref: "kref://memory/legacy/2?r=1", type: "fact", title: "Unplaced" },
+      ],
+      source_krefs: [],
+    });
+    const client = new KumihoClient(makeTransport(call), "CognitiveMemory");
+
+    const result = await client.memoryEngage({ query: "runbook" });
+
+    expect(result.results.map((entry) => entry.space)).toEqual([
+      "CognitiveMemory/work/infra",
+      "CognitiveMemory/personal",
+      undefined,
+    ]);
   });
 
   it("surfaces the server-side dedup flag", async () => {

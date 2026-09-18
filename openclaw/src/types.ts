@@ -195,6 +195,19 @@ export interface MemoryEntry {
   topics: string[];
   score?: number;
   timestamp?: string;
+  /**
+   * The space this memory actually lives in, always in one shape: no leading
+   * or trailing slash, no empty segments, project-prefixed and `/`-separated —
+   * `CognitiveMemory/work/infra`, spelled exactly as `spaces_used` and the kref
+   * path spell it, so the two compare directly.
+   *
+   * Derived from the entry's own kref whenever the kref names a space, ahead of
+   * any `space` the payload or `metadata` declares: the declared one is the
+   * writer's intent, fixed before stacking chose the item, so a stacked revision
+   * can carry a space it does not live in. Undefined when neither the kref nor a
+   * declaration settles it (`spaces_used` covers the gap only when the whole
+   * recall came from a single space).
+   */
   space?: string;
   metadata?: Record<string, unknown>;
 }
