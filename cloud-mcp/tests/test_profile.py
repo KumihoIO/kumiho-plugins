@@ -363,6 +363,25 @@ async def test_memory_tool_descriptions_each_claim_their_own_intents(app, contro
     assert "space_paths" in tools["kumiho_memory_recall"]
 
 
+async def test_engage_promises_no_count_and_calls_an_empty_result_an_answer(
+    app, control_plane, keypair,
+):
+    """Judged delivery makes the delivered count dynamic and zero a real answer.
+
+    On a tenant whose tier judges the candidates, engage delivers what passed,
+    not the caller's `limit` — and for a query nothing saved is relevant to,
+    that is nothing. Without this sentence the description's only empty-result
+    wording is the deduplication one, which reads as a caller mistake to retry.
+    """
+    async with client_for(app, control_plane) as http:
+        tools = {tool["name"]: tool for tool in await _tools(http, keypair.sign(base_claims()))}
+
+    engage = tools["kumiho_memory_engage"]["description"].lower()
+    assert "how many come back varies" in engage
+    assert "an empty result is a valid answer" in engage
+    assert "not a failure" in engage
+
+
 async def test_corrections_stack_onto_the_corrected_memory(app, control_plane, keypair):
     """A correction names the memory it revises, then keeps its type and language.
 
