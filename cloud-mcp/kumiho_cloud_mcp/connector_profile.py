@@ -66,28 +66,39 @@ CONNECTOR_TOOL_ANNOTATIONS: Dict[str, Dict[str, object]] = {
 #   oldest lookups ("what did I save recently?") besides exact references.
 #   Reflect owns capture ("remember this", a settled decision), so a plain
 #   "remember this" never routes to store. Store and recall claim none of these.
-# * Retrieve's recency wording must match the SDK. kumiho 0.13.1 implements
-#   mode "latest": newest first by last update (the returned revision's
-#   created_at, so an updated memory moves forward), with a created_at list
-#   aligned with revision_krefs. A query, keywords or topics keep only relevant
-#   matches, still in date order; when nothing matches it falls back to the
-#   scoped listing (score 0.0), also in date order. Search is fuzzy, so even an
+# * Retrieve's recency wording must match the SDK. kumiho 0.13.2 implements
+#   mode "latest": newest first by the returned revision's own created_at (so
+#   an updated memory moves forward), with a created_at list aligned with
+#   revision_krefs. A query, keywords or topics keep only relevant matches,
+#   still in date order; when nothing matches it falls back to the scoped
+#   listing (score 0.0), also in date order. Search is fuzzy, so even an
 #   unrelated query can return weak non-zero matches. "first" returns the single
 #   oldest memory, or with a query the oldest relevant match. Both honour
-#   space_paths and memory_types. The default search mode is relevance-ranked.
-#   tests/test_profile.py checks the served mode schema text for this release.
-# * A correction stacks onto the memory it corrects; nothing new on the server.
-#   kumiho-memory 1.5.0's reflect hands a capture's space_hint to the SDK store
-#   as an explicit space_path (verbatim, not slugged) and only asks for stacking
-#   when it is non-empty, so an unrouted correction always becomes a second
-#   item. The SDK's _normalize_space_path adds the project name only when the
-#   path does not already start with it, so a result's
-#   "/CognitiveMemory/preferences", "CognitiveMemory/preferences" and
-#   "preferences" name one space and never a doubled path. The gate also needs
-#   lexical overlap, which is why the correction keeps the memory's language
-#   and restates its subject. Reflect reports no stacked flag for one capture:
-#   a stacked write is a higher ?r= revision of the same item, a new item is
-#   ?r=1. tests/test_correction_stacking.py pins both on the real store path.
+#   space_paths and memory_types, and 0.13.2 checks space_paths one path
+#   segment at a time, so a space is no longer matched by a same-prefixed name.
+#   Mode text also folds case, spaces and hyphens, so "Most Recent" selects
+#   latest instead of falling through to search. The default search mode is
+#   relevance-ranked. tests/test_profile.py checks the served mode schema text
+#   for this release.
+# * A correction names the memory it corrects. kumiho-memory 1.5.1's reflect
+#   takes a capture-level "revises" and passes it to the SDK store's item_kref
+#   (kumiho 0.13.2), which skips the similarity search: the new text becomes a
+#   revision of that item, the item's own space is where it lands, and a
+#   space_hint passed alongside is ignored for placement. A kref that does not
+#   resolve is an error, not a new memory. A published revision on the named
+#   item moves to the correction, so recall stops serving the text just
+#   corrected. Without "revises" the older path stands, which is why the
+#   description still asks for the memory's type and language and a restated
+#   subject: reflect hands a capture's space_hint to the store as an explicit
+#   space_path (verbatim, not slugged) and only asks for stacking when it is
+#   non-empty, and the similarity gate needs lexical overlap, so an unrouted
+#   correction becomes a second item. The SDK's _normalize_space_path adds the
+#   project name only when the path does not already start with it, so a
+#   result's "/CognitiveMemory/preferences", "CognitiveMemory/preferences" and
+#   "preferences" name one space and never a doubled path. Reflect reports no
+#   stacked flag for one capture: a stacked write is a higher ?r= revision of
+#   the same item, a new item is ?r=1.
+#   tests/test_correction_stacking.py pins both on the real store path.
 #
 # The four session tools get SESSION_DESCRIPTION appended by _compat.build_server.
 CONNECTOR_TOOL_DESCRIPTIONS = {
@@ -165,11 +176,11 @@ CONNECTOR_TOOL_DESCRIPTIONS = {
         "results show it (\"/CognitiveMemory/preferences\"); without one a capture is "
         "filed at the project root as a separate item. source_krefs links captures to "
         "their sources.\n\n"
-        "To correct a saved memory, capture the new value in that memory's space, type and "
-        "language, restating the subject in title and content. It should stack as that "
-        "memory's new current revision; earlier ones stay in history. Retire the old memory "
-        "by its reference only if stored_krefs names a different item; if it is empty, "
-        "nothing was saved or retired.\n\n"
+        "To correct a saved memory, set that capture's revises to the memory's reference as "
+        "search results return it; the capture becomes that memory's new revision. Keep its "
+        "memory type and language, and restate the subject. If you cannot tell which memory "
+        "to revise, save normally and retire the old memory by its reference only when "
+        "stored_krefs names a different item.\n\n"
         "Not for: passwords, access tokens, API keys, MFA or recovery codes, payment "
         "details, or anything the user asked not to keep, so do not call this tool for "
         "such requests."

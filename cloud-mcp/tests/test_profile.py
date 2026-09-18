@@ -364,13 +364,15 @@ async def test_memory_tool_descriptions_each_claim_their_own_intents(app, contro
 
 
 async def test_corrections_stack_onto_the_corrected_memory(app, control_plane, keypair):
-    """A correction reuses the old memory's space, type and language, then checks.
+    """A correction names the memory it revises, then keeps its type and language.
 
     Regression (claude.ai, 2026-09-18): "fix it, my favorite color is black" was
     captured with type correction and no space, so reflect never tried to stack
-    it and recall showed blue and black side by side. The fallback retire is
-    described by what it does, never by naming the forget tool: descriptions
-    carry no instructions about other tools.
+    it and recall showed blue and black side by side. kumiho-memory 1.5.1 takes
+    "revises" per capture and passes it to the SDK store's item_kref, so the
+    description names the memory instead of relying on the similarity gate. The
+    fallback retire is described by what it does, never by naming the forget
+    tool: descriptions carry no instructions about other tools.
     """
     token = keypair.sign(base_claims())
     async with client_for(app, control_plane) as http:
@@ -379,20 +381,21 @@ async def test_corrections_stack_onto_the_corrected_memory(app, control_plane, k
 
     reflect = tools["kumiho_memory_reflect"]
     lowered = reflect.lower()
-    # Same space, type and language, with the subject restated for the lexical gate.
+    # Name the memory being revised, then keep its type and language anyway:
+    # without "revises" the store still falls back to the lexical gate.
     assert "to correct a saved memory" in lowered
-    assert "in that memory's space, type and language" in lowered
-    assert "restating the subject in title and content" in lowered
+    assert "set that capture's revises to the memory's reference" in lowered
+    assert "search results return it" in lowered
+    assert "the capture becomes that memory's new revision" in lowered
+    assert "keep its memory type and language, and restate the subject" in lowered
     # The verified space_hint form: a result's space, project prefix included.
     assert 'copied exactly as results show it ("/CognitiveMemory/preferences")' in reflect
     # "correction" is a reason to reflect, not the type to file it under.
     types = reflect.split("Each capture needs type (", 1)[1].split(")", 1)[0]
     assert "correction" not in types, types
-    # The not-stacked check and the retire fallback.
-    assert "stack as that memory's new current revision" in lowered
-    assert "earlier ones stay in history" in lowered
-    assert "retire the old memory by its reference only if stored_krefs names a different item" in lowered
-    assert "if it is empty, nothing was saved or retired" in lowered
+    # The retire fallback, for when no memory can be named.
+    assert "if you cannot tell which memory to revise, save normally" in lowered
+    assert "retire the old memory by its reference only when stored_krefs names a different item" in lowered
     assert "kumiho_deprecate_item" not in reflect
 
     deprecate = tools["kumiho_deprecate_item"].lower()
@@ -407,6 +410,37 @@ async def test_corrections_stack_onto_the_corrected_memory(app, control_plane, k
         assert len(text) <= MAX_TOOL_DESCRIPTION_CHARS < 2000
         assert len(text.encode("utf-8")) <= MAX_TOOL_DESCRIPTION_CHARS
     assert len(instructions.encode("utf-8")) <= MAX_INSTRUCTIONS_BYTES <= 2000
+
+
+async def test_reflect_serves_the_revises_capture_field(app, control_plane, keypair):
+    """The field the correction wording depends on has to be on the wire.
+
+    ``revises`` arrived in kumiho-memory 1.5.1; a 1.5.0 image serves the same
+    reflect tool without it, and the description would then tell the model to
+    set an argument the schema rejects. Fail here rather than on a user's
+    correction. It is the SDK's own property, so its text is checked for a
+    leaked tool name too: the no-other-tools attestation covers served
+    property descriptions, not just tool descriptions.
+    """
+    token = keypair.sign(base_claims())
+    async with client_for(app, control_plane) as http:
+        tools = {tool["name"]: tool for tool in await _tools(http, token)}
+
+    reflect = tools["kumiho_memory_reflect"]
+    captures = reflect["inputSchema"]["properties"]["captures"]
+    properties = captures["items"]["properties"]
+    assert "revises" in properties, sorted(properties)
+    revises = properties["revises"]
+    assert revises["type"] == "string", revises
+    # The description tells the model the field exists; the schema has to agree.
+    assert "revises" in reflect["description"]
+
+    served = revises.get("description") or ""
+    assert served, revises
+    for other in CONNECTOR_TOOLS:
+        assert other not in served, other
+    for named in _TOOL_NAME.findall(served):
+        assert named in CONNECTOR_TOOLS, named
 
 
 async def test_instructions_route_the_same_intents(app, control_plane, keypair):
@@ -443,11 +477,13 @@ EMPTY_QUERY_WORKAROUND = (
 
 
 async def test_retrieve_recency_wording_matches_the_sdk(app, control_plane, keypair):
-    """kumiho 0.13.1 orders mode "latest" by date with or without a query.
+    """kumiho 0.13.2 orders mode "latest" by date with or without a query.
 
     Regression: under 0.13.0 a query switched results back to relevance order,
     so the description told the model to leave the query empty. The served
-    schema's own mode text is the SDK's, so a downgrade fails here too.
+    schema's own mode text is the SDK's, so a downgrade fails here too: 0.13.2
+    rewrote it to order by the returned revision's date and to name the alias
+    spellings it now folds.
     """
     token = keypair.sign(base_claims())
     async with client_for(app, control_plane) as http:
@@ -467,8 +503,8 @@ async def test_retrieve_recency_wording_matches_the_sdk(app, control_plane, keyp
     assert len(retrieve.encode("utf-8")) <= MAX_TOOL_DESCRIPTION_CHARS < 2000
 
     mode = tool["inputSchema"]["properties"]["mode"]["description"]
-    assert "latest: newest first by last update" in mode, mode
-    assert "with a query, relevant matches ordered by date" in mode, mode
+    assert "newest first by the returned revision's date" in mode, mode
+    assert "the top max(limit*4, 20) relevance hits ordered by date" in mode, mode
 
     assert len(instructions.encode("utf-8")) <= MAX_INSTRUCTIONS_BYTES <= 2000
     sentences = [part for chunk in instructions.lower().split("\n\n")
