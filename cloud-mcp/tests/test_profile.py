@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from pathlib import Path
 
@@ -23,7 +24,11 @@ from kumiho_cloud_mcp.connector_profile import (
     MAX_TOOL_DESCRIPTION_CHARS,
     RECALL_MODE_TOOLS,
 )
-from kumiho_cloud_mcp.sessions import SESSION_DESCRIPTION, SESSION_TOOLS
+from kumiho_cloud_mcp.sessions import (
+    SESSION_DESCRIPTION,
+    SESSION_TOOLS,
+    USER_ID_DESCRIPTION,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -241,8 +246,18 @@ async def test_every_served_description_fits_claude_code(app, control_plane, key
         assert len(description.encode("utf-8")) <= MAX_TOOL_DESCRIPTION_CHARS, name
 
 
+#: Any Kumiho tool name in served text, hosted or not.
+_TOOL_NAME = re.compile("kumiho_[a-z0-9_]+")
+
+
 async def test_no_served_description_names_another_connector_tool(app, control_plane, keypair):
-    """Directory attestation: descriptions carry no instructions about other tools."""
+    """Directory attestation: descriptions carry no instructions about other tools.
+
+    Including tools the connector does not host. kumiho-memory 1.5.0 describes
+    user_id on the session tools by pointing at its kumiho_memory_ingest
+    workflow; ingest is outside the 18, so that text sends a connector client
+    after a tool it can never call. Property descriptions count as served text.
+    """
     async with client_for(app, control_plane) as http:
         tools = await _tools(http, keypair.sign(base_claims()))
     assert {tool["name"] for tool in tools} == set(CONNECTOR_TOOLS)
@@ -252,7 +267,19 @@ async def test_no_served_description_names_another_connector_tool(app, control_p
             for other in CONNECTOR_TOOLS:
                 if other != tool["name"]:
                     assert other not in text, (tool["name"], other)
+            for named in _TOOL_NAME.findall(text):
+                assert named in CONNECTOR_TOOLS, (tool["name"], named)
             assert "other memory tool" not in text.lower(), tool["name"]
+
+
+async def test_session_tools_serve_a_rewritten_user_id_hint(app, control_plane, keypair):
+    """The four identity-bearing schemas keep a usable hint, minus the tool name."""
+    async with client_for(app, control_plane) as http:
+        tools = {tool["name"]: tool for tool in await _tools(http, keypair.sign(base_claims()))}
+    for name in SESSION_TOOLS:
+        served = tools[name]["inputSchema"]["properties"]["user_id"]["description"]
+        assert served == USER_ID_DESCRIPTION, name
+        assert "ingest" not in served.lower(), name
 
 
 async def test_memory_tools_carry_their_own_scoped_exclusions(app, control_plane, keypair):
@@ -364,8 +391,8 @@ async def test_corrections_stack_onto_the_corrected_memory(app, control_plane, k
     # The not-stacked check and the retire fallback.
     assert "stack as that memory's new current revision" in lowered
     assert "earlier ones stay in history" in lowered
-    assert "stored_krefs has no new revision of that item (same reference before ?r=)" in reflect
-    assert "it did not stack: retire the old memory by its reference" in lowered
+    assert "retire the old memory by its reference only if stored_krefs names a different item" in lowered
+    assert "if it is empty, nothing was saved or retired" in lowered
     assert "kumiho_deprecate_item" not in reflect
 
     deprecate = tools["kumiho_deprecate_item"].lower()
@@ -643,6 +670,44 @@ async def test_hosted_recall_is_always_summarized(
         assert marker not in message and "full" not in message
     else:
         assert pinned == []
+
+
+def _call_params(name, arguments):
+    import mcp.types as types
+
+    return types.CallToolRequestParams(name=name, arguments=arguments)
+
+
+@pytest.mark.parametrize("name", sorted(set(CONNECTOR_TOOLS) - RECALL_MODE_TOOLS))
+def test_stray_recall_mode_is_dropped_rather_than_injected(name):
+    """Regression: the pin used to add recall_mode to tools that never take it.
+
+    Only two SDK handlers declare the argument. Rewriting it on the rest turned
+    a stale client's stray field into an argument outside the served schema on
+    every other call, instead of simply dropping it.
+    """
+    from kumiho_cloud_mcp._compat import _pin_recall_mode
+
+    params = _call_params(name, {"user_text": "a note", "recall_mode": "full"})
+    stripped = _pin_recall_mode(params)
+    assert "recall_mode" not in (stripped.arguments or {}), name
+    assert stripped.arguments["user_text"] == "a note"
+    # Nothing carried, nothing to rewrite: the params object passes straight through.
+    untouched = _call_params(name, {"user_text": "a note"})
+    assert _pin_recall_mode(untouched) is untouched
+
+
+@pytest.mark.parametrize("name", sorted(RECALL_MODE_TOOLS))
+@pytest.mark.parametrize("requested", ["full", None])
+def test_recall_mode_tools_are_still_pinned(name, requested):
+    from kumiho_cloud_mcp._compat import _pin_recall_mode
+
+    arguments = {"query": "which region"}
+    if requested is not None:
+        arguments["recall_mode"] = requested
+    pinned = _pin_recall_mode(_call_params(name, arguments))
+    assert pinned.arguments["recall_mode"] == HOSTED_RECALL_MODE, name
+    assert pinned.arguments["query"] == "which region"
 
 
 async def test_consolidation_advertises_buffer_deletion(app, control_plane, keypair):

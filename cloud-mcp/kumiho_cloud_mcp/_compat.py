@@ -241,13 +241,43 @@ def _without_recall_mode(tool: Any) -> Any:
     return tool.model_copy(update={"input_schema": schema})
 
 
+def _rewrite_identity_hints(tool: Any) -> Any:
+    """Restate the SDK's ``user_id`` hint without naming an unhosted tool.
+
+    Upstream sends the caller through the ``kumiho_memory_ingest`` workflow,
+    which the connector does not expose, so the served text would point at a
+    tool no client can call. :mod:`kumiho_cloud_mcp.sessions` owns the wording.
+    """
+    from .sessions import USER_ID_DESCRIPTION
+
+    properties = (tool.input_schema or {}).get("properties") or {}
+    if not isinstance(properties.get("user_id"), dict):
+        return tool
+    schema = copy.deepcopy(tool.input_schema)
+    schema["properties"]["user_id"]["description"] = USER_ID_DESCRIPTION
+    return tool.model_copy(update={"input_schema": schema})
+
+
 def _pin_recall_mode(params: Any) -> Any:
-    """Force summarized recall, whatever a cached schema or direct caller sends."""
+    """Pin hosted recall; strip the argument from tools that never take it.
+
+    No served schema offers ``recall_mode``, so a value here came from a stale
+    cached schema or a direct caller. The tools whose SDK schema declares it
+    get the hosted mode pinned, requested or not. On any other tool the stray
+    argument is dropped: injecting it would hand the SDK handler a keyword its
+    own input schema does not describe.
+    """
     from .connector_profile import HOSTED_RECALL_MODE, RECALL_MODE_TOOLS
 
     arguments = params.arguments or {}
-    if params.name not in RECALL_MODE_TOOLS and "recall_mode" not in arguments:
-        return params
+    if params.name not in RECALL_MODE_TOOLS:
+        if "recall_mode" not in arguments:
+            return params
+        # The tool name only: the requested value is caller-supplied text.
+        logger.debug("recall_mode dropped for %s", params.name)
+        return params.model_copy(update={
+            "arguments": {key: value for key, value in arguments.items() if key != "recall_mode"},
+        })
     requested = arguments.get("recall_mode")
     if requested is not None and requested != HOSTED_RECALL_MODE:
         # The tool name only: the requested value is caller-supplied text.
@@ -341,7 +371,7 @@ def build_server(
         tools.sort(key=lambda tool: order[tool.name])
         annotated = []
         for tool in tools:
-            tool = _without_recall_mode(_apply_annotations(tool))
+            tool = _rewrite_identity_hints(_without_recall_mode(_apply_annotations(tool)))
             if tool.name in CONNECTOR_TOOL_DESCRIPTIONS:
                 tool = tool.model_copy(update={"description": CONNECTOR_TOOL_DESCRIPTIONS[tool.name]})
             if tool.name == "kumiho_search_items":

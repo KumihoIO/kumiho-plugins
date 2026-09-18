@@ -19,6 +19,13 @@ SESSION_DESCRIPTION = (
 # Each session tool's hosted description lives in
 # connector_profile.CONNECTOR_TOOL_DESCRIPTIONS; build_server appends
 # SESSION_DESCRIPTION to it.
+
+# The SDK advertises user_id on these four tools and its text routes the caller
+# through the kumiho_memory_ingest workflow. Ingest is not one of the 18 hosted
+# tools, so that hint points a connector client at something it cannot call;
+# build_server serves this text instead. It names no tool.
+USER_ID_DESCRIPTION = "Optional. Keep the same user_id across related calls."
+
 _ISSUED_ID = re.compile(r"km1_[0-9a-f]{32}_[0-9a-f]{32,64}\Z")
 
 
