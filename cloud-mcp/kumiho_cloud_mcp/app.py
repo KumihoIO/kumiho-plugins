@@ -10,10 +10,11 @@ Shape of a request to ``/mcp``:
    the authorization server.
 2. A ``RequestContext`` and a tenant-scoped gRPC client are built (the client
    pooled, keyed by tenant, user and credential fingerprint).
-3. ``with kumiho.use_client(client), request_context(ctx), redis_token_bridge(...)``
-   wraps the streamable-HTTP session manager for the whole request, so every
-   tool handler — which runs in a worker thread via ``asyncio.to_thread`` and
-   therefore inherits the contextvars — sees exactly one tenant.
+3. ``with kumiho.use_client(client), request_context(ctx), redis_token_bridge(...),
+   judged_delivery_for(principal)`` wraps the streamable-HTTP session manager for
+   the whole request, so every tool handler — which runs in a worker thread via
+   ``asyncio.to_thread`` and therefore inherits the contextvars — sees exactly
+   one tenant, with the capabilities that tenant's tier pays for.
 
 Nothing tenant-scoped is stored in a module global or in ``os.environ``.
 """
@@ -51,6 +52,7 @@ from .clients import (
     client_construction_problems,
 )
 from .connector_profile import CONNECTOR_TOOL_COUNT, CONNECTOR_TOOLS
+from .judged_delivery import judged_delivery_for, warn_if_unsupported
 from .logging_setup import configure_logging
 from .middleware import BodyLimitMiddleware, SecurityHeadersMiddleware, TimeoutMiddleware
 from .settings import (
@@ -329,6 +331,9 @@ def create_app(settings: Optional[Settings] = None, *, server_factory=None) -> S
         os.environ.setdefault("UPSTASH_REDIS_URL", settings.local_redis_url)
 
     _enforce_dependency_contract(settings)
+    # Judged delivery is decided per tenant inside the request; the only thing
+    # to say once is that an operator asked for it on a build without it.
+    warn_if_unsupported()
 
     authenticator = Authenticator(settings)
     router = DiscoveryRouter(settings)
@@ -583,8 +588,11 @@ code{{background:#f3f3f3;padding:.1em .35em;border-radius:.25em}}</style>
         import kumiho  # lazy: keeps import order flexible and tests stubbable
 
         try:
-            with kumiho.use_client(leased.client), request_context(ctx), redis_token_bridge(
-                principal.token
+            with (
+                kumiho.use_client(leased.client),
+                request_context(ctx),
+                redis_token_bridge(principal.token),
+                judged_delivery_for(principal),
             ):
                 await session_manager.handle_request(scope, receive, send)
         finally:
