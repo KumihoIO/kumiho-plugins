@@ -68,4 +68,4 @@ jobs:
           digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
             --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)
           echo "Candidate: \`$REGISTRY/$ECR_REPOSITORY@$digest\`" >> "$GITHUB_STEP_SUMMARY"
-          echo 'Next: use kumiho-server/scripts/aws/mcp_sidecar.py with fresh service snapshots.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Next: run kumiho-server deploy-mcp-sidecar.yml in preview mode; review the current task ARN and this digest before a separate apply. Keep evaluation disabled.' >> "$GITHUB_STEP_SUMMARY"

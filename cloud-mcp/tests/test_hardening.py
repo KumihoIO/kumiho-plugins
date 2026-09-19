@@ -54,6 +54,11 @@ def test_installed_dependencies_satisfy_the_contract():
     # The venv this suite runs in is the one the service ships against. If this
     # ever fails, the pin in pyproject.toml and the floor here disagree.
     assert _dependency_problems() == []
+    import kumiho
+    from kumiho_memory.context_optimization import judged_delivery
+
+    assert callable(kumiho.evaluate)
+    assert callable(judged_delivery)
 
 
 def _settings(**over):
@@ -100,8 +105,8 @@ def test_create_app_raises_before_building_a_server(monkeypatch):
 
 
 def test_minimum_versions_match_the_pins():
-    assert MIN_KUMIHO_VERSION == (0, 13, 2)
-    assert MIN_KUMIHO_MEMORY_VERSION == (1, 5, 1)
+    assert MIN_KUMIHO_VERSION == (0, 14, 0)
+    assert MIN_KUMIHO_MEMORY_VERSION == (1, 6, 0)
 
 
 # ---------------------------------------------------------------------------

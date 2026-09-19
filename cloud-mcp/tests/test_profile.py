@@ -383,13 +383,10 @@ async def test_engage_distinguishes_empty_search_from_failure_and_deduplication(
 
 
 def test_engage_description_matches_real_optimizer_empty_result_status():
-    """Exercise the released API once the dependency pin includes evaluation.
-
-    Older builds have no optimizer; they keep serving the ordinary recall path.
-    """
+    """The locked optimizer's empty-result status must match the served text."""
     from types import SimpleNamespace
 
-    optimization = pytest.importorskip("kumiho_memory.context_optimization")
+    from kumiho_memory import context_optimization as optimization
 
     class RejectAll:
         def evaluate(self, query, fragments, questions, *, timeout_ms):
