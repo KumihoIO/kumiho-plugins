@@ -363,23 +363,51 @@ async def test_memory_tool_descriptions_each_claim_their_own_intents(app, contro
     assert "space_paths" in tools["kumiho_memory_recall"]
 
 
-async def test_engage_promises_no_count_and_calls_an_empty_result_an_answer(
+async def test_engage_distinguishes_empty_search_from_failure_and_deduplication(
     app, control_plane, keypair,
 ):
-    """Judged delivery makes the delivered count dynamic and zero a real answer.
-
-    On a tenant whose tier judges the candidates, engage delivers what passed,
-    not the caller's `limit` — and for a query nothing saved is relevant to,
-    that is nothing. Without this sentence the description's only empty-result
-    wording is the deduplication one, which reads as a caller mistake to retry.
-    """
+    """The served description must not turn failed or skipped retrieval into
+    evidence that the user has no relevant memories."""
     async with client_for(app, control_plane) as http:
         tools = {tool["name"]: tool for tool in await _tools(http, keypair.sign(base_claims()))}
 
     engage = tools["kumiho_memory_engage"]["description"].lower()
     assert "how many come back varies" in engage
-    assert "an empty result is a valid answer" in engage
-    assert "not a failure" in engage
+    assert "a successful search can return no matches" in engage
+    assert "backend_error" in engage and "retrieval failed" in engage
+    assert "deduplicated" in engage and "reuse the earlier results" in engage
+    assert "optimization.status is applied" in engage
+    assert "no retrieved candidates passed" in engage
+    assert "does not prove no relevant memory exists" in engage
+    assert "nothing saved is relevant" not in engage
+
+
+def test_engage_description_matches_real_optimizer_empty_result_status():
+    """Exercise the released API once the dependency pin includes evaluation.
+
+    Older builds have no optimizer; they keep serving the ordinary recall path.
+    """
+    from types import SimpleNamespace
+
+    optimization = pytest.importorskip("kumiho_memory.context_optimization")
+
+    class RejectAll:
+        def evaluate(self, query, fragments, questions, *, timeout_ms):
+            return SimpleNamespace(status="ok", fragments=[SimpleNamespace(
+                fragment_id=fragment["id"], error="", answers={
+                    question["id"]: SimpleNamespace(noul=0.0) for question in questions
+                },
+            ) for fragment in fragments])
+
+    outcome = optimization.optimize_recall(
+        "which region", [{"summary": "Unrelated memory"}], limit=1,
+        policy=optimization.ContextOptimizationPolicy(enabled=True),
+        scope=uuid.uuid4().hex, client=RejectAll(),
+    )
+    assert outcome.memories == []
+    assert outcome.status == optimization.STATUS_APPLIED
+    description = CONNECTOR_TOOL_DESCRIPTIONS["kumiho_memory_engage"]
+    assert f"optimization.status is {outcome.status}" in description
 
 
 async def test_corrections_stack_onto_the_corrected_memory(app, control_plane, keypair):

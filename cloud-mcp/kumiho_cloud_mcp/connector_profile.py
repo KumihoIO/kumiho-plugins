@@ -66,13 +66,10 @@ CONNECTOR_TOOL_ANNOTATIONS: Dict[str, Dict[str, object]] = {
 #   oldest lookups ("what did I save recently?") besides exact references.
 #   Reflect owns capture ("remember this", a settled decision), so a plain
 #   "remember this" never routes to store. Store and recall claim none of these.
-# * Engage promises no particular number of memories, and says outright that an
-#   empty result is an answer. Its delivered count is not the caller's `limit`
-#   on a tenant whose tier judges the candidates (kumiho-memory's context
-#   optimization): it is dynamic, and zero is the measured, intended outcome for
-#   a query nothing saved is relevant to. Without that sentence the only
-#   empty-result wording in the description is the deduplication one, which
-#   reads as "you did something wrong, retry".
+# * Engage promises no particular number of memories. An empty successful
+#   search is valid, but a backend failure or duplicate call can also return
+#   zero. The description must preserve those signals and limit conclusions to
+#   the retrieved candidates: a judge does not prove the whole graph irrelevant.
 # * Retrieve's recency wording must match the SDK. kumiho 0.13.2 implements
 #   mode "latest": newest first by the returned revision's own created_at (so
 #   an updated memory moves forward), with a created_at list aligned with
@@ -112,8 +109,12 @@ CONNECTOR_TOOL_DESCRIPTIONS = {
     "kumiho_memory_engage": (
         "Searches the user's saved Kumiho memories for context relevant to the current "
         "request. Returns a ready-to-use context summary, the matching memories and their "
-        "references (source_krefs); how many come back varies, and an empty result is a "
-        "valid answer meaning nothing saved is relevant, not a failure. Useful near the "
+        "references (source_krefs); how many come back varies. A successful search can "
+        "return no matches. Check backend_error and deduplicated: a backend error means "
+        "retrieval failed, and a duplicate means "
+        "reuse the earlier results. When optimization.status is applied, zero means no "
+        "retrieved candidates passed the evaluation; it does not prove no relevant "
+        "memory exists. Useful near the "
         "start of a conversation about the "
         "user's own ongoing work, projects, decisions or preferences when earlier saved "
         "context could change the answer; when the user refers back to something that is "
