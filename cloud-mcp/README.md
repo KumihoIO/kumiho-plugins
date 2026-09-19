@@ -200,9 +200,15 @@ tier decides and that per-request answer wins over
 thresholds stay deployment-wide `KUMIHO_MEMORY_CONTEXT_OPT_*` settings — tiers
 differ by the server's monthly limit, not by pool size.
 
-The override arrived in `kumiho-memory` after the version this service pins, so
-a build whose `kumiho-memory` does not carry it serves every request exactly as
-it does today and says so once at startup if the switch was on.
+The locked runtime uses `kumiho` 0.14.0 and `kumiho-memory` 1.6.0, which provide
+`Evaluate` and the per-request override. Production startup requires these
+minimum releases. The compatibility loader still warns and leaves requests
+unwrapped if an explicit development override permits an older runtime.
+
+For a staged image rollout, keep both `KUMIHO_CLOUD_MCP_JUDGED_DELIVERY=0` and
+`KUMIHO_MEMORY_CONTEXT_OPT_ENABLED=0`. Installing these releases does not
+authorize feature activation; enable per-tenant delivery in a separate rollout
+after the server capability and usage accounting are verified.
 
 ### Hosted runs strong-only revision stacking
 

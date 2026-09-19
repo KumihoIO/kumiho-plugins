@@ -14,15 +14,13 @@ by construction (the same reason the tenant itself travels in a contextvar).
 public setter, and :func:`judged_delivery_for` binds it around one request from
 the caller's verified tier claim.
 
-Two things keep a deploy of this file inert:
-
-* ``KUMIHO_CLOUD_MCP_JUDGED_DELIVERY`` is off by default, and while it is off no
-  override is set at all — ``kumiho-memory`` then reads its own environment
-  exactly as it does today.
-* The connector pins released ``kumiho-memory`` versions, so the override may
-  simply not exist yet. A missing module or symbol is not an error: the request
-  runs unwrapped, and the operator gets one line at startup if they had asked
-  for the feature.
+The hosted dependency floor includes this override, but
+``KUMIHO_CLOUD_MCP_JUDGED_DELIVERY`` remains off by default. While it is off no
+override is set, so ``kumiho-memory`` reads its own environment. Keep both this
+switch and ``KUMIHO_MEMORY_CONTEXT_OPT_ENABLED`` off during an image-only rollout.
+The compatibility loader still tolerates a missing module or symbol for explicit
+development compatibility modes: requests run unwrapped, with one startup
+warning if the operator had asked for the feature.
 """
 
 from __future__ import annotations
