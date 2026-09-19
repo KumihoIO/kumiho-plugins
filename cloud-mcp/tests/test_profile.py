@@ -363,6 +363,53 @@ async def test_memory_tool_descriptions_each_claim_their_own_intents(app, contro
     assert "space_paths" in tools["kumiho_memory_recall"]
 
 
+async def test_engage_distinguishes_empty_search_from_failure_and_deduplication(
+    app, control_plane, keypair,
+):
+    """The served description must not turn failed or skipped retrieval into
+    evidence that the user has no relevant memories."""
+    async with client_for(app, control_plane) as http:
+        tools = {tool["name"]: tool for tool in await _tools(http, keypair.sign(base_claims()))}
+
+    engage = tools["kumiho_memory_engage"]["description"].lower()
+    assert "how many come back varies" in engage
+    assert "a successful search can return no matches" in engage
+    assert "backend_error" in engage and "retrieval failed" in engage
+    assert "deduplicated" in engage and "reuse the earlier results" in engage
+    assert "optimization.status is applied" in engage
+    assert "no retrieved candidates passed" in engage
+    assert "does not prove no relevant memory exists" in engage
+    assert "nothing saved is relevant" not in engage
+
+
+def test_engage_description_matches_real_optimizer_empty_result_status():
+    """Exercise the released API once the dependency pin includes evaluation.
+
+    Older builds have no optimizer; they keep serving the ordinary recall path.
+    """
+    from types import SimpleNamespace
+
+    optimization = pytest.importorskip("kumiho_memory.context_optimization")
+
+    class RejectAll:
+        def evaluate(self, query, fragments, questions, *, timeout_ms):
+            return SimpleNamespace(status="ok", fragments=[SimpleNamespace(
+                fragment_id=fragment["id"], error="", answers={
+                    question["id"]: SimpleNamespace(noul=0.0) for question in questions
+                },
+            ) for fragment in fragments])
+
+    outcome = optimization.optimize_recall(
+        "which region", [{"summary": "Unrelated memory"}], limit=1,
+        policy=optimization.ContextOptimizationPolicy(enabled=True),
+        scope=uuid.uuid4().hex, client=RejectAll(),
+    )
+    assert outcome.memories == []
+    assert outcome.status == optimization.STATUS_APPLIED
+    description = CONNECTOR_TOOL_DESCRIPTIONS["kumiho_memory_engage"]
+    assert f"optimization.status is {outcome.status}" in description
+
+
 async def test_corrections_stack_onto_the_corrected_memory(app, control_plane, keypair):
     """A correction names the memory it revises, then keeps its type and language.
 
