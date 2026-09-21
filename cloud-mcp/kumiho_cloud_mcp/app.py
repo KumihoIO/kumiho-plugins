@@ -166,7 +166,7 @@ def _pool_size(pool: Any) -> int:
 
 #: Minimum sibling releases the connector contract (plan §2.1-§2.3) needs.
 MIN_KUMIHO_VERSION = (0, 14, 0)
-MIN_KUMIHO_MEMORY_VERSION = (1, 6, 0)
+MIN_KUMIHO_MEMORY_VERSION = (1, 6, 1)
 
 
 class StartupContractError(RuntimeError):

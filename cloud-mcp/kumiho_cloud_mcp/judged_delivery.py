@@ -15,9 +15,8 @@ public setter, and :func:`judged_delivery_for` binds it around one request from
 the caller's verified tier claim.
 
 The hosted dependency floor includes this override, but
-``KUMIHO_CLOUD_MCP_JUDGED_DELIVERY`` remains off by default. While it is off no
-override is set, so ``kumiho-memory`` reads its own environment. Keep both this
-switch and ``KUMIHO_MEMORY_CONTEXT_OPT_ENABLED`` off during an image-only rollout.
+``KUMIHO_CLOUD_MCP_JUDGED_DELIVERY`` remains off by default. Off explicitly binds False, overriding any ambient
+``KUMIHO_MEMORY_CONTEXT_OPT_ENABLED`` value for the hosted request.
 The compatibility loader still tolerates a missing module or symbol for explicit
 development compatibility modes: requests run unwrapped, with one startup
 warning if the operator had asked for the feature.
@@ -44,7 +43,7 @@ TIER_CLAIM = "tenant_tier"
 #: Tiers whose tenants the Kumiho server lets call ``Evaluate``. Matched
 #: case-insensitively but exactly — a tier the control plane has not minted yet
 #: is unknown, and unknown is off.
-ENTITLED_TIERS = frozenset({"STUDIO", "STUDIO_PRO", "ENTERPRISE"})
+ENTITLED_TIERS = frozenset({"MEMORY", "SOLO", "CREATOR", "STUDIO", "STUDIO_PRO", "ENTERPRISE"})
 
 _TRUTHY = ("1", "true", "yes", "on")
 
@@ -85,13 +84,13 @@ def judged_delivery_for(principal: Any) -> Iterator[Optional[bool]]:
     """Bind ``kumiho-memory``'s judged-delivery switch for one request.
 
     Yields the value bound, or ``None`` when nothing was bound — which is the
-    whole of the behaviour when the operator switch is off or the installed
-    ``kumiho-memory`` predates the override.
+    behaviour only when the installed ``kumiho-memory`` predates the override.
+    An available override always binds an explicit boolean, including OFF.
     """
-    if _override_cm is None or not switch_enabled():
+    if _override_cm is None:
         yield None
         return
-    enabled = is_entitled(principal)
+    enabled = switch_enabled() and is_entitled(principal)
     with _override_cm(enabled):
         yield enabled
 

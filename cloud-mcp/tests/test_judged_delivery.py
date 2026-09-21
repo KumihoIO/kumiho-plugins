@@ -81,12 +81,12 @@ def bound_for(subject: Principal) -> Optional[bool]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("tier", ["STUDIO", "STUDIO_PRO", "ENTERPRISE"])
+@pytest.mark.parametrize("tier", ["MEMORY", "SOLO", "CREATOR", "STUDIO", "STUDIO_PRO", "ENTERPRISE"])
 def test_an_entitled_tier_turns_judged_delivery_on(tier, override_available, switch_on):
     assert bound_for(principal(tier)) is True
 
 
-@pytest.mark.parametrize("tier", ["studio", "Studio_Pro", " enterprise "])
+@pytest.mark.parametrize("tier", ["memory", "solo", "studio", "Studio_Pro", " enterprise "])
 def test_the_tier_code_is_matched_case_insensitively(tier, override_available, switch_on):
     assert bound_for(principal(tier)) is True
 
@@ -127,11 +127,11 @@ def test_the_dev_principal_has_no_tier(override_available, switch_on):
 
 
 @pytest.mark.parametrize("tier", ["STUDIO", "STUDIO_PRO", "ENTERPRISE", "FREE", None])
-def test_no_override_is_set_while_the_switch_is_off(tier, override_available, monkeypatch):
-    """Off means *nothing bound*, not bound-to-false: kumiho-memory's own
-    environment has to keep deciding exactly as it does today."""
+def test_off_explicitly_overrides_ambient_enablement(tier, override_available, monkeypatch):
+    """The hosted switch is authoritative even if the library env is on."""
+    monkeypatch.setenv("KUMIHO_MEMORY_CONTEXT_OPT_ENABLED", "1")
     monkeypatch.delenv(jd.JUDGED_DELIVERY_ENV, raising=False)
-    assert bound_for(principal(tier)) is None
+    assert bound_for(principal(tier)) is False
 
 
 @pytest.mark.parametrize("raw", ["1", "true", "TRUE", "yes", "on", " on "])
@@ -316,13 +316,13 @@ async def test_two_tiers_at_once_never_see_each_others_switch(
 
 
 @pytest.mark.anyio
-async def test_a_request_binds_nothing_while_the_switch_is_off(
+async def test_a_request_binds_false_while_the_switch_is_off(
     app, control_plane, keypair, override_available, monkeypatch,
 ):
     monkeypatch.delenv(jd.JUDGED_DELIVERY_ENV, raising=False)
     token = keypair.sign(base_claims(tenant_tier="ENTERPRISE"))
     async with client_for(app, control_plane) as http:
-        assert await _judged(http, token) is None
+        assert await _judged(http, token) is False
 
 
 @pytest.mark.anyio

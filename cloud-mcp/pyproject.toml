@@ -36,7 +36,8 @@ dependencies = [
     # memory through to the SDK store's item_kref, which the hosted reflect
     # description tells the model to use for a correction.
     # 1.6.0 provides the per-request judged-delivery context override.
-    "kumiho-memory[all]>=1.6.0",
+    # 1.6.1 forwards evaluation usage and cache diagnostics in engage.
+    "kumiho-memory[all]>=1.6.1",
     "mcp>=2.2.0,<3",
     "starlette>=0.37,<1.0",
     "uvicorn[standard]>=0.30",

@@ -162,7 +162,7 @@ the payload it asserted on.
 | `KUMIHO_MCP_DISCOVERY_CACHE_SECONDS` | `600` | Per-tenant routing cache. |
 | `KUMIHO_MCP_CLIENT_CACHE_MAX` | `1024` | gRPC clients held, keyed by `(tenant_id, token_id)`. |
 | `KUMIHO_STACK_MIDDLE_BAND` | `0` | Read by the SDK, not by this service. `0` — the hosted default, pinned into the environment at startup — is **strong-only** revision stacking; `1` restores the SDK's two-band gate. See below. |
-| `KUMIHO_CLOUD_MCP_JUDGED_DELIVERY` | `0` | Arms per-tenant judged engage delivery. `1`/`true`/`yes`/`on` turns it on; anything else, or unset, leaves every request exactly as it is. See below. |
+| `KUMIHO_CLOUD_MCP_JUDGED_DELIVERY` | `0` | Arms per-tenant judged engage delivery. `1`/`true`/`yes`/`on` turns it on; anything else, or unset, disables judged delivery for every request. See below. |
 | `KUMIHO_MCP_ENABLE_SSE` | `0` | Must remain `0`. Setting `1` fails startup; use Streamable HTTP. |
 | `KUMIHO_MCP_JSON_RESPONSE` | `0` | Answer POSTs with JSON instead of SSE (tests use this). |
 | `KUMIHO_MCP_LOG_LEVEL` | `INFO` | Root log level. |
@@ -183,7 +183,7 @@ so on this shared server the answer to "is it on?" belongs to the caller: an
 unentitled tenant otherwise pays for a widened recall and a refused RPC once per
 back-off window.
 
-The decision is the verified `tenant_tier` claim — `STUDIO`, `STUDIO_PRO` or
+The decision is the verified `tenant_tier` claim — `MEMORY`, `SOLO`, `CREATOR`, `STUDIO`, `STUDIO_PRO` or
 `ENTERPRISE`, matched case-insensitively and exactly — and it is bound for one
 request through `kumiho_memory.context_optimization.judged_delivery`, a
 contextvar, alongside the tenant context itself. Every other tier, an unknown
@@ -193,14 +193,14 @@ construction.
 
 `KUMIHO_CLOUD_MCP_JUDGED_DELIVERY` is the operator switch and it is **off by
 default**, so deploying this changes nothing until it is turned on. While it is
-off, no override is set at all and `kumiho-memory` keeps reading its own
-`KUMIHO_MEMORY_CONTEXT_OPT_*` environment exactly as before; while it is on, the
+off, an explicit false override disables optimization even if the library
+environment enables it; while it is on, the
 tier decides and that per-request answer wins over
 `KUMIHO_MEMORY_CONTEXT_OPT_ENABLED` in both directions. The candidate pool and
 thresholds stay deployment-wide `KUMIHO_MEMORY_CONTEXT_OPT_*` settings — tiers
 differ by the server's monthly limit, not by pool size.
 
-The locked runtime uses `kumiho` 0.14.0 and `kumiho-memory` 1.6.0, which provide
+The locked runtime uses `kumiho` 0.14.0 and `kumiho-memory` 1.6.1, which provide
 `Evaluate` and the per-request override. Production startup requires these
 minimum releases. The compatibility loader still warns and leaves requests
 unwrapped if an explicit development override permits an older runtime.
@@ -386,3 +386,17 @@ Each shim prefers the real implementation and degrades quietly:
   caller's token around every request.
 
 Delete a shim when its version floor is raised, not before.
+
+
+### Monthly evaluation limits
+
+Every paid tier can use judged delivery. The server enforces input-token budgets:
+MEMORY 1M, SOLO 30M, CREATOR 60M, STUDIO 150M, STUDIO_PRO 400M, and ENTERPRISE
+1B by default (contract-specific finite overrides). No automatic overage billing.
+When a reservation would exceed the allowance, no new evaluation call is made
+and engage falls back to ordinary recall. Cached judgments need no new provider
+call. The UTC calendar month controls quota reset.
+
+Engage exposes reported counters in `optimization.usage` and the evaluator's
+status in `optimization.evaluation_status`. Missing counters remain absent.
+Provider request counts represent successful responses, not every failed attempt.
