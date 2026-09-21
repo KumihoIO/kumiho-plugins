@@ -42,8 +42,8 @@ see [privacy-and-trust](references/privacy-and-trust.md) when needed.
 
 **Engage — before you respond.** When the user's message touches anything
 that might have history, call `kumiho_memory_engage` with a query derived
-from their current message (at most once per turn; the server deduplicates
-within 5 seconds). Never say "I don't know" without engaging first. Hold
+from their current message (normally once per turn). An explicitly requested
+repeat runs recall again. Never say "I don't know" without engaging first. Hold
 the returned `source_krefs` for reflect.
 
 **Reflect — after you respond.** After a substantive response, call

@@ -839,9 +839,9 @@ kumiho==0.14.2 \
     # via
     #   kumiho-cloud-mcp (pyproject.toml)
     #   kumiho-memory
-kumiho-memory==1.6.2 \
-    --hash=sha256:93099e00ee1151153ef3639c3ba07e7c416861c40956ca7dfcf4f0f96fa76664 \
-    --hash=sha256:ee29f4737e146df32d52522fa05310b0d03d5d401f4fca8b66ce30fc37a43a7c
+kumiho-memory==1.6.3 \
+    --hash=sha256:322e764e93bcb5fc364c980677e0c9e8cea29dc78f53c9484d54f62394fe8acd \
+    --hash=sha256:5a22c17149079538fce07764ea7c9deadf846389967eb4f32821f1efac5494d1
     # via kumiho-cloud-mcp (pyproject.toml)
 mcp==2.2.0 \
     --hash=sha256:2dc37ecb1974becdcebdbf7561e7c15a07dbbf20ba21ba16c3593b3038b3afbd \

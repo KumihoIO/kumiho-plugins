@@ -106,7 +106,7 @@ def test_create_app_raises_before_building_a_server(monkeypatch):
 
 def test_minimum_versions_match_the_pins():
     assert MIN_KUMIHO_VERSION == (0, 14, 2)
-    assert MIN_KUMIHO_MEMORY_VERSION == (1, 6, 2)
+    assert MIN_KUMIHO_MEMORY_VERSION == (1, 6, 3)
 
 
 # ---------------------------------------------------------------------------

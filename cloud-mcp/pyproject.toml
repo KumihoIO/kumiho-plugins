@@ -36,8 +36,8 @@ dependencies = [
     # memory through to the SDK store's item_kref, which the hosted reflect
     # description tells the model to use for a correction.
     # 1.6.0 provides the per-request judged-delivery context override.
-    # 1.6.2 adds batch-aware recall and per-stage timing diagnostics.
-    "kumiho-memory[all]>=1.6.2",
+    # 1.6.3 preserves immediate repeats and avoids redundant sibling item reads.
+    "kumiho-memory[all]>=1.6.3",
     "mcp>=2.2.0,<3",
     "starlette>=0.37,<1.0",
     "uvicorn[standard]>=0.30",
