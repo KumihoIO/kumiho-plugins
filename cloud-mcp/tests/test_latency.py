@@ -3,8 +3,9 @@
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
+from threading import Event, Lock
 from time import perf_counter
+from types import SimpleNamespace
 
 import grpc
 import httpx
@@ -18,6 +19,7 @@ from kumiho_cloud_mcp.timing import (
     RequestTimingMiddleware,
     RpcTimingInterceptor,
     _current,
+    _server_timings,
     annotate_result,
     stage,
 )
@@ -149,8 +151,18 @@ async def test_request_timings_are_isolated_and_preserve_content():
 
 async def test_rpc_timing_preserves_blocking_future_and_errors():
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
+    completed = Event()
+
+    class CompletionInterceptor(RpcTimingInterceptor):
+        def intercept_unary_unary(self, continuation, client_call_details, request):
+            response = super().intercept_unary_unary(continuation, client_call_details, request)
+            # This callback is registered after the timing callback on the same
+            # response. Future.result() can return before callbacks finish.
+            response.add_done_callback(lambda _: completed.set())
+            return response
 
     def echo(request, context):
+        context.send_initial_metadata((("x-kumiho-timing-handler-ms", "1.25"),))
         if request == b"fail":
             context.abort(grpc.StatusCode.NOT_FOUND, "missing")
         return request
@@ -171,15 +183,149 @@ async def test_rpc_timing_preserves_blocking_future_and_errors():
     token = _current.set(state)
     try:
         with grpc.intercept_channel(
-            grpc.insecure_channel(f"127.0.0.1:{port}"), RpcTimingInterceptor()
+            grpc.insecure_channel(f"127.0.0.1:{port}"), CompletionInterceptor()
         ) as channel:
             call = channel.unary_unary("/test/Echo")
             assert call(b"sync") == b"sync"
+            assert completed.wait(2)
+            completed.clear()
             assert call.future(b"future").result() == b"future"
+            assert completed.wait(2)
+            completed.clear()
             with pytest.raises(grpc.RpcError) as exc:
                 call(b"fail")
+            assert completed.wait(2)
             assert exc.value.code() == grpc.StatusCode.NOT_FOUND
             assert state["stages"]["rpc_Echo"] > 0
+            # Only successful sync/future responses contribute server durations.
+            assert state["server_timings"] == {"Echo": {"handler": 2.5}}
     finally:
         _current.reset(token)
         server.stop(0).wait()
+
+
+class _TimingResponse:
+    def __init__(self, metadata=(), code=grpc.StatusCode.OK):
+        self.metadata = metadata
+        self.status = code
+        self.callbacks = []
+
+    def code(self):
+        return self.status
+
+    def initial_metadata(self):
+        if isinstance(self.metadata, Exception):
+            raise self.metadata
+        return self.metadata
+
+    def add_done_callback(self, callback):
+        self.callbacks.append(callback)
+
+    def finish(self):
+        for callback in self.callbacks:
+            callback(self)
+
+
+@pytest.mark.parametrize("value", ["-1", "NaN", "inf", "-inf", "1e999", "", "bad", "1" * 33, b"12"])
+def test_server_timings_reject_invalid_values(value):
+    assert _server_timings(_TimingResponse([
+        ("x-kumiho-timing-query-ms", value),
+        ("authorization", "private"),
+        ("x-kumiho-timing-unknown-ms", "100"),
+    ])) == {}
+
+
+@pytest.mark.parametrize("metadata", [
+    [("x-kumiho-timing-query-ms", "1"), ("ignored", "x" * 8192)],
+    [("x-kumiho-timing-query-ms", "1"), *[("ignored", "x")] * 64],
+    [("x-kumiho-timing-query-ms", "1"), ("malformed",)],
+    [("x-kumiho-timing-query-ms", "1"), ("malformed", object())],
+    ValueError("metadata unavailable"),
+])
+def test_server_timings_fail_closed_for_unbounded_or_malformed_metadata(metadata):
+    assert _server_timings(_TimingResponse(metadata)) == {}
+
+
+def test_server_timings_drop_duplicates_errors_and_unknown_headers():
+    metadata = [
+        ("x-kumiho-timing-query-ms", "1"),
+        ("x-kumiho-timing-query-ms", "2"),
+        ("x-kumiho-timing-query-ms", "3"),
+        ("x-kumiho-timing-total-ms", "4.25"),
+        ("x-kumiho-timing-request-gate-ms", "0"),
+        ("x-kumiho-timing-budget-read-ms", "0.125"),
+        ("x-kumiho-timing-private-query-ms", "4"),
+    ]
+    assert _server_timings(_TimingResponse(metadata)) == {
+        "total": 4.25, "request_gate": 0.0, "budget_read": 0.125,
+    }
+    assert _server_timings(_TimingResponse(metadata, grpc.StatusCode.NOT_FOUND)) == {}
+
+
+def test_server_timings_capture_request_state_and_accumulate_without_altering_rpc():
+    states = [
+        {"start": perf_counter(), "request_id": str(i), "stages": {}, "lock": Lock()}
+        for i in range(2)
+    ]
+    responses = []
+    interceptor = RpcTimingInterceptor()
+    for state, method, duration in [(states[0], "Search", "1.25"), (states[0], "Search", "2.5"),
+                                    (states[1], "Evaluate", "7")]:
+        response = _TimingResponse([("x-kumiho-timing-handler-ms", duration)])
+        token = _current.set(state)
+        try:
+            result = interceptor.intercept_unary_unary(
+                lambda *_, response=response: response, SimpleNamespace(method=f"/kumiho.KumihoService/{method}"), b"x",
+            )
+            assert result is response
+        finally:
+            _current.reset(token)
+        responses.append(response)
+    # gRPC invokes callbacks on completion threads, outside the original context.
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        list(executor.map(lambda response: response.finish(), responses))
+    assert states[0]["server_timings"] == {"Search": {"handler": 3.75}}
+    assert states[1]["server_timings"] == {"Evaluate": {"handler": 7.0}}
+    assert states[0]["rpc_counts"] == {"Search": 2}
+    assert states[1]["rpc_counts"] == {"Evaluate": 1}
+    payload = {"count": 1, "context": "unchanged", "approx_payload_tokens": 1}
+    token = _current.set(states[0])
+    try:
+        annotated = annotate_result(types.CallToolResult(
+            content=[types.TextContent(type="text", text=json.dumps(payload))],
+            structured_content=payload,
+        ))
+    finally:
+        _current.reset(token)
+    assert annotated.structured_content == json.loads(annotated.content[0].text)
+    assert annotated.structured_content["server_timing_ms"] == {"Search": {"handler": 3.75}}
+    assert annotated.structured_content["context"] == "unchanged"
+
+
+def test_server_timing_callback_failure_cannot_change_rpc_result():
+    state = {"start": perf_counter(), "request_id": "failure", "stages": {}, "lock": Lock()}
+    response = _TimingResponse(ValueError("metadata unavailable"))
+    token = _current.set(state)
+    try:
+        result = RpcTimingInterceptor().intercept_unary_unary(
+            lambda *_: response, SimpleNamespace(method="/kumiho.KumihoService/Search"), b"x",
+        )
+        response.finish()
+        assert result is response
+        assert state["rpc_counts"] == {"Search": 1}
+        assert "server_timings" not in state
+    finally:
+        _current.reset(token)
+
+
+@pytest.mark.parametrize("stage_name", [
+    "auth", "prewarm", "request-gate", "handler", "request-gate-finish", "total",
+    "project-validation", "embedding", "query", "hydration", "config", "cache-read",
+    "budget-reserve", "provider", "budget-settle", "cache-write", "budget-read", "plan",
+    "db-resolve", "db-begin", "db-lock", "db-execute", "db-consume", "db-commit",
+    "provider-permit", "provider-rate", "provider-http", "provider-backoff",
+])
+def test_server_timing_contract_accepts_each_published_stage(stage_name):
+    assert _server_timings(_TimingResponse([
+        (f"x-kumiho-timing-{stage_name}-ms", "12.345"),
+    ])) == {stage_name.replace("-", "_"): 12.345}

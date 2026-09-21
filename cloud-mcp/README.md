@@ -421,6 +421,30 @@ ASGI request through cleanup. It does not measure client/host scheduling or time
 outside the service. No query, memory, token or request body is logged by this
 instrumentation. Errors retain their existing response format.
 
+When the server supplies timing metadata, `server_timing_ms` reports its measured
+stages grouped by RPC method, for example `Search.project_validation`,
+`Search.query`, `Search.hydration`, and `Evaluate.provider`. Common stages include
+`auth`, `prewarm`, `request_gate`, `handler`, `request_gate_finish`, and `total`.
+Evaluation can also report `plan` and budget/cache/provider stages. Provider
+sub-stages are `provider_permit` (concurrency wait), `provider_rate` (rate gate),
+`provider_http` (attempts through response-body parsing), and `provider_backoff`
+(retry waits). HTTP time accumulates across attempts and concurrent chunks, so
+it can exceed the enclosing provider wall time. No provider IDs or response
+bodies are included. Database
+stages (`db_resolve`, `db_begin`, `db_lock`, `db_execute`, `db_consume`, `db_commit`)
+accumulate across guarded statements and are subsets of handler and query/
+hydration durations, not additional elapsed time.
+Values accumulate across successful calls of the same method whose completion
+callbacks have finished before the request diagnostic snapshot. The current
+recall SDK uses synchronous RPCs; callers adding asynchronous RPC futures must
+also account for callback completion before relying on a complete snapshot.
+They cover only each call's final successful transport attempt; client-side
+`rpc_<Method>` can also contain connection time, retries, and backoff. Handler
+sub-stages overlap their enclosing `handler`/`total`, so do not add all fields or
+subtract their sum from client RPC time. Missing stages remain absent, including
+when an older server sends no diagnostics. Only bounded, allowlisted, finite
+nonnegative numeric metadata is exposed; query text and other headers are ignored.
+
 Concurrent cold requests sharing the exact authenticated credential now reuse
 one client initialization. Different tenants/users/rotated credentials remain
 separate. Concurrent API-key introspections coalesce only the cache fill; expiry,
