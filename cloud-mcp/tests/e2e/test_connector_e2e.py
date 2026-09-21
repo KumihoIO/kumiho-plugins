@@ -67,7 +67,7 @@ async def test_initialize_carries_the_connector_instructions(live_server):
         show("serverInfo", {"name": info.name, "version": info.version})
         show("instructions[:240]", (conn.init.instructions or "")[:240])
 
-        assert info.version == "0.14.1", "the connector must report the SDK release"
+        assert info.version == "0.14.2", "the connector must report the SDK release"
         # Byte-identical, not "looks similar": the hosted service deliberately
         # serves its reviewed text rather than the SDK's stdio-oriented
         # default, so any other copy is a behaviour change nobody reviewed.

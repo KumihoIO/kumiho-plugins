@@ -434,3 +434,14 @@ with memory-handler total, retrieval, evaluation and context assembly durations,
 plus nested graph stages when used. Stages overlap and do not sum to total;
 connector authentication/routing and host transport are outside this timer.
 Search coverage and paid-plan evaluation quotas are unchanged.
+
+
+### Validated search packets (SDK 0.14.2)
+
+Deploy server Search memory-packet support before this image. Query recall then
+combines exact active-project validation and current published/latest revision
+hydration in Search, eliminating separate GetProjects and batch-resolution RPCs
+on successful packet hits. Existing ranking, metadata, scope/type filters,
+graph/sibling enrichment and evaluation order are retained. Unsupported servers
+fall back to legacy validation/resolution. SDK0.14.2 also releases retired gRPC
+channels through the existing credential-bound pool's close hook.
