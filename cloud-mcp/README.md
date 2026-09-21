@@ -400,3 +400,13 @@ call. The UTC calendar month controls quota reset.
 Engage exposes reported counters in `optimization.usage` and the evaluator's
 status in `optimization.evaluation_status`. Missing counters remain absent.
 Provider request counts represent successful responses, not every failed attempt.
+
+
+### Recall timing and batched metadata
+
+The connector requires SDK 0.14.1 and memory 1.6.2. Deploy the server current-tag
+BatchGetRevisions fix before updating this image. Engage forwards `timing_ms`
+with memory-handler total, retrieval, evaluation and context assembly durations,
+plus nested graph stages when used. Stages overlap and do not sum to total;
+connector authentication/routing and host transport are outside this timer.
+Search coverage and paid-plan evaluation quotas are unchanged.
