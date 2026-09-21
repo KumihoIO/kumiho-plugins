@@ -29,6 +29,8 @@ import httpx
 
 from .auth import Principal
 from .settings import Settings
+from .singleflight import KeyedGate
+from .timing import RpcTimingInterceptor, stage
 
 logger = logging.getLogger("kumiho.cloud_mcp.clients")
 
@@ -185,6 +187,7 @@ class ClientPool:
     def __init__(self, settings: Settings, router: DiscoveryRouter) -> None:
         self.settings = settings
         self.router = router
+        self._build_gate = KeyedGate()
         self._entries: "OrderedDict[Tuple[str, str, str, str], _PooledClient]" = OrderedDict()
         self._lock = anyio.Lock()
 
@@ -196,6 +199,12 @@ class ClientPool:
 
     # -- public ----------------------------------------------------------
     async def acquire(self, principal: Principal) -> ClientLease:
+        # Identical credentials share initialization; other tenants and rotated
+        # credentials never wait behind this network I/O.
+        async with self._build_gate.hold(self._key(principal)):
+            return await self._acquire(principal)
+
+    async def _acquire(self, principal: Principal) -> ClientLease:
         """Borrow a client. The caller must ``release()`` the lease."""
         key = self._key(principal)
         now = time.monotonic()
@@ -312,7 +321,8 @@ class ClientPool:
         if problems:
             raise ClientContractError("; ".join(problems))
 
-        target = await self.router.resolve(principal)
+        with stage("discovery"):
+            target = await self.router.resolve(principal)
         if not target:
             raise RoutingError("no regional server for tenant")
         logger.info(
@@ -412,4 +422,12 @@ def _construct_client(*, target: str, token: Optional[str], metadata) -> Any:
             "a hosted request could pick up the operator's ~/.kumiho credentials"
         )
 
-    return _Client(**{k: v for k, v in kwargs.items() if k in accepted})
+    client = _Client(**{k: v for k, v in kwargs.items() if k in accepted})
+    # One timing interceptor per pooled channel, outside the SDK retry chain.
+    # No requests, response content or metadata are inspected.
+    import grpc
+    from kumiho.proto import kumiho_pb2_grpc
+    if isinstance(getattr(client, "channel", None), grpc.Channel):
+        client.channel = grpc.intercept_channel(client.channel, RpcTimingInterceptor())
+        client.stub = kumiho_pb2_grpc.KumihoServiceStub(client.channel)
+    return client

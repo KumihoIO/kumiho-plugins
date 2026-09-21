@@ -37,6 +37,7 @@ from .settings import (
     REQUIRED_SCOPE,
     Settings,
 )
+from .singleflight import KeyedGate
 
 logger = logging.getLogger("kumiho.cloud_mcp.auth")
 
@@ -192,6 +193,7 @@ class ServiceTokenIntrospector:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self._fill_gate = KeyedGate()
         self._cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self._lock = anyio.Lock()
         self._client: Optional[httpx.AsyncClient] = None
@@ -200,6 +202,10 @@ class ServiceTokenIntrospector:
         self._client = client
 
     async def introspect(self, token_id: str) -> Dict[str, Any]:
+        async with self._fill_gate.hold(token_id):
+            return await self._introspect(token_id)
+
+    async def _introspect(self, token_id: str) -> Dict[str, Any]:
         now = time.monotonic()
         cached = self._cache.get(token_id)
         if cached and cached[0] > now:
