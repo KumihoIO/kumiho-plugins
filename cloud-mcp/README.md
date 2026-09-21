@@ -400,3 +400,28 @@ call. The UTC calendar month controls quota reset.
 Engage exposes reported counters in `optimization.usage` and the evaluator's
 status in `optimization.evaluation_status`. Missing counters remain absent.
 Provider request counts represent successful responses, not every failed attempt.
+
+
+### Hosted request latency diagnostics
+
+Successful Engage responses additionally include `request_id`, `mcp_timing_ms`
+and `mcp_rpc_counts`. `mcp_timing_ms.authentication` measures authentication,
+`client_acquire` includes pool wait and cold routing/client construction,
+`discovery` appears when routing is consulted, and `tool_handler` includes SDK
+validation and worker dispatch through completion. `rpc_<Method>` is cumulative
+logical RPC duration, including SDK retry/backoff; `mcp_rpc_counts` counts logical
+calls, not transport attempts. `until_result` spans ASGI entry (including body
+receipt) through tool result production, before response serialization/transmission.
+These nested or concurrent durations must not be summed. The existing memory
+`timing_ms` keeps its original handler-only meaning.
+
+A server-generated request ID is also returned in `X-Kumiho-Request-Id`. The
+completion log carries this ID and `mcp_timing_ms.http_total`, covering the whole
+ASGI request through cleanup. It does not measure client/host scheduling or time
+outside the service. No query, memory, token or request body is logged by this
+instrumentation. Errors retain their existing response format.
+
+Concurrent cold requests sharing the exact authenticated credential now reuse
+one client initialization. Different tenants/users/rotated credentials remain
+separate. Concurrent API-key introspections coalesce only the cache fill; expiry,
+revocation TTL and fail-closed behavior are unchanged.

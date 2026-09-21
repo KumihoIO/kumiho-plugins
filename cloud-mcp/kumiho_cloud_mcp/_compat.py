@@ -40,6 +40,8 @@ import os
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterator, List, Optional
 
+from .timing import annotate_result, stage
+
 logger = logging.getLogger("kumiho.cloud_mcp.compat")
 
 # ---------------------------------------------------------------------------
@@ -427,7 +429,9 @@ def build_server(
         # Upstream's v2 path validates inputSchema before dispatching to the
         # same tenant-scoped, blocking tool implementations as its v1 path.
         with sdk_cache_scope():
-            return await original_call.handler(ctx, params)
+            with stage("tool_handler"):
+                result = await original_call.handler(ctx, params)
+            return annotate_result(result) if params.name == "kumiho_memory_engage" else result
 
     if restrict_capabilities:
         @contextlib.asynccontextmanager

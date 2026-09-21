@@ -63,6 +63,7 @@ from .settings import (
     load_settings,
     middle_band_enabled,
 )
+from .timing import RequestTimingMiddleware, stage
 
 logger = logging.getLogger("kumiho.cloud_mcp")
 
@@ -565,10 +566,12 @@ code{{background:#f3f3f3;padding:.1em .35em;border-radius:.25em}}</style>
     async def mcp_asgi(scope, receive, send) -> None:
         if scope["type"] != "http":  # pragma: no cover - no websockets here
             return
-        principal = await _authorize(scope, receive, send)
+        with stage("authentication"):
+            principal = await _authorize(scope, receive, send)
         if principal is None:
             return
-        leased = await _lease_or_503(principal, scope, receive, send)
+        with stage("client_acquire"):
+            leased = await _lease_or_503(principal, scope, receive, send)
         if leased is None:
             return
 
@@ -626,6 +629,7 @@ code{{background:#f3f3f3;padding:.1em .35em;border-radius:.25em}}</style>
         routes=routes,
         lifespan=lifespan,
         middleware=[
+            Middleware(RequestTimingMiddleware),
             Middleware(SecurityHeadersMiddleware),
             Middleware(TimeoutMiddleware, seconds=settings.request_timeout_seconds),
             Middleware(BodyLimitMiddleware, max_bytes=settings.max_body_bytes),
