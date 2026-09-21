@@ -1138,7 +1138,7 @@ let ceSelection = null; // { endpoint, redisUrl } when CE is chosen
   if (backendChoice.key === "ce") {
     console.log();
     console.log(`  CE runs tokenless against your own kumiho-server deployment.`);
-    console.log(`  ${c.dim}Deploy it first: https://github.com/kumihoclouds/kumiho-server${c.reset}`);
+    console.log(`  ${c.dim}Deploy it first: https://github.com/KumihoIO/kumiho-server-community${c.reset}`);
     console.log();
     let ceEndpoint = "";
     while (!ceEndpoint) {
