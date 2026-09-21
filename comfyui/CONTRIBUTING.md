@@ -14,17 +14,17 @@ Thank you for your interest in contributing to Kumiho ComfyUI Nodes! 🦊
 
 1. **Fork and clone the repository**
    ```bash
-   git clone https://github.com/YOUR_USERNAME/kumiho-comfyui.git
-   cd kumiho-comfyui
+   git clone https://github.com/YOUR_USERNAME/kumiho-plugins.git
+   cd kumiho-plugins/comfyui
    ```
 
 2. **Create a symlink in your ComfyUI custom_nodes folder**
    ```bash
    # Windows (PowerShell as Admin)
-   New-Item -ItemType Junction -Path "C:\path\to\ComfyUI\custom_nodes\kumiho-comfyui" -Target "C:\path\to\kumiho-comfyui"
+   New-Item -ItemType Junction -Path "C:\path\to\ComfyUI\custom_nodes\kumiho-comfyui" -Target "C:\path\to\kumiho-plugins\comfyui"
    
    # Linux/macOS
-   ln -s /path/to/kumiho-comfyui /path/to/ComfyUI/custom_nodes/kumiho-comfyui
+   ln -s /path/to/kumiho-plugins/comfyui /path/to/ComfyUI/custom_nodes/kumiho-comfyui
    ```
 
 3. **Install development dependencies**
@@ -132,7 +132,7 @@ When reporting issues, please include:
 
 ## Questions?
 
-- Open a [GitHub Discussion](https://github.com/kumihoclouds/kumiho-comfyui/discussions)
+- Open a [GitHub issue](https://github.com/KumihoIO/kumiho-plugins/issues)
 - Join our [Discord](https://discord.gg/Utp2P8G69P)
 - Email us at [dev@kumiho.io](mailto:dev@kumiho.io)
 

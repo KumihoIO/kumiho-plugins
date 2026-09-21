@@ -16,7 +16,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://kumiho.io"
-Repository = "https://github.com/kumihoclouds/kumiho-comfyui"
+Repository = "https://github.com/KumihoIO/kumiho-plugins"
 Documentation = "https://docs.kumiho.io"
 
 [tool.comfy]
