@@ -402,6 +402,19 @@ status in `optimization.evaluation_status`. Missing counters remain absent.
 Provider request counts represent successful responses, not every failed attempt.
 
 
+### Explicit repeated recall
+
+With memory 1.6.3, each explicit Engage or Recall call runs the recall pipeline,
+including an immediate repeat with identical arguments. Repeats are not replaced
+with an empty response and require no delay or query variation. Evaluation may
+still reuse its existing cache, as reported by `optimization.usage`; a repeated
+request does not imply a new provider call. Scope locking and tenant isolation
+remain in place, so concurrent calls in the same scope may wait for each other.
+
+Older deployments can return an empty response marked `deduplicated: true`.
+That legacy suppression signal does not mean no matching memory exists; check
+the installed memory version before interpreting it as a successful empty search.
+
 ### Hosted request latency diagnostics
 
 Successful Engage responses additionally include `request_id`, `mcp_timing_ms`

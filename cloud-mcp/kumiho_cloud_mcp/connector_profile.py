@@ -67,9 +67,9 @@ CONNECTOR_TOOL_ANNOTATIONS: Dict[str, Dict[str, object]] = {
 #   Reflect owns capture ("remember this", a settled decision), so a plain
 #   "remember this" never routes to store. Store and recall claim none of these.
 # * Engage promises no particular number of memories. An empty successful
-#   search is valid, but a backend failure or duplicate call can also return
-#   zero. The description must preserve those signals and limit conclusions to
-#   the retrieved candidates: a judge does not prove the whole graph irrelevant.
+#   search is valid, but a backend failure can also return zero. Explicit
+#   repeated calls run retrieval again. Preserve failure signals and limit
+#   conclusions to the retrieved candidates: a judge does not prove the whole graph irrelevant.
 # * Retrieve's recency wording must match the SDK. kumiho 0.13.2 implements
 #   mode "latest": newest first by the returned revision's own created_at (so
 #   an updated memory moves forward), with a created_at list aligned with
@@ -110,9 +110,8 @@ CONNECTOR_TOOL_DESCRIPTIONS = {
         "Searches the user's saved Kumiho memories for context relevant to the current "
         "request. Returns a ready-to-use context summary, the matching memories and their "
         "references (source_krefs); how many come back varies. A successful search can "
-        "return no matches. Check backend_error and deduplicated: a backend error means "
-        "retrieval failed, and a duplicate means "
-        "reuse the earlier results. When optimization.status is applied, zero means no "
+        "return no matches. Check backend_error: a backend error means retrieval failed. "
+        "When optimization.status is applied, zero means no "
         "retrieved candidates passed the evaluation; it does not prove no relevant "
         "memory exists. Useful near the "
         "start of a conversation about the "
@@ -130,8 +129,8 @@ CONNECTOR_TOOL_DESCRIPTIONS = {
         "not authorized for; general knowledge or live information such as weather, news "
         "or prices. It reads only this account's saved memories and writes nothing.\n\n"
         "query: a brief natural-language description of what you are looking for, with no "
-        "secrets in it. Repeating an identical query within a few seconds returns an empty "
-        "result marked deduplicated; reuse the earlier results instead."
+        "secrets in it. Each explicit call runs retrieval again, including an immediate "
+        "repeat of the same query."
     ),
     "kumiho_memory_recall": (
         "Filtered semantic search over the user's saved Kumiho memories. Returns the best "
@@ -140,8 +139,8 @@ CONNECTOR_TOOL_DESCRIPTIONS = {
         "or [\"preference\"]) or by location (space_paths, for example one project's "
         "space), such as listing the decisions filed in a known space.\n\n"
         "query: describe what you are looking for in natural language rather than guessing "
-        "exact keywords. Repeating an identical query within a few seconds returns an "
-        "empty result marked deduplicated; vary the query or reuse the earlier results.\n\n"
+        "exact keywords. Each explicit call runs retrieval again, including an immediate "
+        "repeat of the same query.\n\n"
         "Not for: saving, finding or checking passwords, access tokens, API keys, MFA or "
         "recovery codes, so do not call this tool for such requests; data outside the "
         "connected account's authorized workspace; general knowledge or live information "

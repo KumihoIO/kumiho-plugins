@@ -50,7 +50,7 @@ CONTEXT = (
     "message is a question or task, answer directly.\n"
     "  - TWO REFLEXES — Use kumiho_memory_engage (before responding) and "
     "kumiho_memory_reflect (after responding).  At most one engage per "
-    "response.  The server deduplicates within 5 seconds.\n"
+    "response.  An explicitly requested repeat runs recall again.\n"
     "  - ENGAGE: Call kumiho_memory_engage ONCE if the topic might have "
     "history.  Your query MUST derive from the user's current message.  "
     "Hold the returned source_krefs for reflect.\n"

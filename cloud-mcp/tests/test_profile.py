@@ -363,11 +363,10 @@ async def test_memory_tool_descriptions_each_claim_their_own_intents(app, contro
     assert "space_paths" in tools["kumiho_memory_recall"]
 
 
-async def test_engage_distinguishes_empty_search_from_failure_and_deduplication(
+async def test_engage_distinguishes_empty_search_from_failure(
     app, control_plane, keypair,
 ):
-    """The served description must not turn failed or skipped retrieval into
-    evidence that the user has no relevant memories."""
+    """A failed retrieval is not evidence that the user has no relevant memories."""
     async with client_for(app, control_plane) as http:
         tools = {tool["name"]: tool for tool in await _tools(http, keypair.sign(base_claims()))}
 
@@ -375,7 +374,12 @@ async def test_engage_distinguishes_empty_search_from_failure_and_deduplication(
     assert "how many come back varies" in engage
     assert "a successful search can return no matches" in engage
     assert "backend_error" in engage and "retrieval failed" in engage
-    assert "deduplicated" in engage and "reuse the earlier results" in engage
+    for name in RECALL_MODE_TOOLS:
+        description = tools[name]["description"].lower()
+        assert "each explicit call runs retrieval again" in description
+        assert "immediate repeat of the same query" in description
+        assert "deduplicated" not in description
+        assert "vary the query" not in description
     assert "optimization.status is applied" in engage
     assert "no retrieved candidates passed" in engage
     assert "does not prove no relevant memory exists" in engage
@@ -663,8 +667,10 @@ class _RecallManager:
 
     def __init__(self):
         self.context_modes = []
+        self.queries = []
 
     async def recall_memories(self, query, **kwargs):
+        self.queries.append(query)
         return [{
             "kref": "kref://CognitiveMemory/decisions/region.decision?r=3",
             "title": "Chose the Seoul region on 2026-09-16",
@@ -719,7 +725,7 @@ async def test_hosted_recall_is_always_summarized(
     app, control_plane, keypair, recall_manager, compat_debug_log, name, requested,
 ):
     """Stale cached schemas and direct callers cannot select the other mode."""
-    marker = uuid.uuid4().hex  # unique per call, so the dedup guard never answers
+    marker = uuid.uuid4().hex  # keep log-redaction checks distinct from other tests
     arguments = {"query": f"which region did we choose {marker}"}
     if requested is not None:
         arguments["recall_mode"] = requested
@@ -750,6 +756,30 @@ async def test_hosted_recall_is_always_summarized(
         assert marker not in message and "full" not in message
     else:
         assert pinned == []
+
+
+@pytest.mark.parametrize("first_tool", sorted(RECALL_MODE_TOOLS))
+@pytest.mark.parametrize("second_tool", sorted(RECALL_MODE_TOOLS))
+async def test_explicit_repeated_recall_returns_results_without_a_delay(
+    app, control_plane, keypair, recall_manager, first_tool, second_tool,
+):
+    """Identical immediate requests, including cross-tool repeats, run retrieval."""
+    query = f"which region did we choose {uuid.uuid4().hex}"
+    token = keypair.sign(base_claims())
+    async with client_for(app, control_plane) as http:
+        for name in (first_tool, second_tool):
+            response = await http.post(
+                "/mcp", json=rpc("tools/call", {"name": name, "arguments": {"query": query}}),
+                headers={**MCP_HEADERS, "authorization": f"Bearer {token}"},
+            )
+            assert response.status_code == 200, response.text
+            result = response.json()["result"]
+            assert result.get("isError") is not True, result
+            payload = json.loads(result["content"][0]["text"])
+            assert payload["count"] == 1, payload
+            assert payload.get("deduplicated") is not True, payload
+            assert payload["results"][0]["kref"].endswith("region.decision?r=3")
+    assert recall_manager.queries == [query, query]
 
 
 def _call_params(name, arguments):
