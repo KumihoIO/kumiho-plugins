@@ -425,3 +425,12 @@ Concurrent cold requests sharing the exact authenticated credential now reuse
 one client initialization. Different tenants/users/rotated credentials remain
 separate. Concurrent API-key introspections coalesce only the cache fill; expiry,
 revocation TTL and fail-closed behavior are unchanged.
+
+### Recall timing and batched metadata
+
+The connector requires SDK 0.14.1 and memory 1.6.2. Deploy the server current-tag
+BatchGetRevisions fix before updating this image. Engage forwards `timing_ms`
+with memory-handler total, retrieval, evaluation and context assembly durations,
+plus nested graph stages when used. Stages overlap and do not sum to total;
+connector authentication/routing and host transport are outside this timer.
+Search coverage and paid-plan evaluation quotas are unchanged.

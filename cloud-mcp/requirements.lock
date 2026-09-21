@@ -833,15 +833,15 @@ jsonschema-specifications==2025.9.1 \
     --hash=sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe \
     --hash=sha256:b540987f239e745613c7a9176f3edb72b832a4ac465cf02712288397832b5e8d
     # via jsonschema
-kumiho==0.14.0 \
-    --hash=sha256:9a5644b77ed0967b8bb7ec469bee626671bcf618615d9419bb43b19b8716110a \
-    --hash=sha256:ba6ae902f201112ae2defd5af884f8d8159277c4c020314e27b761cf973cb892
+kumiho==0.14.1 \
+    --hash=sha256:230a3d7929c660cfdb53fc2d23389ae46bda658dc5e40e06acd77c9276ef4386 \
+    --hash=sha256:be08ade6970f840cecf438623b6e16d60effb716f5d9a8732c79d0cb65c68f75
     # via
     #   kumiho-cloud-mcp (pyproject.toml)
     #   kumiho-memory
-kumiho-memory==1.6.1 \
-    --hash=sha256:54341c50c9ba33d60f274aa853b19109f87c0498cfe7442a7f02733e43375896 \
-    --hash=sha256:b64f21111a3499232606c585dfffd1573839d84b4633d5aa763dc2509a77dfd1
+kumiho-memory==1.6.2 \
+    --hash=sha256:93099e00ee1151153ef3639c3ba07e7c416861c40956ca7dfcf4f0f96fa76664 \
+    --hash=sha256:ee29f4737e146df32d52522fa05310b0d03d5d401f4fca8b66ce30fc37a43a7c
     # via kumiho-cloud-mcp (pyproject.toml)
 mcp==2.2.0 \
     --hash=sha256:2dc37ecb1974becdcebdbf7561e7c15a07dbbf20ba21ba16c3593b3038b3afbd \
