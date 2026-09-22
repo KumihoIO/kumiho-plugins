@@ -28,10 +28,14 @@ Kumiho ComfyUI Nodes seamlessly integrate ComfyUI with the Kumiho Cloud asset ma
 
 ### Manual Installation
 
+The package lives in the `comfyui/` directory of the [kumiho-plugins](https://github.com/KumihoIO/kumiho-plugins) repository. Check out that directory and copy it into `custom_nodes`:
+
 ```bash
-cd ComfyUI/custom_nodes
-git clone https://github.com/kumihoclouds/kumiho-comfyui.git
-pip install -r kumiho-comfyui/requirements.txt
+git clone --depth 1 --filter=blob:none --sparse https://github.com/KumihoIO/kumiho-plugins.git
+cd kumiho-plugins
+git sparse-checkout set comfyui
+cp -r comfyui /path/to/ComfyUI/custom_nodes/kumiho-comfyui
+pip install -r /path/to/ComfyUI/custom_nodes/kumiho-comfyui/requirements.txt
 ```
 
 ### Via pip
@@ -279,7 +283,7 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 - 📚 [Documentation](https://docs.kumiho.io)
 - 💬 [Discord Community](https://discord.gg/Utp2P8G69P)
-- 🐛 [Issue Tracker](https://github.com/kumihoclouds/kumiho-comfyui/issues)
+- 🐛 [Issue Tracker](https://github.com/KumihoIO/kumiho-plugins/issues)
 - 📧 [Email Support](mailto:support@kumiho.io)
 
 ## License

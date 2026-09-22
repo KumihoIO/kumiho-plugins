@@ -13,7 +13,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/kumihoclouds/kumiho-n8n.git"
+    "url": "https://github.com/KumihoIO/kumiho-plugins.git",
+    "directory": "n8n"
   },
   "scripts": {
     "build": "n8n-node build",

@@ -196,7 +196,7 @@ If `kumiho-mcp` is in a virtualenv or a non-default Python path:
 
 ### Local Mode — Self-hosted Community Edition (CE)
 
-Run everything offline against a [kumiho-server CE](https://github.com/kumihoclouds/kumiho-server) deployment (Neo4j + Redis + embedding model bundled). CE runs tokenless — cloud auth and control-plane discovery are skipped entirely:
+Run everything offline against a [kumiho-server CE](https://github.com/KumihoIO/kumiho-server-community) deployment (Neo4j + Redis + embedding model bundled). CE runs tokenless — cloud auth and control-plane discovery are skipped entirely:
 
 ```json5
 {
@@ -652,7 +652,7 @@ python scripts/ingest-skills.py
 
 - [`kumiho`](https://pypi.org/project/kumiho/) — Core Python SDK
 - [`kumiho-memory`](https://pypi.org/project/kumiho-memory/) — Python memory provider (used by local mode)
-- [`kumiho-server`](https://github.com/kumihoclouds/kumiho-server) — Rust gRPC server
+- [`kumiho-server-community`](https://github.com/KumihoIO/kumiho-server-community) — self-hosted Community Edition server (prebuilt binaries and installer)
 
 ## License
 
