@@ -9,6 +9,8 @@ is what proves the hand-off happened.
 from __future__ import annotations
 
 import json
+from threading import Lock
+from time import perf_counter
 from typing import List
 
 import mcp.types as types
@@ -17,6 +19,7 @@ from mcp.server.lowlevel import Server
 
 from kumiho_cloud_mcp import _compat
 from kumiho_cloud_mcp.connector_profile import CONNECTOR_TOOLS
+from kumiho_cloud_mcp.timing import _current
 
 pytestmark = pytest.mark.anyio
 
@@ -301,3 +304,124 @@ def test_logging_never_serialises_a_token():
     fingerprint = token_fingerprint("super-secret")
     assert fingerprint and len(fingerprint) == 12
     assert "super-secret" not in fingerprint
+
+
+def _timing_state():
+    return {
+        "start": perf_counter(),
+        "request_id": "test-request-id",
+        "stages": {},
+        "rpc_counts": {"Store": 2},
+        "server_timings": {"Store": {"handler": 1.25}},
+        "lock": Lock(),
+    }
+
+
+async def test_store_reflect_and_consolidate_return_request_timing():
+    names = [
+        "kumiho_memory_store",
+        "kumiho_memory_reflect",
+        "kumiho_memory_consolidate",
+    ]
+    server = _compat.build_server(create=lambda: _server_with(names))
+    request = _compat.RequestContext(
+        tenant_id="synthetic-tenant", user_id="synthetic-user", auth_token="test-only"
+    )
+
+    for name in names:
+        state = _timing_state()
+        token = _current.set(state)
+        try:
+            with _compat.request_context(request):
+                params = types.CallToolRequestParams(
+                    name=name,
+                    arguments={"session_id": "synthetic-session"}
+                    if name in ("kumiho_memory_reflect", "kumiho_memory_consolidate")
+                    else {},
+                )
+                result = await server.get_request_handler("tools/call").handler(None, params)
+        finally:
+            _current.reset(token)
+
+        payload = json.loads(result.content[0].text)
+        assert payload["called"] == name
+        assert payload["request_id"] == "test-request-id"
+        assert payload["mcp_rpc_counts"] == {"Store": 2}
+        assert payload["server_timing_ms"] == {"Store": {"handler": 1.25}}
+        assert "tool_handler" in payload["mcp_timing_ms"]
+        assert state["stages"]["tool_handler"] >= 0
+        assert result.structured_content is None
+
+
+async def test_invalid_session_is_timed_but_never_annotated_as_success():
+    server = _compat.build_server(
+        create=lambda: _server_with(["kumiho_memory_reflect"])
+    )
+    state = _timing_state()
+    token = _current.set(state)
+    request = _compat.RequestContext(
+        tenant_id="synthetic-tenant", user_id="synthetic-user", auth_token="test-only"
+    )
+    try:
+        with _compat.request_context(request):
+            result = await server.get_request_handler("tools/call").handler(
+                None,
+                types.CallToolRequestParams(
+                    name="kumiho_memory_reflect", arguments={"session_id": "km1_invalid"}
+                ),
+            )
+    finally:
+        _current.reset(token)
+
+    assert result.is_error is True
+    assert "request_id" not in (result.structured_content or {})
+    assert state["stages"]["tool_handler"] >= 0
+
+
+async def test_storage_tool_error_envelope_remains_exact_and_logs_timing():
+    names = [
+        "kumiho_memory_store",
+        "kumiho_memory_reflect",
+        "kumiho_memory_consolidate",
+    ]
+
+    def create():
+        server = _server_with(names)
+        original = server.get_request_handler("tools/call")
+
+        async def return_error_payload(ctx, params):
+            payload = {"error": "synthetic backend failure"}
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=json.dumps(payload))],
+                structured_content=payload,
+            )
+
+        server.add_request_handler("tools/call", original.params_type, return_error_payload)
+        return server
+
+    server = _compat.build_server(create=create)
+    request = _compat.RequestContext(
+        tenant_id="synthetic-tenant", user_id="synthetic-user", auth_token="test-only"
+    )
+    listed = await _list(server)
+    assert all(getattr(tool, "output_schema", None) is None for tool in listed)
+
+    for name in names:
+        state = _timing_state()
+        token = _current.set(state)
+        try:
+            with _compat.request_context(request):
+                params = types.CallToolRequestParams(
+                    name=name,
+                    arguments={"session_id": "synthetic-session"}
+                    if name in ("kumiho_memory_reflect", "kumiho_memory_consolidate")
+                    else {},
+                )
+                result = await server.get_request_handler("tools/call").handler(None, params)
+        finally:
+            _current.reset(token)
+
+        assert result.is_error is False
+        assert result.content[0].text == '{"error": "synthetic backend failure"}'
+        assert result.structured_content == {"error": "synthetic backend failure"}
+        assert state["stages"]["tool_handler"] >= 0

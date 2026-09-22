@@ -417,16 +417,20 @@ the installed memory version before interpreting it as a successful empty search
 
 ### Hosted request latency diagnostics
 
-Successful Engage responses additionally include `request_id`, `mcp_timing_ms`
-and `mcp_rpc_counts`. `mcp_timing_ms.authentication` measures authentication,
-`client_acquire` includes pool wait and cold routing/client construction,
-`discovery` appears when routing is consulted, and `tool_handler` includes SDK
-validation and worker dispatch through completion. `rpc_<Method>` is cumulative
+Successful Engage, Store, Reflect and Consolidate responses additionally include
+`request_id`, `mcp_timing_ms` and `mcp_rpc_counts`. `mcp_timing_ms.authentication`
+measures authentication, `client_acquire` includes pool wait and cold routing/client
+construction, `discovery` appears when routing is consulted, and `tool_handler`
+includes SDK validation and worker dispatch through completion. For Reflect and
+Consolidate it also includes hosted session resolution. `rpc_<Method>` is cumulative
 logical RPC duration, including SDK retry/backoff; `mcp_rpc_counts` counts logical
 calls, not transport attempts. `until_result` spans ASGI entry (including body
 receipt) through tool result production, before response serialization/transmission.
 These nested or concurrent durations must not be summed. The existing memory
-`timing_ms` keeps its original handler-only meaning.
+`timing_ms` keeps its original handler-only meaning. Store, Reflect and Consolidate
+error envelopes keep their existing content even when the MCP protocol marks them as
+successful tool calls; request completion logs still include measured stages and RPC
+counts.
 
 A server-generated request ID is also returned in `X-Kumiho-Request-Id`. The
 completion log carries this ID and `mcp_timing_ms.http_total`, covering the whole
