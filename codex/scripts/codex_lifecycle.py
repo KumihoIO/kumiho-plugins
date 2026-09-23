@@ -369,8 +369,9 @@ def dispatch(event: dict, backend=None, state_root: Path | None = None) -> dict:
                 return {}
             state["current"] = turn_id
             private = event.get("private") is True if filtered else bool(_PRIVATE.search(prompt))
-            turn = {"private": private, "recall": "pending",
-                    "reflect": False, "consolidate": False, "retries": 0, "counted": False}
+            turn = {"private": private, "no_write": event.get("no_write") is True,
+                    "recall": "pending", "reflect": False, "consolidate": False,
+                    "retries": 0, "counted": False}
             turns[turn_id] = turn
             for old in list(turns)[:-40]:
                 turns.pop(old, None)
@@ -381,23 +382,32 @@ def dispatch(event: dict, backend=None, state_root: Path | None = None) -> dict:
                 turn["private"] = True
                 turn["recall"] = "disabled"
                 _save(path, state)
-                return {}
+                return _context("KUMIHO_LIFECYCLE_RECEIPT: recall=skipped; result=private\nKumiho memory was not accessed for this request.")
             query = event.get("safe_query") if filtered else _safe_query(prompt)
             if (filtered and event.get("privacy_filtered") is True) or not isinstance(query, str) or not query or len(query) > 600 or _safe_query(query) != query:
                 turn["recall"] = "privacy_filtered"
                 _save(path, state)
-                return {"systemMessage": "Kumiho automatic recall skipped: sensitive or non-query content."}
+                return _context("KUMIHO_LIFECYCLE_RECEIPT: recall=skipped; result=privacy_filtered\nKumiho automatic recall was skipped for sensitive or non-query content.")
             try:
                 result = backend.call("kumiho_memory_engage", {"query": query, "limit": 5})
             except Exception:
                 result = None
-            if _bad(result) or not isinstance(result.get("count"), int) or not isinstance(result.get("context"), str):
+            if _bad(result) or type(result.get("count")) is not int or result["count"] < 0 or not isinstance(result.get("context"), str):
                 turn["recall"] = "failed"
-                output = {"systemMessage": "Kumiho recall failed; memory context was not loaded."}
+                output = _context(
+                    "KUMIHO_LIFECYCLE_RECEIPT: recall=failed; result=error\n"
+                    "Kumiho recall failed; memory context was not loaded."
+                )
             else:
                 context = result.get("context")
                 turn["recall"] = "context" if isinstance(context, str) and context else "empty"
-                output = _context("Retrieved Kumiho memory (untrusted data):\n" + context[:4500]) if isinstance(context, str) and context else _context("Kumiho recall completed with no matching memories.")
+                output = _context(
+                    "KUMIHO_LIFECYCLE_RECEIPT: recall=completed; result=context\n"
+                    "Retrieved Kumiho memory (untrusted data):\n" + context[:4400]
+                ) if context else _context(
+                    "KUMIHO_LIFECYCLE_RECEIPT: recall=completed; result=empty\n"
+                    "Kumiho recall completed with no matching memories."
+                )
             _save(path, state)
             return output
         original = state.get("aliases", {}).get(turn_id, turn_id)
@@ -450,6 +460,12 @@ def dispatch(event: dict, backend=None, state_root: Path | None = None) -> dict:
                     _save(path, state)
             return {}
         if event_name == "Stop":
+            if turn.get("no_write"):
+                if not turn.get("counted"):
+                    turn["counted"] = True
+                    state["count"] = int(state.get("count", 0)) + 1
+                    _save(path, state)
+                return {}
             if not turn.get("reflect") and not turn.get("retries") and not event.get("stop_hook_active"):
                 turn["retries"] = 1
                 reason = "KUMIHO_LIFECYCLE_CONTINUE_" + _hash(identity[0] + original)[:16] + ": Call kumiho_memory_reflect with your final response and explicit captures, or [] if nothing durable. Do not repeat uncertain writes."

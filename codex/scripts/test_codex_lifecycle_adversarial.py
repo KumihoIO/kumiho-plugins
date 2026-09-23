@@ -82,10 +82,10 @@ def test_sensitive_prompt_is_not_automatically_sent_or_persisted(tmp_path):
 def test_off_and_private_turns_have_no_backend_calls_or_stop_continuation(tmp_path, monkeypatch):
     backend = Backend()
     monkeypatch.setenv("KUMIHO_MEMORY_OFF", "1")
-    assert prompt(backend, tmp_path) == {}
+    assert "recall=skipped; result=private" in prompt(backend, tmp_path)["hookSpecificOutput"]["additionalContext"]
     assert lifecycle.dispatch(event("Stop"), backend, tmp_path) == {}
     monkeypatch.delenv("KUMIHO_MEMORY_OFF")
-    assert prompt(backend, tmp_path, turn="private", text="Off record: tell me a joke") == {}
+    assert "recall=skipped; result=private" in prompt(backend, tmp_path, turn="private", text="Off record: tell me a joke")["hookSpecificOutput"]["additionalContext"]
     assert lifecycle.dispatch(event("Stop", turn="private"), backend, tmp_path) == {}
     assert backend.calls == []
 
@@ -106,7 +106,7 @@ def test_recall_empty_is_distinct_from_error(tmp_path):
     assert "no matching memories" in empty["hookSpecificOutput"]["additionalContext"].lower()
     backend.responses["kumiho_memory_engage"] = {"error": "offline"}
     failed = prompt(backend, tmp_path, turn="failed")
-    assert "failed" in failed.get("systemMessage", "").lower()
+    assert "KUMIHO_LIFECYCLE_RECEIPT: recall=failed; result=error" in failed["hookSpecificOutput"]["additionalContext"]
     assert "no matching memories" not in json.dumps(failed).lower()
 
 
@@ -115,7 +115,7 @@ def test_recall_empty_is_distinct_from_error(tmp_path):
 def test_malformed_engage_response_is_not_reported_as_valid_empty(tmp_path):
     backend = Backend({"kumiho_memory_engage": {}})
     result = prompt(backend, tmp_path)
-    assert "failed" in result.get("systemMessage", "").lower()
+    assert "KUMIHO_LIFECYCLE_RECEIPT: recall=failed; result=error" in result["hookSpecificOutput"]["additionalContext"]
 
 
 def test_repeated_same_prompt_event_does_not_duplicate_engage(tmp_path):
@@ -410,3 +410,11 @@ def test_code_why_transport_error_does_not_issue_receipt(tmp_path, monkeypatch):
         verdict = lifecycle.dispatch(edit, backend, state)
         assert verdict["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert [name for name, _ in backend.calls].count("kumiho_code_why") == 2
+
+
+def test_boolean_or_negative_engage_count_is_failure_receipt(tmp_path):
+    for turn, count in (("bool", True), ("negative", -1)):
+        backend = Backend({"kumiho_memory_engage": {"context": "incorrect", "results": [], "count": count}})
+        output = prompt(backend, tmp_path, turn=turn)
+        assert output["hookSpecificOutput"]["additionalContext"].startswith(
+            "KUMIHO_LIFECYCLE_RECEIPT: recall=failed; result=error")

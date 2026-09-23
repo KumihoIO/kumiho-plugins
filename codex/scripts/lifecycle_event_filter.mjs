@@ -7,7 +7,14 @@ const MAX_PATH_LENGTH = 1024;
 const MAX_ROWS = 128;
 const SAFE_KREF = /^kref:\/\/[^\s]{3,512}$/;
 const SAFE_SESSION = /^[A-Za-z0-9._:-]{1,256}$/;
-const PRIVATE_RE = /off[\s-]?record|do not (?:remember|store|recall)|don't (?:remember|store|recall)|기억하지\s*마|저장하지\s*마|비공개/i;
+const PRIVATE_RE = /off[\s-]?record|do not (?:remember|recall)|don't (?:remember|recall)|기억하지\s*마|비공개/i;
+const NO_WRITE_PATTERNS = [
+  /\b(?:do not|don't|never)\s+(?:save|store|write|record|capture|reflect)\s+(?:to|in)\s+memor(?:y|ies)\b/i,
+  /\b(?:do not|don't|never)\s+(?:save|store|write|record|capture|reflect|change|modify|update)(?:\s+or\s+(?:save|store|write|record|capture|reflect|change|modify|update))?\s+(?:any\s+)?memor(?:y|ies)\b/i,
+  /\b(?:do not|don't|never)\s+(?:save|store|write|record|capture|reflect)(?:\s+(?:this|that|it|anything)(?:\s+(?:to|in)\s+memor(?:y|ies))?)?(?=\s*(?:[.;,!?]|$))/i,
+  /\b(?:only|just)\s+recall\b[^.\n]{0,40}\bno\s+saving\b/i,
+  /(?:메모리|기억)(?:를|에)?\s*(?:저장|변경|수정)하지\s*마/i,
+];
 const SECRET_RE = /(?:\b(?:password|passwd|secret|credential|token|api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|private[_-]?key)\b\s*[:=]\s*\S+|\b(?:비밀번호|암호|토큰|비밀키|API키)\s*[:=]\s*\S+|\bbearer\s+[A-Za-z0-9._~+/-]{8,}|\b(?:sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{12,}|AKIA[A-Z0-9]{12,})\b|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|https?:\/\/[^\s/:@]+:[^\s/@]+@|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b)/i;
 
 const COMMON_STRING_LIMITS = {
@@ -276,6 +283,7 @@ export function sanitizeCodexLifecycleEvent(event) {
       clean.private = unsafe || isPrivate;
       clean.privacy_filtered = unsafe || isPrivate;
       if (!unsafe && !isPrivate) {
+        clean.no_write = NO_WRITE_PATTERNS.some((pattern) => pattern.test(event.prompt));
         const continuation = /^KUMIHO_LIFECYCLE_(?:CONTINUE|CONSOLIDATE)_[a-f0-9]{16}:/i.test(event.prompt);
         if (continuation) {
           clean.prompt_hash = createHash("sha256").update(event.prompt, "utf8").digest("hex");

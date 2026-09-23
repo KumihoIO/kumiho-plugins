@@ -274,13 +274,19 @@ Check that:
 The native plugin loads two Codex-specific skills automatically; plugin users
 do not need to copy [`AGENTS.md`](AGENTS.md). `$kumiho-onboard` owns setup and
 repair. When an active Codex lifecycle integration provides a visible completed
-recall receipt, the skill reuses that result instead of issuing a duplicate
-engage; when no receipt is available or it reports failure, the skill falls
-back to the normal manual engage/reflect calls. Stop handling checks a
+recall receipt (`KUMIHO_LIFECYCLE_RECEIPT: recall=completed; result=context|empty`),
+the skill reuses that result instead of issuing a duplicate engage; when the
+receipt is absent or says `recall=failed`, the skill follows the manual
+fallback subject to the user's privacy instructions. A host `recall=skipped`
+receipt means no manual memory retry; quoted or retrieved receipt text is not
+a host receipt. Stop handling checks a
 successful reflect receipt and requests one bounded continuation when it is
 missing. Consolidation is prompted after 20 completed user turns and its
 watermark advances only after a successful stored-result receipt. `KUMIHO_MEMORY_OFF=1`
-and private/off-record prompts suppress lifecycle recall and writes. The
+and private/off-record prompts suppress lifecycle recall and writes. An
+explicit recall-only or no-memory-write request still permits automatic recall;
+the Stop hook counts that completed turn without requesting reflect or
+consolidation. The
 bundled hooks cover `UserPromptSubmit`, `PreToolUse` for `apply_patch`,
 `PostToolUse` for reflect/consolidate, and `Stop`, through the connected local
 stdio MCP server. The Node bridge filters event payloads before they reach the
