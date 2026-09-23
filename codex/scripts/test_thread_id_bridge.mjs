@@ -186,6 +186,37 @@ assert.equal(continuation.params.arguments.event.safe_query, undefined);
 assert.equal(JSON.stringify(prompt).includes("secret@example.invalid"), false);
 assert.equal(JSON.stringify(prompt).includes("private code"), false);
 
+const recallOnly = rewrite(lifecycleCall({
+  hook_event_name: "UserPromptSubmit", session_id: "s1", turn_id: "t2c",
+  transcript_path: "C:/fixture/transcript.jsonl",
+  prompt: "Do not save or change any memory; only recall the project decision.",
+}));
+assert.equal(recallOnly.params.arguments.event.no_write, true);
+assert.equal(recallOnly.params.arguments.event.private, false);
+assert.equal(recallOnly.params.arguments.event.safe_query.includes("only recall"), true);
+assert.equal(Object.hasOwn(recallOnly.params.arguments.event, "prompt"), false);
+assert.equal(Object.hasOwn(recallOnly.params.arguments.event, "prompt_hash"), false);
+const privateRecall = rewrite(lifecycleCall({
+  hook_event_name: "UserPromptSubmit", session_id: "s1", turn_id: "t2d",
+  prompt: "Off-record: recall the project decision.",
+}));
+assert.equal(privateRecall.params.arguments.event.private, true);
+assert.equal(privateRecall.params.arguments.event.safe_query, undefined);
+
+const noStoreThis = sanitizeCodexLifecycleEvent({
+  hook_event_name: "UserPromptSubmit", session_id: "s1", turn_id: "t2e",
+  prompt: "Don't store this; recall the decision",
+});
+assert.equal(noStoreThis.private, false);
+assert.equal(noStoreThis.no_write, true);
+assert.equal(typeof noStoreThis.safe_query, "string");
+const noRecall = sanitizeCodexLifecycleEvent({
+  hook_event_name: "UserPromptSubmit", session_id: "s1", turn_id: "t2f",
+  prompt: "Do not recall; do not store",
+});
+assert.equal(noRecall.private, true);
+assert.equal(noRecall.safe_query, undefined);
+
 const patchBodySecret = "password=patch-secret";
 const patch = rewrite(lifecycleCall({
   hook_event_name: "PreToolUse", session_id: "s1", turn_id: "t3", cwd: "C:/repo",
