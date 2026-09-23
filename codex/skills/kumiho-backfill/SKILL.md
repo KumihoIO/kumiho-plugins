@@ -41,7 +41,8 @@ hand-edit old staging to bypass the refusal.
 2. Run `inventory manifest --since YYYY-MM-DD` if a date scope was supplied;
    otherwise omit `--since`. Then `inventory packetize --top 5`. Default to one
    five-session batch; do not exhaust all history automatically. Manifest
-   parsing is deterministic; read only the listed packets, one at a time,
+   parsing is deterministic and drops user turns marked off-record at the
+   time, with their replies; read only the listed packets, one at a time,
    never raw transcripts. `--source claude|all` and `--chatgpt-export <path>`
    on scan/manifest are opt-in. `--projects` filters Claude stores only; do not
    claim it filters Codex projects. For a narrower unsupported scope, stop

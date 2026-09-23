@@ -31,6 +31,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import state_home  # noqa: E402
+from reflex_privacy import classify  # noqa: E402
+
+_OMITTED = "*[Off-record or credential-bearing turn omitted]*"
 
 def _read_hook_input() -> dict:
     """Read the JSON payload from stdin.
@@ -120,6 +123,23 @@ def _parse_transcript(transcript_path: str) -> list[dict]:
         pass
 
     return exchanges
+
+
+def _redact_private(exchanges: list[dict]) -> list[dict]:
+    """Replace each off-record or credential-bearing user turn with a marker
+    and drop the assistant replies to it, up to the next user turn.
+
+    The artifact is local, but it is a verbatim copy that outlives the
+    session; a turn the user kept off the record should not be in it."""
+    kept: list[dict] = []
+    hiding = False
+    for ex in exchanges:
+        if ex["role"] == "user":
+            hiding = classify(ex["content"]) == "private"
+            kept.append({"role": "user", "content": _OMITTED} if hiding else ex)
+        elif not hiding:
+            kept.append(ex)
+    return kept
 
 
 def _extract_topics(exchanges: list[dict]) -> list[str]:
@@ -245,7 +265,7 @@ def main() -> int:
         # No transcript available — nothing to do
         return 0
 
-    exchanges = _parse_transcript(transcript_path)
+    exchanges = _redact_private(_parse_transcript(transcript_path))
 
     # Only generate artifacts for meaningful sessions (2+ exchanges)
     if len(exchanges) < 4:  # at least 2 user + 2 assistant messages

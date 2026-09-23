@@ -27,6 +27,7 @@ the session.
 """
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -35,6 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bounded_proc
+from reflex_privacy import classify
 
 LOCK_STALE_S = 900
 #: A repo-or-not probe reads one ref; slower than this is a stuck repo.
@@ -60,6 +62,35 @@ def _automine_enabled() -> bool:
     return (os.getenv("KUMIHO_MEMORY_CODE_AUTOMINE", "") or "").strip().lower() in (
         "1", "true", "yes", "on",
     )
+
+
+def _transcript_has_private_turn(transcript: str) -> bool:
+    """Did the user mark any turn off-record, or paste a credential?
+
+    Mining sends the WHOLE transcript to a model and writes what it finds to
+    the graph, so one off-record turn keeps the session out of it. Streamed
+    line by line; an unreadable transcript counts as private, since mining it
+    could not have worked either."""
+    try:
+        with open(transcript, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                message = entry.get("message") if isinstance(entry, dict) else None
+                if not isinstance(message, dict) or message.get("role") != "user":
+                    continue
+                content = message.get("content")
+                if isinstance(content, list):
+                    content = "\n".join(
+                        b.get("text", "") for b in content
+                        if isinstance(b, dict) and b.get("type") == "text")
+                if isinstance(content, str) and classify(content) == "private":
+                    return True
+    except OSError:
+        return True
+    return False
 
 
 def main() -> int:
@@ -116,6 +147,9 @@ def main() -> int:
         # unreachable in practice. Default is still OFF (double opt-in).
         if not _automine_enabled():
             log("skip: AUTOMINE off (set KUMIHO_MEMORY_CODE_AUTOMINE=1 to enable)")
+            return 0
+        if _transcript_has_private_turn(transcript):
+            log(f"skip: session {session_id} has an off-record or credential turn")
             return 0
         # The plugin chooses only the backend. Cloud auth, token refresh,
         # discovery, and regional routing belong to the Python SDK adapter.

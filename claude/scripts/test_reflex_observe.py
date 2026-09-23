@@ -293,3 +293,39 @@ def test_conf_survives_a_missing_or_corrupt_snapshot(tmp_path, monkeypatch):
 
 if __name__ == "__main__":
     sys.exit(subprocess.call([sys.executable, "-m", "pytest", __file__, "-q"]))
+
+
+def test_post_tool_use_records_reflect_with_a_receipt_flag(tmp_path):
+    """The reflect floor resets only on a reflect that stored every capture it
+    was given; an error or a short receipt leaves the floor running."""
+    base = {"hook_event_name": "PostToolUse", "prompt_id": "p9",
+            "tool_name": "mcp__plugin_kumiho-memory_kumiho-memory__kumiho_memory_reflect"}
+    two = {"captures": [{"type": "decision"}, {"type": "fact"}]}
+
+    def text(body):
+        return {"content": [{"type": "text", "text": json.dumps(body)}]}
+
+    cases = {
+        "r1": ({**two}, text({"buffered": True, "captures_stored": 2,
+                              "stored_krefs": ["kref://a", "kref://b"]}), True),
+        "r2": ({**two}, text({"buffered": True, "captures_stored": 1,
+                              "stored_krefs": ["kref://a"]}), False),
+        "r3": ({"captures": []}, text({"buffered": True, "captures_stored": 0,
+                                       "stored_krefs": []}), True),
+        "r4": ({**two}, text({"error": "Credential pattern detected"}), False),
+        "r5": ({**two}, {"isError": True, "content": []}, False),
+        "r6": ({**two}, None, True),
+        # Some hosts hand the content-block list over bare.
+        "r7": ({**two}, [{"type": "text", "text": json.dumps(
+            {"captures_stored": 2, "stored_krefs": ["kref://a", "kref://b"]})}], True),
+    }
+    for sid, (tool_input, resp, _) in cases.items():
+        payload = {**base, "session_id": sid, "tool_input": tool_input}
+        if resp is not None:
+            payload["tool_response"] = resp
+        _run_hook(payload, tmp_path)
+    for sid, (_, _, expected) in cases.items():
+        row = _ledger(tmp_path, sid)[0]
+        assert row["tool"] == "reflect" and row["ok"] is expected, sid
+    assert "Credential pattern" not in (tmp_path / "reflex" / "r4.turns.jsonl").read_text(
+        encoding="utf-8")

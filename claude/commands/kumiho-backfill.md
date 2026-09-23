@@ -36,6 +36,8 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/backfill_inventory.py"
 2. **Manifest + packets.** Run `INV manifest [--projects ...]`, then
    `INV packetize` (default top-25; honor a user-requested size). Packets are
    pre-anonymized excerpts at `~/.kumiho/backfill/packets/<session-id>.md`.
+   User turns the user marked off-record at the time, and the replies to them,
+   are dropped before packetizing.
 
 3. **Distill each packet** (this is your job — no other LLM is involved).
    Read one packet at a time and produce a captures file, then record it:

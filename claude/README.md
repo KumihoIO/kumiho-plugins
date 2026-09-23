@@ -3,7 +3,7 @@
 Persistent graph-native memory plugin for Claude. Runs a local Kumiho MCP
 server with `kumiho-memory` so Claude **remembers you across sessions**.
 
-Version: **0.23.2** | Requires: `kumiho>=0.12.2`, `kumiho-memory>=1.5.0`
+Version: **0.23.3** | Requires: `kumiho>=0.12.2`, `kumiho-memory>=1.5.0`
 (reused or installed automatically in `~/.kumiho/venv` — nothing to `pip install`)
 
 **OpenAI Codex** uses the parallel native package under `../codex`,
@@ -216,11 +216,11 @@ The plugin registers these hooks; all run automatically:
 | Hook | Script | Purpose |
 |------|--------|---------|
 | `SessionStart` | `session-bootstrap.py` | Injects the session card (identity lookup with the CE fallback, mandatory onboarding when identity is missing, the two reflexes, the live `session_id`), persists the session facts for the reflex, repairs a stale Desktop server entry |
-| `UserPromptSubmit` | `memory-reflex.py` | Injects prefetched recall from the local cache, the reflect floor, and the keyless consolidation floor (`KUMIHO_REFLEX_CONSOLIDATE_FLOOR`) |
+| `UserPromptSubmit` | `memory-reflex.py` | Injects prefetched recall from the local cache, the reflect floor, and the keyless consolidation floor (`KUMIHO_REFLEX_CONSOLIDATE_FLOOR`). An off-record or credential-bearing prompt gets no recall and no nudge, and its text is not stored; a recall-only / do-not-save prompt keeps recall but drops the write nudges |
 | `SubagentStart` | `memory-reflex.py --subagent` | Hands subagents the memory rules and the live `session_id` |
-| `Stop` | `reflex-observe.py` | Ledgers the completed turn and spawns the detached recall prefetch |
-| `PostToolUse` | `reflex-observe.py`, `code-capture-hook.py` | Ledgers engage / reflect / consolidate calls (consolidate with an `ok` flag); queues commits for Decision Memory after `git commit` |
-| `SessionEnd` | `save-session-artifact.py`, `code-capture-hook.py` | Saves the conversation as a local Markdown artifact; drains queued commit captures |
+| `Stop` | `reflex-observe.py` | Ledgers the completed turn and spawns the detached recall prefetch (skipped after an off-record turn) |
+| `PostToolUse` | `reflex-observe.py`, `code-capture-hook.py` | Ledgers engage / reflect / consolidate calls with an `ok` flag (reflect: a stored kref for every capture; consolidate: `success: true`), so a failed write does not reset its floor; queues commits for Decision Memory after `git commit` |
+| `SessionEnd` | `save-session-artifact.py`, `code-capture-hook.py` | Saves the conversation as a local Markdown artifact, with off-record and credential-bearing exchanges replaced by an omission marker; drains queued commit captures |
 | `PermissionRequest` | `auto-approve-memory.py` | Auto-approves Kumiho memory MCP tool calls (`kumiho_*`) |
 
 Every hook runs under `${CLAUDE_PLUGIN_DATA}/venv/bin/pythonw`, a compatibility
@@ -266,6 +266,8 @@ KUMIHO_MEMORY_CODE_AUTOMINE=1   # also mine sessions at session end (default off
 Because AUTOMINE sends the raw session transcript through the configured LLM
 path, Claude host launches accept this opt-in only from the OS user's persistent
 environment or user-global `~/.claude/settings*.json`, never from a project.
+A session in which any user turn was off-record or carried a credential is not
+mined at all.
 
 Before editing unfamiliar code, ask `kumiho_code_why` for the file first —
 never re-litigate a decision the graph already explains.
@@ -657,6 +659,7 @@ python ./claude/scripts/test_ce_mode.py
 │   ├── code_ingest_worker.py     # Detached commit-ingest worker
 │   ├── session_mine_worker.py    # Detached session-mining worker
 │   ├── reflex_prefetch_worker.py # Detached recall prefetch for the reflex
+│   ├── reflex_privacy.py         # Off-record / credential / recall-only prompt classifier
 │   ├── reflex_state.py           # Shared reflex state/config helpers
 │   ├── backfill_inventory.py     # History Backfill stage-1 tooling (no LLM)
 │   ├── backfill_ingest.py        # History Backfill ingest driver

@@ -149,6 +149,59 @@ def _tool_ok(payload: dict) -> bool:
     ))
 
 
+def _result_dicts(value, depth: int = 0) -> list:
+    """Every JSON object in a tool response, whatever envelope carried it.
+
+    MCP results reach the hook as a dict, a content-block list, or JSON text
+    inside a text block, depending on the host version; walking them all keeps
+    the check shape-agnostic, the way _tool_ok's substring search is."""
+    if depth > 4:
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+    if isinstance(value, list):
+        return [d for item in value[:32] for d in _result_dicts(item, depth + 1)]
+    if not isinstance(value, dict):
+        return []
+    found = [value]
+    for key in ("content", "text", "structuredContent", "result"):
+        if key in value:
+            found += _result_dicts(value[key], depth + 1)
+    return found
+
+
+def _reflect_ok(payload: dict) -> bool:
+    """Did the reflect return a receipt for every capture it was given?
+
+    Mirrors the Codex lifecycle receipt check: an error envelope, a queued or
+    backend-errored write, or fewer stored krefs than captures is not a reflect,
+    so it must not reset the reflect floor. A response the hook never saw is
+    unknown, not a failure, same as _tool_ok."""
+    resp = payload.get("tool_response")
+    if resp is None:
+        return True
+    rows = _result_dicts(resp)
+    if any(d.get("isError") is True or d.get("is_error") is True for d in rows):
+        return False
+    receipts = [d for d in rows if "captures_stored" in d or "buffered" in d]
+    if not receipts:
+        return False
+    receipt = receipts[0]
+    if (receipt.get("error") or receipt.get("backend_error")
+            or receipt.get("queued") is True or receipt.get("success") is False):
+        return False
+    args = payload.get("tool_input")
+    captures = args.get("captures") if isinstance(args, dict) else None
+    if isinstance(captures, list):
+        refs = receipt.get("stored_krefs")
+        return (receipt.get("captures_stored") == len(captures)
+                and isinstance(refs, list) and len(refs) == len(captures))
+    return True
+
+
 def _on_tool(payload: dict, session_id: str) -> None:
     tool = str(payload.get("tool_name") or "")
     if not tool:
@@ -167,6 +220,8 @@ def _on_tool(payload: dict, session_id: str) -> None:
     }
     if short == "consolidate":
         entry["ok"] = _tool_ok(payload)
+    elif short == "reflect":
+        entry["ok"] = _reflect_ok(payload)
     rs.append_jsonl(_ledger_path(session_id), entry)
 
 

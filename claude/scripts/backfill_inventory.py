@@ -128,6 +128,34 @@ def anonymize(text: str) -> str:
     return text
 
 
+# Off-record turns. Same pattern as reflex_privacy.PRIVATE_RE (the live hooks'
+# classifier), inlined because this file runs pre-install and ships vendored
+# into the Codex plugin; test_reflex_privacy pins the two together. Credential
+# shapes are not needed here: anonymize() already masks them in packets.
+_OFF_RECORD_RE = re.compile(
+    r"\boff[\s-]?(?:the[\s-]+)?record\b|do not (?:remember|recall)|don't (?:remember|recall)"
+    r"|오프\s*더\s*레코드|기억하지\s*(?:마|말)"
+    r"|(?:이건|이거는|이 얘기는|이 내용은|지금부터|여기부터)\s*비공개(?:야|예요|이야|입니다|로\s*해\s*줘|로)?\s*(?:[.,!~]|$)"
+    r"|비공개로\s*(?:해\s*줘|하자|할게|얘기|말할게|부탁)",
+    re.IGNORECASE,
+)
+
+
+def _drop_off_record_turns(messages: list) -> list:
+    """Remove each off-record user turn and the assistant replies to it.
+
+    The user marked those turns as not for memory at the time; mining them
+    now would undo that. Everything up to the next user turn is dropped, so
+    the reply cannot leak what the prompt asked to keep out."""
+    kept, hiding = [], False
+    for ts, role, text in messages:
+        if role == "user":
+            hiding = bool(_OFF_RECORD_RE.search(text))
+        if not hiding:
+            kept.append((ts, role, text))
+    return kept
+
+
 def backfill_home() -> Path:
     override = os.getenv("KUMIHO_BACKFILL_HOME", "").strip()
     return Path(override).expanduser() if override else Path.home() / ".kumiho" / "backfill"
@@ -282,6 +310,7 @@ def parse_claude_session(path: Path) -> dict | None:
                 if text.strip():
                     messages.append((ts, "assistant", text))
 
+    messages = _drop_off_record_turns(messages)
     human_msgs = sum(1 for _, role, _ in messages if role == "user")
     if human_msgs == 0:
         return None
@@ -410,6 +439,7 @@ def parse_codex_session(path: Path) -> dict | None:
             else:
                 dropped["empty_assistant"] += 1
 
+    messages = _drop_off_record_turns(messages)
     human_msgs = sum(1 for _, role, _ in messages if role == "user")
     if human_msgs == 0:
         return None
@@ -483,7 +513,8 @@ def _parse_chatgpt_conversation(conv: dict) -> dict | None:
             continue
         turns.append((float(msg.get("create_time") or 0.0), role, text))
     turns.sort(key=lambda x: x[0])
-    messages = [(_epoch_iso(ct), role, text) for ct, role, text in turns]
+    messages = _drop_off_record_turns(
+        [(_epoch_iso(ct), role, text) for ct, role, text in turns])
     human_msgs = sum(1 for _, r, _ in messages if r == "user")
     if human_msgs == 0:
         return None
