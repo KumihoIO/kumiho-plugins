@@ -114,3 +114,85 @@ def test_ordinary_session_still_reaches_mining(tmp_path, monkeypatch):
     runtime, log = _run_mine(tmp_path, monkeypatch, t)
     assert runtime == [True]
     assert "off-record" not in log
+
+
+# ------------------------------------------------------------------ backfill
+
+def test_backfill_pattern_is_pinned_to_the_live_classifier():
+    """backfill_inventory inlines the pattern (it runs pre-install and ships
+    vendored into Codex); the two copies must never drift apart."""
+    import backfill_inventory as inv
+    from reflex_privacy import PRIVATE_RE
+    assert inv._OFF_RECORD_RE.pattern == PRIVATE_RE.pattern
+    assert inv._OFF_RECORD_RE.flags == PRIVATE_RE.flags
+
+
+def test_backfill_drops_off_record_turns_and_their_replies(tmp_path):
+    import backfill_inventory as inv
+
+    def rec(role, ts, text):
+        return {"type": role, "timestamp": ts, "sessionId": "s-priv",
+                "cwd": "/home/u/proj", "userType": "external", "entrypoint": "cli",
+                "message": {"role": role, "content": text}}
+
+    path = tmp_path / "s-priv.jsonl"
+    path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in (
+        rec("user", "2026-09-01T10:00:00Z", "Which cache should we use?"),
+        rec("assistant", "2026-09-01T10:01:00Z", "We picked Redis for the queue."),
+        rec("user", "2026-09-01T10:02:00Z", "off the record: 연봉 협상은 7천으로 하려고"),
+        rec("assistant", "2026-09-01T10:03:00Z", "7천이면 적정 범위입니다."),
+        rec("assistant", "2026-09-01T10:03:30Z", "협상 팁도 드릴게요."),
+        rec("user", "2026-09-01T10:04:00Z", "ok back to the cache"),
+        rec("assistant", "2026-09-01T10:05:00Z", "Redis it is."),
+    )), encoding="utf-8")
+    meta = inv.parse_claude_session(path)
+    text = " ".join(t for _, _, t in meta["messages"])
+    assert "연봉" not in text and "7천" not in text and "협상" not in text
+    assert "Redis for the queue" in text and "Redis it is" in text
+    assert meta["human_msgs"] == 2
+    assert "7천" not in inv.build_packet(meta)
+
+
+def test_backfill_session_that_is_entirely_off_record_is_skipped(tmp_path):
+    import backfill_inventory as inv
+    msgs = [("t1", "user", "이건 오프 더 레코드인데"), ("t2", "assistant", "네")]
+    assert inv._drop_off_record_turns(msgs) == []
+
+
+# ------------------------------------------------------- SessionEnd artifact
+
+def _load_artifact_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "save_session_artifact", SCRIPTS / "save-session-artifact.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_session_artifact_omits_off_record_exchanges(tmp_path, monkeypatch):
+    mod = _load_artifact_module()
+    transcript = tmp_path / "t.jsonl"
+    rows = [
+        ("user", "Which cache should we use?"),
+        ("assistant", "We picked Redis for the queue."),
+        ("user", "이건 기억하지 말고, 연봉 7천 괜찮을까?"),
+        ("assistant", "7천이면 적정 범위입니다."),
+        ("user", "deploy with password=hunter2-secret"),
+        ("assistant", "Configured with hunter2-secret."),
+        ("user", "ok back to the cache"),
+        ("assistant", "Redis it is."),
+    ]
+    transcript.write_text("".join(json.dumps({"message": {"role": r, "content": t}},
+                                              ensure_ascii=False) + "\n" for r, t in rows),
+                          encoding="utf-8")
+    out = tmp_path / "artifacts"
+    monkeypatch.setattr(mod, "_artifact_dir", lambda: out)
+    monkeypatch.setattr(mod, "_read_hook_input", lambda: {
+        "session_id": "sess-art", "transcript_path": str(transcript)})
+    assert mod.main() == 0
+    md = next(out.rglob("sess-art.md")).read_text(encoding="utf-8")
+    for leaked in ("연봉", "7천", "hunter2"):
+        assert leaked not in md
+    assert md.count("turn omitted") == 2
+    assert "Redis for the queue" in md and "Redis it is" in md

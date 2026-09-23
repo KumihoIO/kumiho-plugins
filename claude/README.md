@@ -220,7 +220,7 @@ The plugin registers these hooks; all run automatically:
 | `SubagentStart` | `memory-reflex.py --subagent` | Hands subagents the memory rules and the live `session_id` |
 | `Stop` | `reflex-observe.py` | Ledgers the completed turn and spawns the detached recall prefetch (skipped after an off-record turn) |
 | `PostToolUse` | `reflex-observe.py`, `code-capture-hook.py` | Ledgers engage / reflect / consolidate calls with an `ok` flag (reflect: a stored kref for every capture; consolidate: `success: true`), so a failed write does not reset its floor; queues commits for Decision Memory after `git commit` |
-| `SessionEnd` | `save-session-artifact.py`, `code-capture-hook.py` | Saves the conversation as a local Markdown artifact; drains queued commit captures |
+| `SessionEnd` | `save-session-artifact.py`, `code-capture-hook.py` | Saves the conversation as a local Markdown artifact, with off-record and credential-bearing exchanges replaced by an omission marker; drains queued commit captures |
 | `PermissionRequest` | `auto-approve-memory.py` | Auto-approves Kumiho memory MCP tool calls (`kumiho_*`) |
 
 Every hook runs under `${CLAUDE_PLUGIN_DATA}/venv/bin/pythonw`, a compatibility
