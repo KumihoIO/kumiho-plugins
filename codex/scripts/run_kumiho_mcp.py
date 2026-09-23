@@ -66,15 +66,15 @@ CLOUD_ROUTING_ENV = (
     "KUMIHO_ENV_FILE",
 )
 
-#: Resolution order: the monorepo-relative claude launcher (dev checkouts —
-#: always the freshest), then the vendored copy shipped inside this plugin
-#: (marketplace snapshots copy only the plugin directory, so ../claude does
-#: not exist there). test_launcher_parity.py guards the vendored copy
-#: against drifting from the canonical claude/scripts version.
+#: Prefer the vendored launcher in both a full checkout and a marketplace
+#: snapshot. Its Codex-local runner registers the native lifecycle tool;
+#: selecting the monorepo Claude sibling would silently omit that tool.
+#: test_launcher_parity.py guards the shared launcher bytes and the single
+#: documented Codex-only registration difference.
 _LAUNCHER_CANDIDATES = (
+    Path(__file__).resolve().parent / "_vendored_launcher.py",
     Path(__file__).resolve().parent.parent.parent
     / "claude" / "scripts" / "run_kumiho_mcp.py",
-    Path(__file__).resolve().parent / "_vendored_launcher.py",
 )
 
 

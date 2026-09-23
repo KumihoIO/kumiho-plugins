@@ -114,6 +114,18 @@ def test_adapters_forward_before_same_module_serves(monkeypatch, host, backend, 
     assert served[0]["kumiho_memory_record_experience"]["readOnlyHint"] is False
 
 
-def test_claude_codex_helpers_are_identical():
-    assert (ROOT / "claude/scripts/sdk_tool_annotations.py").read_bytes() == (
-        ROOT / "codex/scripts/sdk_tool_annotations.py").read_bytes()
+def test_claude_codex_helpers_have_only_documented_lifecycle_registration():
+    # Codex intentionally registers its native lifecycle MCP tool. Remove
+    # exactly that host-gated block; the shared annotation helper must still
+    # match Claude byte-for-byte after newline normalization.
+    canonical = (ROOT / "claude/scripts/sdk_tool_annotations.py").read_text(
+        encoding="utf-8").replace("\r\n", "\n")
+    codex = (ROOT / "codex/scripts/sdk_tool_annotations.py").read_text(
+        encoding="utf-8").replace("\r\n", "\n")
+    addition = (
+        "    if os.getenv('KUMIHO_CLAUDE_HOST') == 'codex':\n"
+        "        from codex_lifecycle import install_codex_lifecycle\n"
+        "        install_codex_lifecycle(server)\n"
+    )
+    assert codex.count(addition) == 1
+    assert codex.replace("import os\n", "", 1).replace(addition, "", 1) == canonical

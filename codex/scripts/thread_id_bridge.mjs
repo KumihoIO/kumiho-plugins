@@ -1,5 +1,6 @@
 import { StringDecoder } from "node:string_decoder";
 import { Transform } from "node:stream";
+import { sanitizeCodexLifecycleEvent } from "./lifecycle_event_filter.mjs";
 
 // Private wire carrier removed by codex_thread_context.py before a Kumiho tool
 // handler sees its arguments. It deliberately is NOT public `session_id`:
@@ -62,6 +63,20 @@ function bridgeOneMessage(message) {
   if (!params || typeof params !== "object" || Array.isArray(params)) {
     return message;
   }
+  if (params.name === "kumiho_codex_lifecycle") {
+    const rawArgs = params.arguments;
+    const rawEvent = rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)
+      ? rawArgs.event
+      : undefined;
+    return {
+      ...message,
+      params: {
+        ...params,
+        arguments: { event: sanitizeCodexLifecycleEvent(rawEvent) },
+      },
+    };
+  }
+
   const current = params.arguments;
   if (current !== undefined && current !== null &&
       (typeof current !== "object" || Array.isArray(current))) {

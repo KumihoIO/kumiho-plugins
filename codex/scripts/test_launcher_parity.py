@@ -38,7 +38,6 @@ VENDORED = _HERE / "_vendored_launcher.py"
 VENDORED_DEPS = (
     "bounded_proc.py",
     "codex_thread_context.py",
-    "sdk_tool_annotations.py",
     "run_kumiho_ce.py",
     "run_kumiho_cloud.py",
 )
@@ -102,6 +101,22 @@ def test_vendored_launcher_dependencies_match_canonical():
             f"vendored {name} drifted from canonical — fix: "
             f"cp claude/scripts/{name} codex/scripts/{name}"
         )
+
+
+def test_codex_annotations_have_only_the_documented_lifecycle_registration():
+    """Codex has one intentional host-only registration; all other code stays in parity."""
+    if not CANONICAL.exists():
+        return
+    canonical = _normalized(CANONICAL.parent / "sdk_tool_annotations.py").decode("utf-8")
+    vendored = _normalized(_HERE / "sdk_tool_annotations.py").decode("utf-8")
+    vendored = vendored.replace("import os\n", "", 1)
+    addition = (
+        "    if os.getenv('KUMIHO_CLAUDE_HOST') == 'codex':\n"
+        "        from codex_lifecycle import install_codex_lifecycle\n"
+        "        install_codex_lifecycle(server)\n"
+    )
+    assert addition in vendored
+    assert vendored.replace(addition, "", 1) == canonical
 
 
 def test_manifest_versions_locked():
