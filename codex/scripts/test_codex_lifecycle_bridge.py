@@ -39,7 +39,7 @@ def filtered(event):
         "process.stdin.on('end',()=>process.stdout.write(JSON.stringify(sanitizeCodexLifecycleEvent(JSON.parse(data)))));"
     )
     result = subprocess.run([NODE, "--input-type=module", "-e", script], cwd=HERE.parents[1],
-                            input=json.dumps(event), text=True, capture_output=True, check=True, timeout=10)
+                            input=json.dumps(event, ensure_ascii=True), text=True, encoding="utf-8", capture_output=True, check=True, timeout=10)
     clean = json.loads(result.stdout)
     assert clean["_kumiho_filtered"] is True
     assert "prompt" not in clean and "tool_response" not in clean
@@ -49,6 +49,37 @@ def filtered(event):
 def base(kind, *, turn="turn-1", **extra):
     return {"hook_event_name": kind, "session_id": "thread-a", "turn_id": turn,
             "transcript_path": "C:/codex/transcript/parent.jsonl", "cwd": str(HERE.parents[1]), **extra}
+
+
+def test_shared_codex_claude_privacy_cases():
+    cases = json.loads((HERE.parents[1] / "tests/fixtures/lifecycle-privacy-cases.json").read_text(encoding="utf-8"))
+    expected_flags = {"private": (True, False), "no_write": (False, True), "": (False, False)}
+    for case in cases:
+        clean = filtered(base("UserPromptSubmit", prompt=case["prompt"]))
+        assert (clean.get("private", False), clean.get("no_write", False)) == expected_flags[case["expected"]], case["id"]
+        if case["expected"] == "private":
+            assert "safe_query" not in clean, case["id"]
+        else:
+            assert "safe_query" in clean, case["id"]
+        assert lifecycle._classify_prompt(case["prompt"]) == expected_flags[case["expected"]], case["id"]
+
+
+def test_python_fallback_classifies_private_and_no_write_separately(tmp_path):
+    private_backend = Backend()
+    private_event = base("UserPromptSubmit", prompt="이건 오프 더 레코드인데 비밀번호=fixture-secret")
+    private_result = lifecycle.dispatch(private_event, private_backend, tmp_path / "private")
+    assert "recall=skipped; result=private" in private_result["hookSpecificOutput"]["additionalContext"]
+    assert private_backend.calls == []
+
+    no_write_backend = Backend()
+    no_write_event = base("UserPromptSubmit", turn="no-write", prompt="이건 저장하지 말고 알려줘")
+    no_write_result = lifecycle.dispatch(no_write_event, no_write_backend, tmp_path / "no-write")
+    assert "recall=completed" in no_write_result["hookSpecificOutput"]["additionalContext"]
+    assert [name for name, _ in no_write_backend.calls] == ["kumiho_memory_engage"]
+    state_files = list((tmp_path / "no-write").glob("*.json"))
+    assert len(state_files) == 1
+    state = json.loads(state_files[0].read_text(encoding="utf-8"))
+    assert state["turns"]["no-write"]["no_write"] is True
 
 
 def test_safe_prompt_empty_reflect_and_stop(tmp_path):

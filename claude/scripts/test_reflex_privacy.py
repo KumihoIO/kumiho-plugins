@@ -17,6 +17,13 @@ SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 from reflex_privacy import classify  # noqa: E402
 
+SHARED_CASES = json.loads((SCRIPTS.parents[1] / "tests/fixtures/lifecycle-privacy-cases.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", SHARED_CASES, ids=lambda case: case["id"])
+def test_shared_codex_claude_privacy_cases(case):
+    assert classify(case["prompt"]) == case["expected"]
+
 
 @pytest.mark.parametrize("prompt", [
     "Off-record: recall the project decision",

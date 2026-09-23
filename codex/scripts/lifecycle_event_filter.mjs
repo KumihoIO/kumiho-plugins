@@ -7,15 +7,16 @@ const MAX_PATH_LENGTH = 1024;
 const MAX_ROWS = 128;
 const SAFE_KREF = /^kref:\/\/[^\s]{3,512}$/;
 const SAFE_SESSION = /^[A-Za-z0-9._:-]{1,256}$/;
-const PRIVATE_RE = /off[\s-]?record|do not (?:remember|recall)|don't (?:remember|recall)|기억하지\s*마|비공개/i;
+const PRIVATE_RE = /\boff[\s-]?(?:the[\s-]+)?record\b|do not (?:remember|recall)|don't (?:remember|recall)|오프\s*더\s*레코드|기억하지\s*(?:마|말)|(?:이건|이거는|이 얘기는|이 내용은|지금부터|여기부터)\s*비공개(?:야|예요|이야|입니다|로\s*해\s*줘|로)?\s*(?:[.,!~]|$)|비공개로\s*(?:해\s*줘|하자|할게|얘기|말할게|부탁)/i;
 const NO_WRITE_PATTERNS = [
   /\b(?:do not|don't|never)\s+(?:save|store|write|record|capture|reflect)\s+(?:to|in)\s+memor(?:y|ies)\b/i,
   /\b(?:do not|don't|never)\s+(?:save|store|write|record|capture|reflect|change|modify|update)(?:\s+or\s+(?:save|store|write|record|capture|reflect|change|modify|update))?\s+(?:any\s+)?memor(?:y|ies)\b/i,
   /\b(?:do not|don't|never)\s+(?:save|store|write|record|capture|reflect)(?:\s+(?:this|that|it|anything)(?:\s+(?:to|in)\s+memor(?:y|ies))?)?(?=\s*(?:[.;,!?]|$))/i,
   /\b(?:only|just)\s+recall\b[^.\n]{0,40}\bno\s+saving\b/i,
-  /(?:메모리|기억)(?:를|에)?\s*(?:저장|변경|수정)하지\s*마/i,
+  /(?:메모리|기억)(?:를|에)?\s*(?:(?:저장|변경|수정|기록)하지|쓰지)\s*(?:마|말)/i,
+  /(?:이건|이거는?|이 내용은?|이 얘기는?)\s*(?:저장|기록)하지\s*(?:마|말)/i,
 ];
-const SECRET_RE = /(?:\b(?:password|passwd|secret|credential|token|api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|private[_-]?key)\b\s*[:=]\s*\S+|\b(?:비밀번호|암호|토큰|비밀키|API키)\s*[:=]\s*\S+|\bbearer\s+[A-Za-z0-9._~+/-]{8,}|\b(?:sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{12,}|AKIA[A-Z0-9]{12,})\b|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|https?:\/\/[^\s/:@]+:[^\s/@]+@|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b)/i;
+const SECRET_RE = /(?:\b(?:password|passwd|secret|credential|token|api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|private[_-]?key)\b\s*[:=]\s*\S+|(?:비밀번호|암호|토큰|비밀키|API키)\s*[:=]\s*\S+|\bbearer\s+[A-Za-z0-9._~+/-]{8,}|\b(?:sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{12,}|AKIA[A-Z0-9]{12,})\b|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|https?:\/\/[^\s/:@]+:[^\s/@]+@|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b)/i;
 
 const COMMON_STRING_LIMITS = {
   session_id: 256,

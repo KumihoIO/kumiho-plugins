@@ -1,0 +1,16 @@
+[
+  {"id":"korean_password_colon","prompt":"배포 봐줘 비밀번호: fixture-secret","expected":"private"},
+  {"id":"korean_password_equals","prompt":"비밀번호=fixture-secret","expected":"private"},
+  {"id":"english_off_the_record","prompt":"off the record, what do you think?","expected":"private"},
+  {"id":"korean_off_record","prompt":"이건 오프 더 레코드인데","expected":"private"},
+  {"id":"korean_do_not_remember","prompt":"이건 기억하지 말고 그냥 답해","expected":"private"},
+  {"id":"english_do_not_recall","prompt":"Do not recall this conversation.","expected":"private"},
+  {"id":"off_recording_is_not_private","prompt":"turn off recording in OBS","expected":""},
+  {"id":"private_repository_is_not_private","prompt":"비공개 저장소 하나 만들어줘","expected":""},
+  {"id":"conversation_private","prompt":"이 대화는 비공개로 해 줘","expected":"private"},
+  {"id":"korean_no_save","prompt":"이건 저장하지 말고 알려줘","expected":"no_write"},
+  {"id":"korean_no_memory_write","prompt":"메모리에 쓰지 마","expected":"no_write"},
+  {"id":"korean_no_record","prompt":"기억에 기록하지 말아줘","expected":"no_write"},
+  {"id":"english_no_store","prompt":"Do not store this; just answer.","expected":"no_write"},
+  {"id":"ordinary_record_word","prompt":"The record label changed.","expected":""}
+]

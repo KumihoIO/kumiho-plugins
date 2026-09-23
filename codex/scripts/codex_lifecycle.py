@@ -64,8 +64,30 @@ def _state_lock(path):
     finally:
         local.release()
 
-_SECRET = re.compile(r"(?i)(?:\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|token|auth(?:orization)?|private[_-]?key)\b\s*[:=]|\b(?:sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{12,}|AKIA[A-Z0-9]{12,})\b|https?://\S+:\S+@)")
-_PRIVATE = re.compile(r"(?i)off[\s-]?record|do not (?:remember|store|recall)|don't (?:remember|store|recall)|기억하지\s*마|저장하지\s*마|비공개")
+_MAX_PROMPT_SCAN_CHARS = 262144
+_SECRET = re.compile(r"(?i)(?:\b(?:password|passwd|secret|credential|api[_-]?key|access[_-]?token|refresh[_-]?token|token|auth(?:orization)?|private[_-]?key)\b\s*[:=]\s*\S+|(?:비밀번호|암호|토큰|비밀키|API키|인증키)\s*[:=]\s*\S+|\bbearer\s+[A-Za-z0-9._~+/-]{8,}|\b(?:sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{12,}|AKIA[A-Z0-9]{12,})\b|https?://[^\s/:@]+:[^\s/@]+@|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)")
+_PRIVATE = re.compile(
+    r"(?i)\boff[\s-]?(?:the[\s-]+)?record\b|do not (?:remember|recall)|don't (?:remember|recall)"
+    r"|오프\s*더\s*레코드|기억하지\s*(?:마|말)"
+    r"|(?:이건|이거는|이 얘기는|이 내용은|지금부터|여기부터)\s*비공개(?:야|예요|이야|입니다|로\s*해\s*줘|로)?\s*(?:[.,!~]|$)"
+    r"|비공개로\s*(?:해\s*줘|하자|할게|얘기|말할게|부탁)"
+)
+_NO_WRITE_PATTERNS = (
+    re.compile(r"\b(?:do not|don't|never)\s+(?:save|store|write|record|capture|reflect)\s+(?:to|in)\s+memor(?:y|ies)\b", re.I),
+    re.compile(r"\b(?:do not|don't|never)\s+(?:save|store|write|record|capture|reflect|change|modify|update)(?:\s+or\s+(?:save|store|write|record|capture|reflect|change|modify|update))?\s+(?:any\s+)?memor(?:y|ies)\b", re.I),
+    re.compile(r"\b(?:do not|don't|never)\s+(?:save|store|write|record|capture|reflect)(?:\s+(?:this|that|it|anything)(?:\s+(?:to|in)\s+memor(?:y|ies))?)?(?=\s*(?:[.;,!?]|$))", re.I),
+    re.compile(r"\b(?:only|just)\s+recall\b[^.\n]{0,40}\bno\s+saving\b", re.I),
+    re.compile(r"(?:메모리|기억)(?:를|에)?\s*(?:(?:저장|변경|수정|기록)하지|쓰지)\s*(?:마|말)", re.I),
+    re.compile(r"(?:이건|이거는?|이 내용은?|이 얘기는?)\s*(?:저장|기록)하지\s*(?:마|말)", re.I),
+)
+
+
+def _classify_prompt(prompt):
+    if not isinstance(prompt, str):
+        return True, False
+    if len(prompt) > _MAX_PROMPT_SCAN_CHARS or _SECRET.search(prompt) or _PRIVATE.search(prompt):
+        return True, False
+    return False, any(pattern.search(prompt) for pattern in _NO_WRITE_PATTERNS)
 _KREF = re.compile(r"^kref://[^\s]{3,512}$")
 
 def _hash(value):
@@ -368,8 +390,12 @@ def dispatch(event: dict, backend=None, state_root: Path | None = None) -> dict:
             if turn_id in turns or turn_id in state.get("aliases", {}):
                 return {}
             state["current"] = turn_id
-            private = event.get("private") is True if filtered else bool(_PRIVATE.search(prompt))
-            turn = {"private": private, "no_write": event.get("no_write") is True,
+            if filtered:
+                private = event.get("private") is True
+                no_write = event.get("no_write") is True
+            else:
+                private, no_write = _classify_prompt(prompt)
+            turn = {"private": private, "no_write": no_write,
                     "recall": "pending", "reflect": False, "consolidate": False,
                     "retries": 0, "counted": False}
             turns[turn_id] = turn
