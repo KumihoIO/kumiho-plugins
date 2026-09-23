@@ -44,7 +44,7 @@ NO_WRITE_PATTERNS = (
 
 SECRET_RE = re.compile(
     r"(?:\b(?:password|passwd|secret|credential|token|api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|private[_-]?key)\b\s*[:=]\s*\S+"
-    r"|\b(?:비밀번호|암호|토큰|비밀키|API키)\s*[:=]\s*\S+"
+    r"|(?:비밀번호|암호|토큰|비밀키|API키)\s*[:=]\s*\S+"
     r"|\bbearer\s+[A-Za-z0-9._~+/-]{8,}"
     r"|\b(?:sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{12,}|AKIA[A-Z0-9]{12,})\b"
     r"|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"
