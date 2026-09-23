@@ -273,10 +273,29 @@ Check that:
 
 The native plugin loads two Codex-specific skills automatically; plugin users
 do not need to copy [`AGENTS.md`](AGENTS.md). `$kumiho-onboard` owns setup and
-repair. The memory skill loads the published identity once per session,
-performs first-meeting identity onboarding only after two definitive not-found
-lookups, recalls relevant context, reflects durable decisions and preferences,
-and asks `kumiho_code_why` before modifying unfamiliar code.
+repair. When an active Codex lifecycle integration provides a visible completed
+recall receipt, the skill reuses that result instead of issuing a duplicate
+engage; when no receipt is available or it reports failure, the skill falls
+back to the normal manual engage/reflect calls. Stop handling checks a
+successful reflect receipt and requests one bounded continuation when it is
+missing. Consolidation is prompted after 20 completed user turns and its
+watermark advances only after a successful stored-result receipt. `KUMIHO_MEMORY_OFF=1`
+and private/off-record prompts suppress lifecycle recall and writes. The
+bundled hooks cover `UserPromptSubmit`, `PreToolUse` for `apply_patch`,
+`PostToolUse` for reflect/consolidate, and `Stop`, through the connected local
+stdio MCP server. The Node bridge filters event payloads before they reach the
+Python SDK logger. The pre-edit `kumiho_code_why` guard extracts up to eight paths from supported
+`apply_patch` edits. Shell and specialized write tools still require the
+agent-driven code-why instruction.
+
+Codex does not automatically trust plugin hooks. The user must review and trust
+the current hook definition before bundled hooks can run, and lifecycle behavior
+is unavailable when the hook or its connected MCP server is unavailable;
+hook/runtime errors can also prevent a receipt, so use the manual protocol
+when no completion receipt is visible. The
+native marketplace packaging and stdio registration were smoke-tested with
+Codex CLI 0.156.0 in an isolated temporary `CODEX_HOME`; this does not establish
+desktop hook execution or coverage of shell/direct-write paths.
 
 Recall is deliberately bounded: the Codex skill makes one targeted,
 summarized engage call (normally up to three results), keeps only the short

@@ -1,0 +1,21 @@
+{
+  "description": "Codex memory lifecycle through the plugin's local stdio MCP process; Node filters event content before Python dispatch. Native hook trust is required.",
+  "hooks": {
+    "UserPromptSubmit": [{"hooks": [{
+      "type": "mcp_tool", "server": "kumiho-memory", "tool": "kumiho_codex_lifecycle", "timeout": 20,
+      "input": {"event": {"hook_event_name": "UserPromptSubmit", "session_id": "${session_id}", "turn_id": "${turn_id}", "transcript_path": "${transcript_path}", "cwd": "${cwd}", "prompt": "${prompt}"}}
+    }]}],
+    "PreToolUse": [{"matcher": "^apply_patch$", "hooks": [{
+      "type": "mcp_tool", "server": "kumiho-memory", "tool": "kumiho_codex_lifecycle", "timeout": 30,
+      "input": {"event": {"hook_event_name": "PreToolUse", "session_id": "${session_id}", "turn_id": "${turn_id}", "transcript_path": "${transcript_path}", "cwd": "${cwd}", "tool_name": "${tool_name}", "tool_input": "${tool_input}"}}
+    }]}],
+    "PostToolUse": [{"matcher": "kumiho_memory_(reflect|consolidate)$", "hooks": [{
+      "type": "mcp_tool", "server": "kumiho-memory", "tool": "kumiho_codex_lifecycle", "timeout": 20,
+      "input": {"event": {"hook_event_name": "PostToolUse", "session_id": "${session_id}", "turn_id": "${turn_id}", "transcript_path": "${transcript_path}", "cwd": "${cwd}", "tool_name": "${tool_name}", "tool_input": "${tool_input}", "tool_response": "${tool_response}"}}
+    }]}],
+    "Stop": [{"hooks": [{
+      "type": "mcp_tool", "server": "kumiho-memory", "tool": "kumiho_codex_lifecycle", "timeout": 20,
+      "input": {"event": {"hook_event_name": "Stop", "session_id": "${session_id}", "turn_id": "${turn_id}", "transcript_path": "${transcript_path}", "cwd": "${cwd}", "stop_hook_active": "${stop_hook_active}"}}
+    }]}]
+  }
+}

@@ -7,6 +7,7 @@ never override an SDK entry or alter defaults for unrelated tools.
 from __future__ import annotations
 
 import importlib
+import os
 
 _HINTS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
 
@@ -44,4 +45,7 @@ def run_mcp_server() -> None:
     # __main__ through runpy would create a fresh, unpatched registry.
     server = importlib.import_module("kumiho.mcp_server")
     install_insight_annotations(server)
+    if os.getenv('KUMIHO_CLAUDE_HOST') == 'codex':
+        from codex_lifecycle import install_codex_lifecycle
+        install_codex_lifecycle(server)
     server.main()

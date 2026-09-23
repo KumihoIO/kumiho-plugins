@@ -41,17 +41,22 @@ see [privacy-and-trust](references/privacy-and-trust.md) when needed.
 ## Two reflexes
 
 **Engage — before you respond.** When the user's message touches anything
-that might have history, call `kumiho_memory_engage` with a query derived
-from their current message (normally once per turn). An explicitly requested
-repeat runs recall again. Never say "I don't know" without engaging first. Hold
-the returned `source_krefs` for reflect.
+that might have history, reuse a visible Codex lifecycle receipt if it says
+recall completed (including a valid no-match result). Do not issue a duplicate
+engage in that turn. If no receipt is visible, lifecycle support is unavailable,
+or the receipt reports an error, call `kumiho_memory_engage` manually with a
+query derived from the current message. An explicitly requested repeat still
+runs recall again. Never say `I don't know` without a completed recall. Hold any
+returned `source_krefs` for reflect.
 
-**Reflect — after you respond.** After a substantive response, call
+**Reflect — after you respond.** After a substantive response, reuse a visible
+lifecycle receipt only when it confirms reflect completed. Otherwise call
 `kumiho_memory_reflect` with your response text and structured captures
-(decisions, preferences, facts, corrections). Use absolute dates in
-capture titles ("on Jul 11", never "today"). Skip captures for trivial
-exchanges; pass `source_krefs` from engage for provenance.
-
+(decisions, preferences, facts, corrections). Treat a call or success-looking
+text without a verified stored-result receipt as pending; do not repeat an
+uncertain write automatically. Use absolute dates in capture titles (`on Jul
+11`, never `today`). Skip captures for trivial responses; pass `source_krefs`
+from engage for provenance.
 Give every capture a `space_hint`. Without one it is filed at the project
 root, and reflect's automatic revision stacking then searches that whole
 bucket for something to stack onto — that is how an unrelated capture
@@ -248,8 +253,12 @@ skip captured commits at zero LLM cost).
   conditions, explicit corrections/supersession, and current user intent.
   `created_at` is storage time; use `event_date`/`observed_at` when available
   and do not assume the newest stored statement wins.
-- After 20+ exchanges or at session end, call
-  `kumiho_memory_consolidate` with a `summary` you wrote yourself from the
-  conversation. Omit `session_id`; the bridge supplies the Codex thread id as
-  above. This is keyless — without `summary` the call needs an external LLM
-  and fails.
+- Count completed user turns, not prompt or tool messages. When a visible
+  lifecycle receipt asks for consolidation at 20 completed turns, write a
+  keyless `summary`, call `kumiho_memory_consolidate`, and verify its successful
+  stored-result receipt. The lifecycle advances its watermark only after that
+  receipt; if it is missing or failed, leave consolidation pending and follow
+  the single bounded continuation request. Without active lifecycle support,
+  consolidate manually after roughly 20 completed turns or at session end.
+  Omit `session_id`; the bridge supplies the Codex thread id. An explicit
+  summary is keyless; omitting it requires an external LLM.
