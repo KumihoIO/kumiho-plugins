@@ -363,6 +363,11 @@ def build_server(
         SessionError,
         resolve_buffer_session,
     )
+    timed_storage_tools = {
+        "kumiho_memory_store",
+        "kumiho_memory_reflect",
+        "kumiho_memory_consolidate",
+    }
     allowed = set(CONNECTOR_TOOLS)
     order = {name: i for i, name in enumerate(CONNECTOR_TOOLS)}
 
@@ -414,24 +419,30 @@ def build_server(
             )])
         params = _pin_recall_mode(params)
         request = current_request()
-        if params.name in SESSION_TOOLS and request is not None:
-            arguments = dict(params.arguments or {})
-            try:
-                session_id = resolve_buffer_session(request, arguments)
-            except SessionError as exc:
-                return types.CallToolResult(is_error=True, content=[types.TextContent(
-                    type="text", text=json.dumps(exc.payload),
-                )], structured_content=exc.payload)
-            arguments["session_id"] = session_id
-            params = params.model_copy(update={"arguments": arguments})
-            with request_context(replace(request, session_id=session_id)), sdk_cache_scope():
-                return await original_call.handler(ctx, params)
+        timed_result = params.name == "kumiho_memory_engage" or params.name in timed_storage_tools
         # Upstream's v2 path validates inputSchema before dispatching to the
         # same tenant-scoped, blocking tool implementations as its v1 path.
+        # Keep session resolution and early errors inside the measured handler
+        # window, too, so failures still appear in the request completion log.
         with sdk_cache_scope():
             with stage("tool_handler"):
-                result = await original_call.handler(ctx, params)
-            return annotate_result(result) if params.name == "kumiho_memory_engage" else result
+                if params.name in SESSION_TOOLS and request is not None:
+                    arguments = dict(params.arguments or {})
+                    try:
+                        session_id = resolve_buffer_session(request, arguments)
+                    except SessionError as exc:
+                        return types.CallToolResult(is_error=True, content=[types.TextContent(
+                            type="text", text=json.dumps(exc.payload),
+                        )], structured_content=exc.payload)
+                    arguments["session_id"] = session_id
+                    params = params.model_copy(update={"arguments": arguments})
+                    with request_context(replace(request, session_id=session_id)):
+                        result = await original_call.handler(ctx, params)
+                else:
+                    result = await original_call.handler(ctx, params)
+            return annotate_result(
+                result, preserve_error_payload=params.name in timed_storage_tools
+            ) if timed_result else result
 
     if restrict_capabilities:
         @contextlib.asynccontextmanager

@@ -329,3 +329,43 @@ def test_server_timing_contract_accepts_each_published_stage(stage_name):
     assert _server_timings(_TimingResponse([
         (f"x-kumiho-timing-{stage_name}-ms", "12.345"),
     ])) == {stage_name.replace("-", "_"): 12.345}
+
+
+@pytest.mark.parametrize(
+    "text_payload,structured_payload,should_annotate",
+    [
+        ({"error": "failed"}, {"ok": True}, False),
+        ({"ok": True}, {"error": "failed"}, False),
+        ({"success": False, "detail": "failed"}, {"ok": True}, False),
+        ({"nested": {"error": "user content"}}, {"ok": True}, True),
+    ],
+)
+def test_storage_timing_preserves_top_level_failures_and_nested_content(
+    text_payload, structured_payload, should_annotate
+):
+    state = {
+        "start": perf_counter(),
+        "request_id": "test-request-id",
+        "stages": {"tool_handler": 1.0},
+        "rpc_counts": {},
+        "lock": Lock(),
+    }
+    token = _current.set(state)
+    try:
+        result = types.CallToolResult(
+            content=[types.TextContent(type="text", text=json.dumps(text_payload))],
+            structured_content=structured_payload,
+        )
+        annotated = annotate_result(result, preserve_error_payload=True)
+    finally:
+        _current.reset(token)
+
+    if should_annotate:
+        text_result = json.loads(annotated.content[0].text)
+        assert text_result["nested"] == {"error": "user content"}
+        assert text_result["request_id"] == "test-request-id"
+        assert annotated.structured_content["request_id"] == "test-request-id"
+    else:
+        assert annotated is result
+        assert json.loads(annotated.content[0].text) == text_payload
+        assert annotated.structured_content == structured_payload

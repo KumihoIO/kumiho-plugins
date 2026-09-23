@@ -76,9 +76,31 @@ def stage(name):
                 )
 
 
-def annotate_result(result):
+def _failure_payload(payload):
+    """Recognize only top-level failure envelopes, never nested user content."""
+    return isinstance(payload, dict) and ("error" in payload or payload.get("success") is False)
+
+
+def _has_failure_payload(result):
+    if result.is_error:
+        return True
+    if _failure_payload(result.structured_content):
+        return True
+    for block in result.content:
+        if block.type != "text":
+            continue
+        try:
+            payload = json.loads(block.text)
+        except (ValueError, TypeError):
+            continue
+        if _failure_payload(payload):
+            return True
+    return False
+
+
+def annotate_result(result, *, preserve_error_payload=False):
     state = _current.get()
-    if state is None or result.is_error:
+    if state is None or result.is_error or (preserve_error_payload and _has_failure_payload(result)):
         return result
     with state["lock"]:
         timings = {k: round(v, 3) for k, v in state["stages"].items()}
