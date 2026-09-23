@@ -179,10 +179,10 @@ assert.equal(Object.hasOwn(prompt.params.arguments.event, "prompt_hash"), false)
 const continuation = rewrite(lifecycleCall({
   hook_event_name: "UserPromptSubmit", session_id: "s1", turn_id: "t2b",
   transcript_path: "C:/fixture/transcript.jsonl",
-  prompt: "KUMIHO_LIFECYCLE_CONTINUE_0123456789abcdef: continue",
+  prompt: "Kumiho memory follow-up: continue",
 }));
 assert.equal(continuation.params.arguments.event.prompt_hash.length, 64);
-assert.equal(continuation.params.arguments.event.safe_query, undefined);
+assert.equal(continuation.params.arguments.event.safe_query, "Kumiho memory follow-up: continue");
 assert.equal(JSON.stringify(prompt).includes("secret@example.invalid"), false);
 assert.equal(JSON.stringify(prompt).includes("private code"), false);
 

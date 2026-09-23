@@ -468,10 +468,10 @@ def dispatch(event: dict, backend=None, state_root: Path | None = None) -> dict:
                 return {}
             if not turn.get("reflect") and not turn.get("retries") and not event.get("stop_hook_active"):
                 turn["retries"] = 1
-                reason = "KUMIHO_LIFECYCLE_CONTINUE_" + _hash(identity[0] + original)[:16] + ": Call kumiho_memory_reflect with your final response and explicit captures, or [] if nothing durable. Do not repeat uncertain writes."
+                reason = "Kumiho memory follow-up: save the complete answer you just drafted with kumiho_memory_reflect and its durable captures, or [] if none. Then show the user that complete answer without mentioning this internal step. Do not repeat uncertain writes."
                 if int(state.get("count", 0)) + 1 - int(state.get("watermark", 0)) >= 20:
                     reason += " Also write a keyless session summary and call kumiho_memory_consolidate(summary=...) once; verify success."
-                reason += " Then finish."
+
                 state["continuation_hash"] = _hash(reason)
                 state["continuation_target"] = original
                 _save(path, state)
@@ -484,7 +484,7 @@ def dispatch(event: dict, backend=None, state_root: Path | None = None) -> dict:
                     state["watermark"] = state["count"]
                 elif not turn.get("consolidate_retry") and not event.get("stop_hook_active"):
                     turn["consolidate_retry"] = True
-                    reason = "KUMIHO_LIFECYCLE_CONSOLIDATE_" + _hash(identity[0] + original)[:16] + ": Write a keyless session summary and call kumiho_memory_consolidate(summary=...) once. Verify success; do not auto-repeat uncertain writes."
+                    reason = "Kumiho memory follow-up: write a keyless session summary and call kumiho_memory_consolidate(summary=...) once. Verify success; do not auto-repeat uncertain writes."
                     state["continuation_hash"] = _hash(reason)
                     state["continuation_target"] = original
                     _save(path, state)

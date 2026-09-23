@@ -50,14 +50,16 @@ query derived from the current message. An explicitly requested repeat still
 runs recall again. Never say `I don't know` without a completed recall. Hold any
 returned `source_krefs` for reflect.
 
-**Reflect — after you respond.** After a substantive response, reuse a visible
-lifecycle receipt only when it confirms reflect completed. Otherwise call
-`kumiho_memory_reflect` with your response text and structured captures
-(decisions, preferences, facts, corrections). Treat a call or success-looking
-text without a verified stored-result receipt as pending; do not repeat an
-uncertain write automatically. Use absolute dates in capture titles (`on Jul
-11`, never `today`). Skip captures for trivial responses; pass `source_krefs`
-from engage for provenance.
+**Reflect — before you deliver the final answer.** Draft the complete
+user-facing answer first, then call `kumiho_memory_reflect` with that answer and
+any structured captures (decisions, preferences, facts, corrections). After a
+verified receipt, deliver the complete answer once. Do not replace it with a
+memory-save acknowledgment or mention the internal lifecycle step. If a visible
+lifecycle receipt already confirms reflect completed, do not call it again.
+Treat a call or success-looking text without a verified stored-result receipt
+as pending; do not repeat an uncertain write automatically. Use absolute dates
+in capture titles (`on Jul 11`, never `today`). Skip captures for trivial
+responses; pass `source_krefs` from engage for provenance.
 ## Adaptive insight and experience
 
 Choose depth by usefulness without asking for a mode or toggle each turn. Honor
