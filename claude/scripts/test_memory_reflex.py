@@ -310,3 +310,63 @@ def test_consolidate_line_names_the_configured_working_memory_ttl(tmp_path):
 
 if __name__ == "__main__":
     sys.exit(subprocess.call([sys.executable, "-m", "pytest", __file__, "-q"]))
+
+
+# ------------------------------------------------- per-prompt privacy (Codex parity)
+
+def test_off_record_prompt_skips_recall_and_every_write_nudge(tmp_path):
+    """An off-record turn gets no memory served, no write nudge, and its text
+    never reaches disk -- the same contract as the Codex lifecycle hook."""
+    _seed_cache(tmp_path, "priv", "<kumiho_memory>MARK</kumiho_memory>")
+    _ledger(tmp_path, "priv", [{"kind": "stop", "tool_only": False}] * 25)
+    prompt = "Off-record: what did we decide about the nano_banana_2 pricing?"
+    r = _run(_ups("priv", prompt=prompt), tmp_path)
+    ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "MARK" not in ctx
+    assert "Turns since your last" not in ctx and "last consolidated" not in ctx
+    assert "skipped memory for this turn" in ctx
+    raw = (tmp_path / "reflex" / "priv.turn.json").read_text(encoding="utf-8")
+    turn = json.loads(raw)
+    assert turn["private"] is True and turn["prompt"] == "" and turn["prompt_sha256"] == ""
+    assert "nano_banana_2" not in raw
+    # The next ordinary turn is served normally again.
+    r = _run(_ups("priv"), tmp_path)
+    assert "MARK" in r.stdout
+    assert json.loads((tmp_path / "reflex" / "priv.turn.json")
+                      .read_text(encoding="utf-8"))["private"] is False
+
+
+def test_korean_off_record_and_credential_prompts_are_private(tmp_path):
+    for sid, prompt in (("kpri", "이건 기억하지 마, 그냥 궁금해서"),
+                        ("kcrd", "배포 설정 봐줘 password=hunter2-secret-value")):
+        r = _run(_ups(sid, prompt=prompt), tmp_path)
+        assert "skipped memory for this turn" in r.stdout
+        raw = (tmp_path / "reflex" / ("%s.turn.json" % sid)).read_text(encoding="utf-8")
+        assert json.loads(raw)["private"] is True
+        assert "hunter2" not in raw
+
+
+def test_recall_only_prompt_keeps_recall_but_drops_write_nudges(tmp_path):
+    _seed_cache(tmp_path, "nowr", "<kumiho_memory>MARK</kumiho_memory>")
+    _ledger(tmp_path, "nowr", [{"kind": "stop", "tool_only": False}] * 25)
+    q = tmp_path / "pending-code-captures.jsonl"
+    q.write_text("".join('{"commit":"c%d"}\n' % i for i in range(12)), encoding="utf-8")
+    r = _run(_ups("nowr", prompt="Don't save anything to memory; only recall the pricing decision."),
+             tmp_path)
+    ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "MARK" in ctx
+    assert "Turns since your last" not in ctx
+    assert "last consolidated" not in ctx
+    assert "queued for keyless" not in ctx
+    turn = json.loads((tmp_path / "reflex" / "nowr.turn.json").read_text(encoding="utf-8"))
+    assert turn["no_write"] is True and turn["private"] is False
+
+
+def test_a_failed_reflect_does_not_reset_the_reflect_floor(tmp_path):
+    _ledger(tmp_path, "rfok", [
+        {"kind": "stop", "tool_only": False},
+        {"kind": "stop", "tool_only": False},
+        {"kind": "tool", "tool": "reflect", "ok": False},
+        {"kind": "stop", "tool_only": False},
+    ])
+    assert "Turns since your last kumiho_memory_reflect: 3" in _run(_ups("rfok"), tmp_path).stdout

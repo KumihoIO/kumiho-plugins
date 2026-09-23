@@ -43,6 +43,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import reflex_state as rs  # noqa: E402
 from reflex_insight import format_insight, prompt_digest  # noqa: E402
+from reflex_privacy import classify  # noqa: E402
 
 # Global, not per-session: the venv and the endpoint cache are global state, so
 # two sessions prefetching at once would contend over the same files.
@@ -519,6 +520,11 @@ def _prefetch(session_id: str, cwd_arg: str) -> int:
 
     session = rs.read_json(_session_path(session_id), None) or {}
     turn = rs.read_json(_turn_path(session_id), None) or {}
+    if turn.get("private"):
+        # Off-record or credential-bearing turn: memory-reflex stored no prompt,
+        # and the cold-start query below must not stand in for it either.
+        rs.log("skip: private turn")
+        return 0
     cwd = str(session.get("cwd") or "").strip() or cwd_arg
     if not os.path.isdir(cwd):
         cwd = cwd_arg if os.path.isdir(cwd_arg) else os.getcwd()
@@ -527,6 +533,10 @@ def _prefetch(session_id: str, cwd_arg: str) -> int:
     if prompt:
         prev_user, last_assistant = _transcript_context(
             str(session.get("transcript_path") or ""))
+        # The transcript tail can hold an earlier off-record prompt, or a
+        # credential echoed back; neither may become recall-query text.
+        prev_user = "" if classify(prev_user) == "private" else prev_user
+        last_assistant = "" if classify(last_assistant) == "private" else last_assistant
         query = _build_recall_query(prompt, prev_user, last_assistant)
     else:
         # Cold / SessionStart path: no prompt exists yet, so the working

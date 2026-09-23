@@ -553,3 +553,35 @@ def test_child_processes_are_spawned_without_a_console_window():
 
 if __name__ == "__main__":
     sys.exit(subprocess.call([sys.executable, "-m", "pytest", __file__, "-q"]))
+
+
+# ------------------------------------------------------------------- privacy
+
+def test_private_turn_never_reaches_engage_or_the_cold_query(tmp_path, monkeypatch):
+    spy = _Spy(_payload())
+    mod = _prepare(tmp_path, monkeypatch, prompt=None, spy=spy)
+    (tmp_path / "reflex" / "s1.turn.json").write_text(
+        json.dumps({"prompt": "", "private": True}), encoding="utf-8")
+    assert mod.main() == 0
+    assert spy.calls == []
+    assert _recall(tmp_path) is None
+    assert "skip: private turn" in _log(tmp_path)
+
+
+def test_credential_in_the_transcript_tail_stays_out_of_the_query(tmp_path, monkeypatch):
+    spy = _Spy(_payload())
+    mod = _prepare(tmp_path, monkeypatch, spy=spy)
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("".join(json.dumps(row) + "\n" for row in (
+        {"message": {"role": "user", "content": "deploy with token=ghp_abcdefghijklmnopqrstu"}},
+        {"message": {"role": "assistant", "content": "Deployment configured for staging"}},
+        # The turn being prefetched for; the credential turn is prev_user.
+        {"message": {"role": "user", "content": "why did we pick postgres"}},
+    )), encoding="utf-8")
+    (tmp_path / "reflex" / "s1.session.json").write_text(json.dumps(
+        {"session_id": "s1", "cwd": str(tmp_path), "transcript_path": str(transcript)}),
+        encoding="utf-8")
+    assert mod.main() == 0
+    query = spy.calls[0][1]["query"]
+    assert "ghp_" not in query and "token" not in query.lower()
+    assert "postgres" in query.lower()

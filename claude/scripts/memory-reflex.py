@@ -33,6 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import reflex_state as rs  # noqa: E402
 from reflex_insight import matching_insight, prompt_digest  # noqa: E402
+from reflex_privacy import classify  # noqa: E402
 
 _DEFAULT_TTL_S = 900
 _DEFAULT_FLOOR = 3
@@ -97,7 +98,9 @@ def _turns_since_reflect(ledger_path) -> int:
             row = json.loads(line)
         except (json.JSONDecodeError, ValueError):
             continue
-        if row.get("kind") == "tool" and row.get("tool") == "reflect":
+        # A reflect that came back with an error stored nothing, so it must not
+        # silence the floor. Rows written before the flag existed count as ok.
+        if row.get("kind") == "tool" and row.get("tool") == "reflect" and row.get("ok", True):
             break
         if row.get("kind") == "stop" and not row.get("tool_only"):
             n += 1
@@ -198,6 +201,12 @@ def _subagent_card(session_id: str) -> str:
     )
 
 
+_PRIVATE_NOTE = (
+    "Kumiho: this request is off-record or carries a credential, so the host "
+    "skipped memory for this turn. Do not read or write Kumiho memory for it."
+)
+
+
 def main(argv: list) -> int:
     try:
         if rs.off() or not rs.gate("KUMIHO_REFLEX"):
@@ -219,6 +228,27 @@ def main(argv: list) -> int:
         turn = rs.read_json(turn_path, {}) or {}
         now = int(time.time())
         parts = []
+        prompt = str(payload.get("prompt") or "")
+        privacy = classify(prompt)
+
+        if privacy == "private":
+            # Nothing from this prompt may reach disk or the next recall query,
+            # and no memory is served or requested for it. The flag tells the
+            # prefetch worker to leave the cache alone on this turn's Stop.
+            _emit("UserPromptSubmit", _PRIVATE_NOTE)
+            turn.update({
+                "n": int(turn.get("n") or 0) + 1,
+                "private": True,
+                "no_write": True,
+                "prompt": "",
+                "prompt_sha256": "",
+                "prompt_id": str(payload.get("prompt_id") or ""),
+                "cwd": str(payload.get("cwd") or ""),
+                "ts": now,
+            })
+            rs.write_json_atomic(turn_path, turn)
+            return 0
+        no_write = privacy == "no_write"
 
         # --- recalled memories ------------------------------------------------
         # Served only from cache. No cold-start poll: a debounced producer may
@@ -239,7 +269,7 @@ def main(argv: list) -> int:
         # Synthesis is question-specific. Time freshness alone is insufficient:
         # a cache from the preceding question must not drive a new answer.
         insight = matching_insight(
-            cache, str(payload.get("prompt") or ""),
+            cache, prompt,
             enabled=rs.gate("KUMIHO_REFLEX_INSIGHTS", default_true=False),
             max_chars=_int_env("KUMIHO_REFLEX_INSIGHT_MAX_CHARS", 5120),
         )
@@ -264,7 +294,8 @@ def main(argv: list) -> int:
         floor = _int_env("KUMIHO_REFLEX_FLOOR", _DEFAULT_FLOOR)
         n_since = _turns_since_reflect(d / ("%s.turns.jsonl" % session_id))
         last_floor = int(turn.get("last_floor_turn") or -99)
-        if n_since >= floor and (n_turn - last_floor) >= _FLOOR_COOLDOWN_TURNS:
+        # A recall-only / do-not-save turn gets recall but no write nudges.
+        if not no_write and n_since >= floor and (n_turn - last_floor) >= _FLOOR_COOLDOWN_TURNS:
             parts.append(
                 "Turns since your last kumiho_memory_reflect: %d. session_id=%s. "
                 "If a decision, preference, fact or correction landed, call "
@@ -276,7 +307,7 @@ def main(argv: list) -> int:
         # --- consolidation floor: keyless, counted from the same ledger -------
         floor_c = _int_env("KUMIHO_REFLEX_CONSOLIDATE_FLOOR", _DEFAULT_CONSOLIDATE_FLOOR)
         last_c = int(turn.get("last_consolidate_turn") or -99)
-        if floor_c > 0 and (n_turn - last_c) >= _CONSOLIDATE_COOLDOWN_TURNS:
+        if not no_write and floor_c > 0 and (n_turn - last_c) >= _CONSOLIDATE_COOLDOWN_TURNS:
             n_c = _turns_since_consolidate(d / ("%s.turns.jsonl" % session_id))
             if n_c >= floor_c:
                 parts.append(_consolidate_line(n_c, floor_c, session_id))
@@ -284,7 +315,7 @@ def main(argv: list) -> int:
 
         # --- pending keyless capture queue ------------------------------------
         last_q = int(turn.get("last_queue_turn") or -99)
-        if (n_turn - last_q) >= _QUEUE_COOLDOWN_TURNS:
+        if not no_write and (n_turn - last_q) >= _QUEUE_COOLDOWN_TURNS:
             pending = _pending_count()
             if pending >= _QUEUE_MIN_PENDING:
                 # Absolute paths, because $CLAUDE_PLUGIN_ROOT is empty in the
@@ -318,9 +349,11 @@ def main(argv: list) -> int:
         turn.update({
             "n": n_turn,
             "injected_chars": spent,
-            "prompt": (str(payload.get("prompt") or "")[:_PROMPT_MAX_CHARS]
+            "private": False,
+            "no_write": no_write,
+            "prompt": (prompt[:_PROMPT_MAX_CHARS]
                        if rs.gate("KUMIHO_REFLEX_STORE_PROMPT") else ""),
-            "prompt_sha256": (prompt_digest(str(payload.get("prompt") or ""))
+            "prompt_sha256": (prompt_digest(prompt)
                               if rs.gate("KUMIHO_REFLEX_STORE_PROMPT") else ""),
             "prompt_id": str(payload.get("prompt_id") or ""),
             "cwd": str(payload.get("cwd") or ""),
