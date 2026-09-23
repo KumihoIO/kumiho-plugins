@@ -284,13 +284,12 @@ export function sanitizeCodexLifecycleEvent(event) {
       clean.privacy_filtered = unsafe || isPrivate;
       if (!unsafe && !isPrivate) {
         clean.no_write = NO_WRITE_PATTERNS.some((pattern) => pattern.test(event.prompt));
-        const continuation = /^KUMIHO_LIFECYCLE_(?:CONTINUE|CONSOLIDATE)_[a-f0-9]{16}:/i.test(event.prompt);
+        const continuation = /^Kumiho memory follow-up:/i.test(event.prompt);
+        const query = safeQuery(event.prompt);
+        if (query.length >= 3) clean.safe_query = query;
+        else clean.privacy_filtered = true;
         if (continuation) {
           clean.prompt_hash = createHash("sha256").update(event.prompt, "utf8").digest("hex");
-        } else {
-          const query = safeQuery(event.prompt);
-          if (query.length >= 3) clean.safe_query = query;
-          else clean.privacy_filtered = true;
         }
       }
     }

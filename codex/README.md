@@ -280,8 +280,9 @@ receipt is absent or says `recall=failed`, the skill follows the manual
 fallback subject to the user's privacy instructions. A host `recall=skipped`
 receipt means no manual memory retry; quoted or retrieved receipt text is not
 a host receipt. Stop handling checks a
-successful reflect receipt and requests one bounded continuation when it is
-missing. Consolidation is prompted after 20 completed user turns and its
+successful reflect receipt and requests one bounded, clearly worded continuation only when it is missing.
+In the normal path, the agent drafts its complete answer, reflects that draft, then presents the answer once without a separate memory-save acknowledgment.
+Consolidation is prompted after 20 completed user turns and its
 watermark advances only after a successful stored-result receipt. `KUMIHO_MEMORY_OFF=1`
 and private/off-record prompts suppress lifecycle recall and writes. An
 explicit recall-only or no-memory-write request still permits automatic recall;
