@@ -3,7 +3,9 @@
 The patterns started from ``codex/scripts/lifecycle_event_filter.mjs`` and
 extend it where that filter misses real phrasing ("off the record", Korean
 connective forms) or over-matches (a bare "비공개" is usually a private repo,
-not an off-record request). The Codex filter tracks the same gaps in
+not an off-record request). "Off-record" itself counts only as a request
+("keep this off the record", "오프더레코드로 해줘", a leading "Off-record:"),
+never as a mention ("test the off-record handling"). The Codex filter tracks the same gaps in
 kumiho-plugins#127.
 
   private   -- off-record / do-not-recall, or the prompt carries a credential.
@@ -24,8 +26,14 @@ import re
 MAX_SCAN_CHARS = 262144
 
 PRIVATE_RE = re.compile(
-    r"\boff[\s-]?(?:the[\s-]+)?record\b|do not (?:remember|recall)|don't (?:remember|recall)"
-    r"|오프\s*더\s*레코드|기억하지\s*(?:마|말)"
+    r"\b(?:this is|this's|it's|keep (?:this|it|that)|going|stay|strictly)\s+off[\s-]?(?:the[\s-]+)?record\b"
+    r"|(?:^|[.!?\n]\s*)off[\s-]?(?:the[\s-]+)?record\s*(?:[:,;!—-]|\.?\s*$)"
+    r"|(?:이건|이거는|이 얘기는|이 내용은|이 대화는|지금부터|여기부터)\s*오프\s*더\s*레코드"
+    r"|오프\s*더\s*레코드(?:인데|야|예요|이야|입니다|니까|지만|라서)"
+    r"|오프\s*더\s*레코드로\s*(?:해|하자|할게|부탁|얘기|말|가자|진행)"
+    r"|(?:^|[.!?\n]\s*)오프\s*더\s*레코드\s*(?:[:,]|\.?\s*$)"
+    r"|do not (?:remember|recall)|don't (?:remember|recall)"
+    r"|기억하지\s*(?:마|말)"
     # "비공개" only as a statement about this conversation, never as an
     # adjective ("비공개 저장소 만들어줘").
     r"|(?:이건|이거는|이 얘기는|이 내용은|지금부터|여기부터)\s*비공개(?:야|예요|이야|입니다|로\s*해\s*줘|로)?\s*(?:[.,!~]|$)"
