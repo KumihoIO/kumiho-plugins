@@ -67,8 +67,14 @@ def _state_lock(path):
 _MAX_PROMPT_SCAN_CHARS = 262144
 _SECRET = re.compile(r"(?i)(?:\b(?:password|passwd|secret|credential|api[_-]?key|access[_-]?token|refresh[_-]?token|token|auth(?:orization)?|private[_-]?key)\b\s*[:=]\s*\S+|(?:비밀번호|암호|토큰|비밀키|API키|인증키)\s*[:=]\s*\S+|\bbearer\s+[A-Za-z0-9._~+/-]{8,}|\b(?:sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{12,}|AKIA[A-Z0-9]{12,})\b|https?://[^\s/:@]+:[^\s/@]+@|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)")
 _PRIVATE = re.compile(
-    r"(?i)\boff[\s-]?(?:the[\s-]+)?record\b|do not (?:remember|recall)|don't (?:remember|recall)"
-    r"|오프\s*더\s*레코드|기억하지\s*(?:마|말)"
+    r"(?i)\b(?:this is|this's|it's|keep (?:this|it|that)|going|stay|strictly)\s+off[\s-]?(?:the[\s-]+)?record\b"
+    r"|(?:^|[.!?\n]\s*)off[\s-]?(?:the[\s-]+)?record\s*(?:[:,;!—-]|\.?\s*$)"
+    r"|(?:이건|이거는|이 얘기는|이 내용은|이 대화는|지금부터|여기부터)\s*오프\s*더\s*레코드"
+    r"|오프\s*더\s*레코드(?:인데|야|예요|이야|입니다|니까|지만|라서)"
+    r"|오프\s*더\s*레코드로\s*(?:해|하자|할게|부탁|얘기|말|가자|진행)"
+    r"|(?:^|[.!?\n]\s*)오프\s*더\s*레코드\s*(?:[:,]|\.?\s*$)"
+    r"|do not (?:remember|recall)|don't (?:remember|recall)"
+    r"|기억하지\s*(?:마|말)"
     r"|(?:이건|이거는|이 얘기는|이 내용은|지금부터|여기부터)\s*비공개(?:야|예요|이야|입니다|로\s*해\s*줘|로)?\s*(?:[.,!~]|$)"
     r"|비공개로\s*(?:해\s*줘|하자|할게|얘기|말할게|부탁)"
 )

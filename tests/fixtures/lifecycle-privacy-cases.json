@@ -12,5 +12,15 @@
   {"id":"korean_no_memory_write","prompt":"메모리에 쓰지 마","expected":"no_write"},
   {"id":"korean_no_record","prompt":"기억에 기록하지 말아줘","expected":"no_write"},
   {"id":"english_no_store","prompt":"Do not store this; just answer.","expected":"no_write"},
-  {"id":"ordinary_record_word","prompt":"The record label changed.","expected":""}
+  {"id":"ordinary_record_word","prompt":"The record label changed.","expected":""},
+  {"id":"korean_off_record_mention","prompt":"한번 테스트 해보겠어? reflect 하는거 그리고 오프더레코드 역시","expected":""},
+  {"id":"korean_off_record_feature_mention","prompt":"오프더레코드 기능 테스트해봐","expected":""},
+  {"id":"korean_off_record_classified_mention","prompt":"방금 메시지가 오프더레코드로 분류됐어","expected":""},
+  {"id":"english_off_record_mention","prompt":"test the off-record handling and reflect","expected":""},
+  {"id":"english_off_record_colon","prompt":"Off-record: recall the project decision","expected":"private"},
+  {"id":"english_keep_off_the_record","prompt":"Keep this off the record please","expected":"private"},
+  {"id":"english_off_the_record_statement","prompt":"Off the record.","expected":"private"},
+  {"id":"korean_off_record_request","prompt":"오프더레코드로 해줘","expected":"private"},
+  {"id":"korean_this_is_off_record","prompt":"이 대화는 오프더레코드야","expected":"private"},
+  {"id":"korean_off_record_leading","prompt":"오프더레코드: 연봉 얘기 좀 하자","expected":"private"}
 ]

@@ -3,7 +3,7 @@
 Persistent graph-native memory plugin for Claude. Runs a local Kumiho MCP
 server with `kumiho-memory` so Claude **remembers you across sessions**.
 
-Version: **0.23.3** | Requires: `kumiho>=0.12.2`, `kumiho-memory>=1.5.0`
+Version: **0.23.4** | Requires: `kumiho>=0.12.2`, `kumiho-memory>=1.5.0`
 (reused or installed automatically in `~/.kumiho/venv` — nothing to `pip install`)
 
 **OpenAI Codex** uses the parallel native package under `../codex`,

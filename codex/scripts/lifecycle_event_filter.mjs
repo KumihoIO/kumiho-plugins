@@ -7,7 +7,7 @@ const MAX_PATH_LENGTH = 1024;
 const MAX_ROWS = 128;
 const SAFE_KREF = /^kref:\/\/[^\s]{3,512}$/;
 const SAFE_SESSION = /^[A-Za-z0-9._:-]{1,256}$/;
-const PRIVATE_RE = /\boff[\s-]?(?:the[\s-]+)?record\b|do not (?:remember|recall)|don't (?:remember|recall)|오프\s*더\s*레코드|기억하지\s*(?:마|말)|(?:이건|이거는|이 얘기는|이 내용은|지금부터|여기부터)\s*비공개(?:야|예요|이야|입니다|로\s*해\s*줘|로)?\s*(?:[.,!~]|$)|비공개로\s*(?:해\s*줘|하자|할게|얘기|말할게|부탁)/i;
+const PRIVATE_RE = /\b(?:this is|this's|it's|keep (?:this|it|that)|going|stay|strictly)\s+off[\s-]?(?:the[\s-]+)?record\b|(?:^|[.!?\n]\s*)off[\s-]?(?:the[\s-]+)?record\s*(?:[:,;!—-]|\.?\s*$)|(?:이건|이거는|이 얘기는|이 내용은|이 대화는|지금부터|여기부터)\s*오프\s*더\s*레코드|오프\s*더\s*레코드(?:인데|야|예요|이야|입니다|니까|지만|라서)|오프\s*더\s*레코드로\s*(?:해|하자|할게|부탁|얘기|말|가자|진행)|(?:^|[.!?\n]\s*)오프\s*더\s*레코드\s*(?:[:,]|\.?\s*$)|do not (?:remember|recall)|don't (?:remember|recall)|기억하지\s*(?:마|말)|(?:이건|이거는|이 얘기는|이 내용은|지금부터|여기부터)\s*비공개(?:야|예요|이야|입니다|로\s*해\s*줘|로)?\s*(?:[.,!~]|$)|비공개로\s*(?:해\s*줘|하자|할게|얘기|말할게|부탁)/i;
 const NO_WRITE_PATTERNS = [
   /\b(?:do not|don't|never)\s+(?:save|store|write|record|capture|reflect)\s+(?:to|in)\s+memor(?:y|ies)\b/i,
   /\b(?:do not|don't|never)\s+(?:save|store|write|record|capture|reflect|change|modify|update)(?:\s+or\s+(?:save|store|write|record|capture|reflect|change|modify|update))?\s+(?:any\s+)?memor(?:y|ies)\b/i,
