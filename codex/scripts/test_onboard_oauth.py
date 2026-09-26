@@ -197,6 +197,39 @@ def test_oauth_repairs_an_invalid_backend_config_as_an_explicit_cloud_choice(
     assert seen["oauth"] is True
 
 
+def test_package_spec_matches_the_vendored_launcher_default(onboard, monkeypatch):
+    monkeypatch.delenv("KUMIHO_CLAUDE_PACKAGE_SPEC", raising=False)
+    launcher = importlib.util.spec_from_file_location(
+        "kumiho_codex_launcher_spec_test", HERE / "_vendored_launcher.py"
+    )
+    module = importlib.util.module_from_spec(launcher)
+    sys.path.insert(0, str(HERE))
+    launcher.loader.exec_module(module)
+    assert onboard._package_spec() == module.DEFAULT_PACKAGE_SPEC
+    assert onboard._oauth_package_spec(module.DEFAULT_PACKAGE_SPEC).startswith(
+        "kumiho[mcp]>=0.15.0 "
+    )
+
+
+def test_oauth_run_provisions_with_the_raised_floor(onboard, monkeypatch):
+    seen = {}
+    monkeypatch.delenv("KUMIHO_CLAUDE_PACKAGE_SPEC", raising=False)
+
+    def fake_provision():
+        seen["spec"] = onboard.os.environ.get("KUMIHO_CLAUDE_PACKAGE_SPEC")
+        return None
+
+    monkeypatch.setattr(onboard, "_provision", fake_provision)
+    assert onboard.main(["cloud", "--oauth"]) == 1
+    assert seen["spec"] == onboard._oauth_package_spec(onboard._package_spec())
+    assert "kumiho[mcp]>=0.15.0" in seen["spec"]
+
+    # Without --oauth the plugin-wide spec is left alone.
+    monkeypatch.delenv("KUMIHO_CLAUDE_PACKAGE_SPEC", raising=False)
+    onboard.main(["cloud", "--non-interactive"])
+    assert seen["spec"] is None
+
+
 def test_onboard_skill_documents_the_oauth_sign_in():
     skill = (HERE.parent / "skills" / "kumiho-onboard" / "SKILL.md").read_text(
         encoding="utf-8"

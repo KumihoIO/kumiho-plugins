@@ -703,6 +703,70 @@ def test_oauth_rejects_token_and_ce_combinations(wizard, monkeypatch, argv):
     assert wizard.main(argv) == 2
 
 
+@pytest.mark.parametrize(
+    ("spec", "expected"),
+    [
+        (
+            "kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.5.0",
+            "kumiho[mcp]>=0.15.0 kumiho-memory[all]>=1.5.0",
+        ),
+        ("kumiho[mcp]>=0.16.1 kumiho-memory[all]>=1.5.0", "kumiho[mcp]>=0.16.1 kumiho-memory[all]>=1.5.0"),
+        ("kumiho[mcp] kumiho-memory[all]", "kumiho[mcp]>=0.15.0 kumiho-memory[all]"),
+        ("kumiho>=0.9.20", "kumiho>=0.15.0"),
+    ],
+)
+def test_oauth_package_spec_raises_only_the_kumiho_floor(wizard, spec, expected):
+    assert wizard.oauth_package_spec(spec) == expected
+
+
+def _installed_at(spec: str) -> dict:
+    reqs, understood = L._spec_floors(spec)
+    assert understood
+    installed = {name: floor for name, _extras, floor, _ceiling in reqs}
+    installed.update(__modules__=True, __extras__=True, __python_ok__=True)
+    return installed
+
+
+def test_the_launcher_keeps_a_venv_the_oauth_sign_in_upgraded(wizard, monkeypatch, tmp_path):
+    """The plugin-wide floor stays low; an OAuth run's upgrade must stick."""
+    oauth_spec = wizard.oauth_package_spec(L.DEFAULT_PACKAGE_SPEC)
+    py = tmp_path / "python"
+    py.write_text("", encoding="utf-8")
+    marker = tmp_path / "shared-marker"
+    marker.write_text(oauth_spec, encoding="utf-8")
+
+    monkeypatch.setattr(L, "_installed_versions", lambda *_, **__: _installed_at(oauth_spec))
+    # The next MCP start (default spec) does not reinstall or downgrade.
+    assert not L._needs_install(py, marker, L.DEFAULT_PACKAGE_SPEC)
+
+    # An onboarding run with --oauth does upgrade a venv at the default floors.
+    monkeypatch.setattr(
+        L, "_installed_versions", lambda *_, **__: _installed_at(L.DEFAULT_PACKAGE_SPEC)
+    )
+    marker.write_text(L.DEFAULT_PACKAGE_SPEC, encoding="utf-8")
+    assert L._needs_install(py, marker, oauth_spec)
+
+
+def test_oauth_run_provisions_with_the_raised_floor(wizard, monkeypatch):
+    seen = {}
+    monkeypatch.delenv("KUMIHO_CLAUDE_PACKAGE_SPEC", raising=False)
+    monkeypatch.setattr(wizard, "find_python", lambda: "python3")
+    monkeypatch.setattr(wizard, "write_python_knob", lambda _python: None)
+
+    def fake_setup_venv(_python):
+        seen["spec"] = wizard.package_spec()
+        return wizard.VENV_PYTHON
+
+    monkeypatch.setattr(wizard, "setup_venv", fake_setup_venv)
+    monkeypatch.setattr(wizard, "setup_auth", lambda cli_token=None, **kw: (None, False))
+    monkeypatch.setattr(wizard, "run_ingestion", lambda *_a, **_k: None)
+    monkeypatch.setattr(wizard, "verify_connection", lambda *_a, **_k: None)
+
+    assert wizard.main(["--oauth", "--yes"]) == 0
+    assert seen["spec"] == wizard.oauth_package_spec(L.DEFAULT_PACKAGE_SPEC)
+    assert "kumiho[mcp]>=0.15.0" in seen["spec"]
+
+
 def test_onboard_command_offers_the_oauth_sign_in():
     command = (SCRIPTS.parent / "commands" / "kumiho-onboard.md").read_text(
         encoding="utf-8"

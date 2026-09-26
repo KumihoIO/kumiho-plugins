@@ -186,7 +186,7 @@ def _run_host_backend(
         HOME=str(home),
         KUMIHO_CLAUDE_PROVISION_SYNC="1",
         KUMIHO_CLAUDE_PACKAGE_SPEC=(
-            "kumiho[mcp]>=0.15.0 kumiho-memory[all]>=1.5.0"
+            "kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.5.0"
         ),
         KUMIHO_MEMORY_DECISIONS="1",
         KUMIHO_AUTO_ASSESS="1",

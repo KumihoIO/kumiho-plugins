@@ -29,6 +29,7 @@ import os
 import secrets
 import shutil
 import platform
+import re
 import shlex
 import subprocess
 import sys
@@ -1161,6 +1162,31 @@ OAUTH_CLIENT_NAME = "Kumiho Memory for Claude Code"
 OAUTH_BROWSER_WAIT_S = 300
 #: Plus interpreter start, metadata, registration, code exchange and the lock.
 OAUTH_LOGIN_TIMEOUT_S = OAUTH_BROWSER_WAIT_S + 90
+#: The first kumiho SDK with ``kumiho-auth login --oauth`` and OAuth refresh.
+OAUTH_SDK_FLOOR = "0.15.0"
+
+
+def oauth_package_spec(spec: str) -> str:
+    """*spec* with its ``kumiho`` floor raised to :data:`OAUTH_SDK_FLOOR`.
+
+    Only a browser sign-in needs that SDK, so the plugin-wide floor stays
+    where every channel has it and this run alone installs the newer one into
+    the shared venv. Names and extras are untouched: the launcher compares
+    installed versions against its own (lower) floor and the marker only for
+    that identity, so it will not reinstall at the next start.
+    """
+    def version(text: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in re.findall(r"\d+", text)[:3])
+
+    tokens = spec.split()
+    for index, token in enumerate(tokens):
+        match = re.fullmatch(r"(kumiho(?:\[[a-z0-9,_-]+\])?)(?:>=([0-9][0-9.]*))?", token)
+        if not match:
+            continue
+        floor = match.group(2)
+        if floor is None or version(floor) < version(OAUTH_SDK_FLOOR):
+            tokens[index] = f"{match.group(1)}>={OAUTH_SDK_FLOOR}"
+    return " ".join(tokens)
 
 
 def _sdk_cloud_auth_works(
@@ -1217,8 +1243,9 @@ def oauth_login(*, open_browser: bool = True) -> bool:
         return False
     if not _sdk_supports_oauth():
         fail(
-            "Browser sign-in needs kumiho SDK 0.15.0 or newer in "
-            f"{VENV_DIR}; re-run onboarding to upgrade the runtime"
+            f"Browser sign-in needs kumiho SDK {OAUTH_SDK_FLOOR} or newer in "
+            f"{VENV_DIR}; /kumiho-onboard oauth (setup.py --oauth) installs it "
+            "when it is available on PyPI"
         )
         return False
 
@@ -2099,6 +2126,10 @@ def main(argv: list[str] | None = None) -> int:
     ):
         fail("--oauth signs in to Kumiho Cloud; it cannot be combined with CE options")
         return 2
+    if args.oauth:
+        # Provision the OAuth-capable SDK for this run only (see
+        # oauth_package_spec); nothing persists this override.
+        os.environ["KUMIHO_CLAUDE_PACKAGE_SPEC"] = oauth_package_spec(package_spec())
     if args.token_stdin:
         try:
             args.token = (

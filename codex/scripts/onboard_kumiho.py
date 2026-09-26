@@ -14,6 +14,7 @@ import argparse
 import ipaddress
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,44 @@ OAUTH_CLIENT_NAME = "Kumiho Memory for Codex"
 OAUTH_BROWSER_WAIT_S = 300
 #: Plus interpreter start, metadata, registration, code exchange and the lock.
 OAUTH_LOGIN_TIMEOUT_S = OAUTH_BROWSER_WAIT_S + 90
+#: The first kumiho SDK with ``kumiho-auth login --oauth`` and OAuth refresh.
+OAUTH_SDK_FLOOR = "0.15.0"
+VENDORED_LAUNCHER = SCRIPT_DIR / "_vendored_launcher.py"
+
+
+def _package_spec() -> str:
+    """The spec provisioning would install, resolved like the launcher does."""
+    raw = (os.getenv("KUMIHO_CLAUDE_PACKAGE_SPEC") or "").strip()
+    if raw and not (raw.startswith("${") and raw.endswith("}")):
+        return raw
+    source = VENDORED_LAUNCHER.read_text(encoding="utf-8")
+    match = re.search(r'(?m)^DEFAULT_PACKAGE_SPEC = "([^"]+)"$', source)
+    if match is None:
+        raise ValueError("the launcher's DEFAULT_PACKAGE_SPEC could not be read")
+    return match.group(1)
+
+
+def _oauth_package_spec(spec: str) -> str:
+    """*spec* with its ``kumiho`` floor raised to :data:`OAUTH_SDK_FLOOR`.
+
+    Only a browser sign-in needs that SDK, so the plugin-wide floor stays
+    where every channel has it and this run alone installs the newer one into
+    the shared venv. Names and extras are untouched: the launcher compares
+    installed versions against its own (lower) floor and the marker only for
+    that identity, so it will not reinstall at the next start.
+    """
+    def version(text: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in re.findall(r"\d+", text)[:3])
+
+    tokens = spec.split()
+    for index, token in enumerate(tokens):
+        match = re.fullmatch(r"(kumiho(?:\[[a-z0-9,_-]+\])?)(?:>=([0-9][0-9.]*))?", token)
+        if not match:
+            continue
+        floor = match.group(2)
+        if floor is None or version(floor) < version(OAUTH_SDK_FLOOR):
+            tokens[index] = f"{match.group(1)}>={OAUTH_SDK_FLOOR}"
+    return " ".join(tokens)
 
 # Installed plugin snapshots execute this file directly, while unit tests may
 # load it by path. Resolve the vendored bounded runner from this script's own
@@ -426,8 +465,9 @@ def _oauth_login(venv_python: Path, *, open_browser: bool) -> bool:
         return False
     if not _sdk_supports_oauth(venv_python):
         print(
-            "[kumiho-codex] Browser sign-in needs kumiho SDK 0.15.0 or newer; "
-            "rerun onboarding to upgrade the runtime.",
+            f"[kumiho-codex] Browser sign-in needs kumiho SDK {OAUTH_SDK_FLOOR} "
+            "or newer; onboarding with --oauth installs it when it is "
+            "available on PyPI.",
             file=sys.stderr,
         )
         return False
@@ -796,6 +836,11 @@ def main(argv: list[str] | None = None) -> int:
 
     print("[kumiho-codex] Kumiho Memory onboarding for Codex")
     print("[kumiho-codex] Credentials are never accepted in chat or command arguments.")
+
+    if args.oauth:
+        # Provision the OAuth-capable SDK for this run only (see
+        # _oauth_package_spec); nothing persists this override.
+        os.environ["KUMIHO_CLAUDE_PACKAGE_SPEC"] = _oauth_package_spec(_package_spec())
 
     venv_python = _provision()
     if venv_python is None:
