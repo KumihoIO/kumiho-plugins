@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bounded_proc
 
 
-DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.5.0"
+DEFAULT_PACKAGE_SPEC = "kumiho[mcp]>=0.15.0 kumiho-memory[all]>=1.5.0"
 MARKER_FILE = ".installed-packages.txt"
 #: Asking an existing venv what it has installed. This is on the server-start
 #: critical path, so it is short -- a venv that cannot answer in this long is

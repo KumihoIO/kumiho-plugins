@@ -11,6 +11,7 @@ Interactive setup that:
 Usage:
     python -I scripts/setup.py                    # interactive (choose backend)
     python -I scripts/setup.py -y                 # persisted backend, Cloud if fresh
+    python -I scripts/setup.py --oauth -y         # Cloud, browser sign-in (OAuth)
     python -I scripts/setup.py --token-stdin -y   # legacy one-run verification
     python -I scripts/setup.py --ce -y            # non-interactive self-hosted CE
     python -I scripts/setup.py --ce --ce-endpoint 127.0.0.1:9190 -y
@@ -1154,10 +1155,20 @@ def cache_token(token: str) -> bool:
     return True
 
 
-def _sdk_cloud_auth_works(token: str | None = None) -> bool:
+#: Application name the Kumiho consent page shows for this plugin's sign-in.
+OAUTH_CLIENT_NAME = "Kumiho Memory for Claude Code"
+#: The SDK waits 300 s for the browser; allow for startup and the exchange.
+OAUTH_LOGIN_TIMEOUT_S = 330
+
+
+def _sdk_cloud_auth_works(
+    token: str | None = None, *, ignore_ambient_token: bool = False
+) -> bool:
     """Let the SDK validate its own explicit token or shared login cache."""
     env = dict(os.environ)
     env["KUMIHO_PLUGIN_SHARED_HOME"] = str(KUMIHO_DIR)
+    if ignore_ambient_token:
+        env.pop("KUMIHO_AUTH_TOKEN", None)
     if token is not None:
         env["KUMIHO_AUTH_TOKEN"] = token
     try:
@@ -1171,13 +1182,82 @@ def _sdk_cloud_auth_works(token: str | None = None) -> bool:
     return result.returncode == 0
 
 
-def setup_auth(cli_token: str | None = None) -> tuple[str | None, bool]:
+def _sdk_supports_oauth() -> bool:
+    """True when the venv's SDK has ``kumiho-auth login --oauth`` (0.15.0+)."""
+    try:
+        result = bounded_proc.run(
+            [str(VENV_PYTHON), "-I", "-c", "import kumiho.oauth_login"],
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def oauth_login(*, open_browser: bool = True) -> bool:
+    """Sign in on the Kumiho consent page through the SDK (OAuth + PKCE).
+
+    The SDK opens the browser, receives the authorization code on a loopback
+    port and stores a rotating refresh token in the shared ``~/.kumiho``
+    credential store, which it then refreshes on its own. No credential passes
+    through this process, the chat or argv.
+    """
+    if not _sdk_supports_oauth():
+        fail(
+            "Browser sign-in needs kumiho SDK 0.15.0 or newer in "
+            f"{VENV_DIR}; re-run onboarding to upgrade the runtime"
+        )
+        return False
+    if (os.getenv("KUMIHO_AUTH_TOKEN", "") or "").strip():
+        warn(
+            "KUMIHO_AUTH_TOKEN is set and takes precedence over the browser "
+            "sign-in; remove it from the host environment to use OAuth"
+        )
+
+    env = {**os.environ, "KUMIHO_CONFIG_DIR": str(KUMIHO_DIR)}
+    # The plugin pins the official control plane; so does its OAuth issuer.
+    env.pop("KUMIHO_CONTROL_PLANE_API_URL", None)
+    env.pop("KUMIHO_AUTH_TOKEN", None)
+    command = [
+        str(VENV_PYTHON), "-I", "-m", "kumiho.auth_cli", "login", "--oauth",
+        "--client-name", OAUTH_CLIENT_NAME,
+    ]
+    if not open_browser:
+        command.append("--no-browser")
+    log("Opening the Kumiho sign-in page in your browser (waiting up to 5 minutes)...")
+    try:
+        # Output stays on the console: the SDK prints the sign-in URL there.
+        result = bounded_proc.run(
+            command, timeout=OAUTH_LOGIN_TIMEOUT_S, env=env, stdout=None, stderr=None,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        result = None
+    if result is None or result.returncode != 0:
+        fail("Browser sign-in did not complete")
+        return False
+    if not _sdk_cloud_auth_works(ignore_ambient_token=True):
+        fail("Signed in, but the Python SDK could not reach Kumiho Cloud with it")
+        return False
+    ok("Signed in with OAuth; the Python SDK refreshes this login automatically")
+    return True
+
+
+def setup_auth(
+    cli_token: str | None = None,
+    *,
+    oauth: bool = False,
+    open_browser: bool = True,
+) -> tuple[str | None, bool]:
     """Delegate Cloud authentication entirely to the installed Python SDK.
 
-    An explicit API token is passed through without parsing. Otherwise the SDK
-    uses the shared ``~/.kumiho`` credentials maintained by Kumiho Desktop,
-    ``kumiho-auth login``, or ``kumiho-cli login``.
+    An explicit API token is passed through without parsing. ``oauth`` runs
+    the SDK's browser sign-in. Otherwise the SDK uses the shared ``~/.kumiho``
+    credentials maintained by Kumiho Desktop, ``kumiho-auth login``, or
+    ``kumiho-cli login``.
     """
+    if oauth:
+        return None, oauth_login(open_browser=open_browser)
+
     token = cli_token.strip() if cli_token is not None else None
     if token:
         warn(
@@ -1206,10 +1286,27 @@ def setup_auth(cli_token: str | None = None) -> tuple[str | None, bool]:
 
     if AUTO_YES or not sys.stdin.isatty():
         warn(
-            "No SDK credential is available. Set KUMIHO_AUTH_TOKEN or run "
-            "kumiho-auth login / kumiho-cli login, then rerun onboarding."
+            "No SDK credential is available. Sign in in the browser with "
+            "--oauth, set KUMIHO_AUTH_TOKEN, or run kumiho-auth login / "
+            "kumiho-cli login, then rerun onboarding."
         )
         return None, False
+
+    method = ask_choice("How do you want to sign in to Kumiho Cloud?", [
+        {
+            "label": "Browser sign-in (OAuth)",
+            "note": "Google or email on the Kumiho consent page",
+            "value": "oauth",
+            "recommended": True,
+        },
+        {
+            "label": "Email and password in this terminal",
+            "note": "kumiho-auth login",
+            "value": "password",
+        },
+    ])
+    if method["value"] == "oauth":
+        return None, oauth_login(open_browser=open_browser)
 
     log("No cached SDK credential found; running kumiho-auth login...")
     try:
@@ -1249,7 +1346,7 @@ def choose_backend(args: argparse.Namespace) -> str:
     """
     if getattr(args, "ce", False):
         return "ce"
-    if args.token:
+    if args.token or getattr(args, "oauth", False):
         return "cloud"
     if AUTO_YES:
         persisted = (os.getenv("KUMIHO_CLAUDE_MODE", "") or "").strip().lower()
@@ -1933,6 +2030,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="deprecated one-run Cloud token pass-through; the token is not saved",
     )
     p.add_argument(
+        "--oauth",
+        action="store_true",
+        help="Sign in to Kumiho Cloud in the browser (OAuth + PKCE); implies Cloud",
+    )
+    p.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="With --oauth: print the sign-in URL instead of opening a browser",
+    )
+    p.add_argument(
         "--ce",
         action="store_true",
         help="Self-hosted Community Edition backend (no API token required)",
@@ -1967,6 +2074,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.token and args.token_stdin:
         fail("Use only one of --token or --token-stdin")
+        return 2
+    if args.oauth and (args.token or args.token_stdin):
+        fail("Use only one of --oauth or --token/--token-stdin")
+        return 2
+    if args.oauth and (
+        args.ce or args.ce_endpoint or args.ce_redis_url or args.ce_llm_base_url
+    ):
+        fail("--oauth signs in to Kumiho Cloud; it cannot be combined with CE options")
         return 2
     if args.token_stdin:
         try:
@@ -2014,7 +2129,11 @@ def main(argv: list[str] | None = None) -> int:
     if backend == "ce":
         ce = setup_ce(args)
     else:
-        token, cloud_authenticated = setup_auth(cli_token=args.token)
+        token, cloud_authenticated = setup_auth(
+            cli_token=args.token,
+            oauth=args.oauth,
+            open_browser=not args.no_browser,
+        )
         if token:
             os.environ["KUMIHO_AUTH_TOKEN"] = token
     print()
@@ -2072,9 +2191,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  Start a new session — the plugin bootstraps on first message.")
     else:
         print(f"  {YELLOW}Remaining:{RESET} Authenticate with one of:")
-        print(f"    1. Set KUMIHO_AUTH_TOKEN (preferred)")
-        print(f"    2. Run kumiho-auth login or kumiho-cli login")
-        print(f"    3. Re-run /kumiho-onboard")
+        print(f"    1. Re-run /kumiho-onboard oauth to sign in in the browser")
+        print(f"    2. Set KUMIHO_AUTH_TOKEN before starting Claude")
+        print(f"    3. Run kumiho-auth login or kumiho-cli login, then re-run /kumiho-onboard")
     print()
     print(f"  {DIM}Plugin:  {PLUGIN_DIR}{RESET}")
     print(f"  {DIM}SDK home: {KUMIHO_DIR}{RESET}")

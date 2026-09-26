@@ -197,6 +197,18 @@ the secure terminal wizard with `--reauth`:
 node codex/scripts/run_kumiho_mcp.mjs --onboard cloud --reauth
 ```
 
+To sign in in the browser instead — Google or email on the Kumiho consent page
+at `control.kumiho.cloud`, the same OAuth sign-in the hosted
+`mcp.kumiho.cloud/mcp` connector uses — run onboarding with `--oauth`. It needs
+no terminal input, so `$kumiho-onboard` can run it from Codex. The SDK (0.15.0
+or newer) receives the code on a `127.0.0.1` loopback port with PKCE and keeps a
+rotating refresh token in `~/.kumiho`, which it refreshes on its own. Add
+`--no-browser` to print the sign-in URL instead of opening a browser.
+
+```bash
+node codex/scripts/run_kumiho_mcp.mjs --onboard cloud --oauth
+```
+
 ### Self-hosted CE
 
 Start your Community Edition server first. CE mode needs no Kumiho Cloud token.
@@ -406,9 +418,10 @@ Running a checkout's `--provision` command also targets `~/.kumiho/venv`.
 
 ### Authentication or CE connection fails
 
-- Cloud: set an explicit `KUMIHO_AUTH_TOKEN`, or authenticate in your own
-  terminal with `kumiho-auth login` or `kumiho-cli login`, then ask Codex to
-  rerun `$kumiho-onboard` for Cloud.
+- Cloud: ask Codex to run `$kumiho-onboard` with the browser sign-in
+  (`--onboard cloud --oauth`), set an explicit `KUMIHO_AUTH_TOKEN`, or
+  authenticate in your own terminal with `kumiho-auth login` or
+  `kumiho-cli login`, then ask Codex to rerun `$kumiho-onboard` for Cloud.
 - CE: confirm the server is running, then ask Codex to rerun
   `$kumiho-onboard` for CE with the correct endpoint. Codex's choice is stored
   in `~/.kumiho/codex.json`, not in Claude settings or shell-only environment
