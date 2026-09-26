@@ -18,7 +18,8 @@ or other credential into chat. Never place one in a command argument,
 environment assignment, tool input, memory capture, or response. If a secret
 appears in chat, do not repeat or reflect it; tell the user to rotate it.
 
-Cloud login is permitted only in a terminal controlled directly by the user.
+Cloud login is permitted only on the Kumiho consent page in the user's browser
+(`--oauth`) or in a terminal controlled directly by the user.
 The Python SDK owns token parsing, its shared credential cache, refresh, login,
 official discovery, and regional routing. Official discovery uses the shared,
 origin-specific `~/.kumiho/official-cloud/discovery-cache.json`, never the
@@ -60,11 +61,42 @@ node <absolute-plugin-root>/scripts/run_kumiho_mcp.mjs --onboard ...
    use or refresh the shared credentials under `~/.kumiho`. Cloud is pinned to
    `https://control.kumiho.cloud`, and only the SDK may choose a regional
    endpoint from official discovery. Leave `KUMIHO_CONTROL_PLANE_API_URL`
-   unset so the SDK authentication CLI owns its official default. If secure
-   interactive login is required,
-   state the exact command without `--non-interactive` as the required next
-   action and mention that `kumiho-auth login` or `kumiho-cli login` in the
-   user's terminal are equivalent SDK login paths, without framing it as a
+   unset so the SDK authentication CLI owns its official default.
+
+   If no usable credential exists, or the user asks to sign in, re-authenticate
+   or use OAuth / browser / Google sign-in, run the browser sign-in:
+
+   ```text
+   node <entrypoint> --onboard cloud --oauth
+   ```
+
+   The SDK opens the Kumiho consent page at `control.kumiho.cloud` (Google or
+   email), receives the authorization code on a `127.0.0.1` loopback port with
+   PKCE, and stores a rotating refresh token under `~/.kumiho` that it
+   refreshes on its own. It needs no terminal input, so it may run from Codex.
+
+   Before running it, tell the user a browser tab on this machine is about to
+   open and that the command waits up to five minutes for them. Give the
+   command a timeout of at least ten minutes (provisioning can precede the
+   wait); a shorter one kills the listener before the user finishes. If the
+   output reaches you while it waits, relay the printed
+   `https://control.kumiho.cloud/oauth/authorize?...` URL in case no tab
+   appeared; it carries no secret. Never start a second run while one is
+   waiting.
+
+   The browser must run on the same machine as Codex, because the consent
+   page redirects to `127.0.0.1` here. On a remote or headless machine, do not
+   attempt the browser sign-in; point the user to a persistent
+   `KUMIHO_AUTH_TOKEN`, or to `kumiho-auth login --oauth --no-browser --port
+   PORT` in their own terminal after `ssh -L PORT:127.0.0.1:PORT`. The helper
+   refuses the sign-in while `KUMIHO_AUTH_TOKEN` is set, since that token
+   would keep taking precedence. The sign-in needs kumiho SDK 0.15.0 or newer
+   in the shared runtime; onboarding installs it.
+
+   If the user prefers email and password, state the exact command without
+   `--non-interactive` as the required next action for their own terminal and
+   mention that `kumiho-auth login` or `kumiho-cli login` there are equivalent
+   SDK login paths, without framing it as a
    question. Continue any part of the user's original request that does not
    require authentication. Do not offer to receive credentials in chat.
 3. For CE, run non-interactively. The endpoint defaults to
@@ -90,8 +122,9 @@ node <absolute-plugin-root>/scripts/run_kumiho_mcp.mjs --onboard ...
 
 - The Kumiho state root and Python runtime at `~/.kumiho` and
   `~/.kumiho/venv`, shared by Codex, Claude, and Kumiho Desktop.
-- SDK-owned credentials and discovery state under `~/.kumiho`; only secure
-  terminal login may create credentials, while SDK refresh and discovery may
+- SDK-owned credentials and discovery state under `~/.kumiho`; only the
+  browser sign-in or secure terminal login may create credentials, while SDK
+  refresh and discovery may
   update their caches. Official discovery is confined to the
   `official-cloud/discovery-cache.json` cache beneath that shared root.
 - `~/.kumiho/codex.json`, containing only Codex backend selection and

@@ -556,6 +556,225 @@ def test_noninteractive_setup_never_opens_an_sdk_login_prompt(
     output = capsys.readouterr().out
     assert "kumiho-auth login" in output
     assert "kumiho-cli login" in output
+    assert "--oauth" in output
+
+
+class _OAuthRuns:
+    """Records the SDK sign-in child the wizard launches."""
+
+    def __init__(self, returncode: int = 0):
+        self.returncode = returncode
+        self.calls: list[tuple[list[str], dict]] = []
+
+    def __call__(self, cmd, **kwargs):
+        argv = [str(c) for c in cmd]
+        self.calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, self.returncode, "", "")
+
+
+def _no_bounded_login(*_a, **_k):
+    pytest.fail("the sign-in child must not run under bounded_proc's job object")
+
+
+def test_oauth_sign_in_runs_the_sdk_browser_login_without_a_secret(
+    wizard, monkeypatch
+):
+    runs = _OAuthRuns()
+    checks = []
+    monkeypatch.delenv("KUMIHO_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("KUMIHO_CONTROL_PLANE_API_URL", "https://control.invalid")
+    monkeypatch.setattr(wizard, "_sdk_supports_oauth", lambda: True)
+    monkeypatch.setattr(wizard.subprocess, "run", runs)
+    # On Windows bounded_proc's job would kill a browser the SDK starts.
+    monkeypatch.setattr(wizard.bounded_proc, "run", _no_bounded_login)
+    monkeypatch.setattr(
+        wizard,
+        "_sdk_cloud_auth_works",
+        lambda token=None, **kw: checks.append((token, kw)) or True,
+    )
+
+    assert wizard.setup_auth(oauth=True) == (None, True)
+
+    (argv, kwargs), = runs.calls
+    assert argv[1:] == [
+        "-I", "-m", "kumiho.auth_cli", "login", "--oauth",
+        "--client-name", wizard.OAUTH_CLIENT_NAME,
+        "--timeout", str(wizard.OAUTH_BROWSER_WAIT_S),
+    ]
+    assert argv[0] == str(wizard.VENV_PYTHON)
+    env = kwargs["env"]
+    # The sign-in lands in the shared store, on the official issuer.
+    assert env["KUMIHO_CONFIG_DIR"] == str(wizard.KUMIHO_DIR)
+    assert "KUMIHO_CONTROL_PLANE_API_URL" not in env
+    # Output is inherited so the SDK's sign-in URL reaches the console.
+    assert "stdout" not in kwargs and "capture_output" not in kwargs
+    assert kwargs["timeout"] > wizard.OAUTH_BROWSER_WAIT_S
+    assert checks == [(None, {"ignore_ambient_token": True})]
+
+
+def test_oauth_sign_in_refuses_while_an_explicit_token_would_win(
+    wizard, monkeypatch, capsys
+):
+    monkeypatch.setenv("KUMIHO_AUTH_TOKEN", "ambient-token")
+    monkeypatch.setattr(wizard, "_sdk_supports_oauth", lambda: True)
+    monkeypatch.setattr(
+        wizard.subprocess,
+        "run",
+        lambda *_a, **_k: pytest.fail("a sign-in the runtime would ignore must not run"),
+    )
+
+    assert wizard.setup_auth(oauth=True) == (None, False)
+    output = capsys.readouterr().out
+    assert "takes precedence" in output
+    assert "ambient-token" not in output
+
+
+def test_oauth_sign_in_can_print_the_url_instead_of_opening_a_browser(
+    wizard, monkeypatch
+):
+    runs = _OAuthRuns()
+    monkeypatch.delenv("KUMIHO_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(wizard, "_sdk_supports_oauth", lambda: True)
+    monkeypatch.setattr(wizard.subprocess, "run", runs)
+    monkeypatch.setattr(wizard, "_sdk_cloud_auth_works", lambda token=None, **kw: True)
+
+    assert wizard.setup_auth(oauth=True, open_browser=False) == (None, True)
+    assert runs.calls[0][0][-1] == "--no-browser"
+
+
+def test_oauth_sign_in_fails_closed_on_an_sdk_without_oauth(wizard, monkeypatch, capsys):
+    monkeypatch.delenv("KUMIHO_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(wizard, "_sdk_supports_oauth", lambda: False)
+    monkeypatch.setattr(
+        wizard.subprocess,
+        "run",
+        lambda *_a, **_k: pytest.fail("an old SDK must not be asked to sign in"),
+    )
+
+    assert wizard.setup_auth(oauth=True) == (None, False)
+    assert "0.15.0" in capsys.readouterr().out
+
+
+def test_oauth_sign_in_that_is_not_completed_stays_unauthenticated(
+    wizard, monkeypatch
+):
+    monkeypatch.delenv("KUMIHO_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(wizard, "_sdk_supports_oauth", lambda: True)
+    monkeypatch.setattr(wizard.subprocess, "run", _OAuthRuns(returncode=2))
+    monkeypatch.setattr(
+        wizard,
+        "_sdk_cloud_auth_works",
+        lambda *_a, **_k: pytest.fail("a failed sign-in must not be verified"),
+    )
+
+    assert wizard.setup_auth(oauth=True) == (None, False)
+
+
+def test_oauth_flag_selects_cloud_and_reaches_setup_auth(wizard, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(wizard, "find_python", lambda: "python3")
+    monkeypatch.setattr(wizard, "write_python_knob", lambda _python: None)
+    monkeypatch.setattr(wizard, "setup_venv", lambda _python: wizard.VENV_PYTHON)
+    monkeypatch.setattr(
+        wizard, "setup_auth", lambda cli_token=None, **kw: seen.update(kw) or (None, True)
+    )
+    monkeypatch.setattr(wizard, "_neutralize_env_markers", lambda _keys: None)
+    monkeypatch.setattr(wizard, "run_ingestion", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(wizard, "verify_connection", lambda *_args, **_kwargs: None)
+    monkeypatch.setenv("KUMIHO_CLAUDE_MODE", "ce")  # an explicit --oauth wins
+
+    assert wizard.main(["--oauth", "--no-browser", "--yes"]) == 0
+    assert seen == {"oauth": True, "open_browser": False}
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--oauth", "--token", "legacy-token", "--yes"],
+        ["--oauth", "--ce", "--yes"],
+        ["--oauth", "--ce-endpoint", "127.0.0.1:9190", "--yes"],
+        ["--no-browser", "--yes"],
+    ],
+)
+def test_oauth_rejects_token_and_ce_combinations(wizard, monkeypatch, argv):
+    monkeypatch.setattr(
+        wizard, "find_python", lambda: pytest.fail("must reject before provisioning")
+    )
+    assert wizard.main(argv) == 2
+
+
+@pytest.mark.parametrize(
+    ("spec", "expected"),
+    [
+        (
+            "kumiho[mcp]>=0.12.2 kumiho-memory[all]>=1.5.0",
+            "kumiho[mcp]>=0.15.0 kumiho-memory[all]>=1.5.0",
+        ),
+        ("kumiho[mcp]>=0.16.1 kumiho-memory[all]>=1.5.0", "kumiho[mcp]>=0.16.1 kumiho-memory[all]>=1.5.0"),
+        ("kumiho[mcp] kumiho-memory[all]", "kumiho[mcp]>=0.15.0 kumiho-memory[all]"),
+        ("kumiho>=0.9.20", "kumiho>=0.15.0"),
+    ],
+)
+def test_oauth_package_spec_raises_only_the_kumiho_floor(wizard, spec, expected):
+    assert wizard.oauth_package_spec(spec) == expected
+
+
+def _installed_at(spec: str) -> dict:
+    reqs, understood = L._spec_floors(spec)
+    assert understood
+    installed = {name: floor for name, _extras, floor, _ceiling in reqs}
+    installed.update(__modules__=True, __extras__=True, __python_ok__=True)
+    return installed
+
+
+def test_the_launcher_keeps_a_venv_the_oauth_sign_in_upgraded(wizard, monkeypatch, tmp_path):
+    """The plugin-wide floor stays low; an OAuth run's upgrade must stick."""
+    oauth_spec = wizard.oauth_package_spec(L.DEFAULT_PACKAGE_SPEC)
+    py = tmp_path / "python"
+    py.write_text("", encoding="utf-8")
+    marker = tmp_path / "shared-marker"
+    marker.write_text(oauth_spec, encoding="utf-8")
+
+    monkeypatch.setattr(L, "_installed_versions", lambda *_, **__: _installed_at(oauth_spec))
+    # The next MCP start (default spec) does not reinstall or downgrade.
+    assert not L._needs_install(py, marker, L.DEFAULT_PACKAGE_SPEC)
+
+    # An onboarding run with --oauth does upgrade a venv at the default floors.
+    monkeypatch.setattr(
+        L, "_installed_versions", lambda *_, **__: _installed_at(L.DEFAULT_PACKAGE_SPEC)
+    )
+    marker.write_text(L.DEFAULT_PACKAGE_SPEC, encoding="utf-8")
+    assert L._needs_install(py, marker, oauth_spec)
+
+
+def test_oauth_run_provisions_with_the_raised_floor(wizard, monkeypatch):
+    seen = {}
+    monkeypatch.delenv("KUMIHO_CLAUDE_PACKAGE_SPEC", raising=False)
+    monkeypatch.setattr(wizard, "find_python", lambda: "python3")
+    monkeypatch.setattr(wizard, "write_python_knob", lambda _python: None)
+
+    def fake_setup_venv(_python):
+        seen["spec"] = wizard.package_spec()
+        return wizard.VENV_PYTHON
+
+    monkeypatch.setattr(wizard, "setup_venv", fake_setup_venv)
+    monkeypatch.setattr(wizard, "setup_auth", lambda cli_token=None, **kw: (None, False))
+    monkeypatch.setattr(wizard, "run_ingestion", lambda *_a, **_k: None)
+    monkeypatch.setattr(wizard, "verify_connection", lambda *_a, **_k: None)
+
+    assert wizard.main(["--oauth", "--yes"]) == 0
+    assert seen["spec"] == wizard.oauth_package_spec(L.DEFAULT_PACKAGE_SPEC)
+    assert "kumiho[mcp]>=0.15.0" in seen["spec"]
+
+
+def test_onboard_command_offers_the_oauth_sign_in():
+    command = (SCRIPTS.parent / "commands" / "kumiho-onboard.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'argument-hint: "cloud | oauth | ce"' in command
+    assert '"${CLAUDE_PLUGIN_ROOT}/scripts/setup.py" --oauth --yes' in command
+    assert "--no-browser" in command
 
 
 def test_yes_preserves_persisted_ce_backend(wizard, monkeypatch):
@@ -571,7 +790,7 @@ def test_unauthenticated_cloud_setup_does_not_clear_ce_markers(
     monkeypatch.setattr(wizard, "find_python", lambda: "python3")
     monkeypatch.setattr(wizard, "write_python_knob", lambda _python: None)
     monkeypatch.setattr(wizard, "setup_venv", lambda _python: wizard.VENV_PYTHON)
-    monkeypatch.setattr(wizard, "setup_auth", lambda cli_token=None: (None, False))
+    monkeypatch.setattr(wizard, "setup_auth", lambda cli_token=None, **_kw: (None, False))
     monkeypatch.setattr(wizard, "run_ingestion", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(wizard, "verify_connection", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -591,7 +810,7 @@ def test_legacy_token_stdin_summary_says_not_saved(wizard, monkeypatch, capsys):
     monkeypatch.setattr(
         wizard,
         "setup_auth",
-        lambda cli_token=None: (cli_token.strip(), True),
+        lambda cli_token=None, **_kw: (cli_token.strip(), True),
     )
     monkeypatch.setattr(wizard, "_neutralize_env_markers", lambda _keys: None)
     monkeypatch.setattr(wizard, "run_ingestion", lambda *_args, **_kwargs: None)

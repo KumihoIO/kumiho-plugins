@@ -1,6 +1,6 @@
 ---
 description: Run the Kumiho Memory onboarding wizard — venv, SDK auth verification, backend config, skill ingestion
-argument-hint: "cloud | ce"
+argument-hint: "cloud | oauth | ce"
 ---
 
 # Kumiho Onboarding Wizard
@@ -144,13 +144,15 @@ If resolution failed, stop rather than trying another executable alias.
 ## Steps
 
 1. **Resolve the backend without asking.** The plugin can use either Kumiho
-   Cloud (managed; explicit API token or SDK login) or a self-hosted
-   `kumiho-server` Community Edition (CE, no Cloud token).
+   Cloud (managed; browser OAuth sign-in, explicit API token or SDK login) or a
+   self-hosted `kumiho-server` Community Edition (CE, no Cloud token).
 
    - Never accept a JWT/API token as this command's argument or ask the user to
      paste one into chat. Credentials must be configured outside the plugin.
    - If the argument is `ce` (or `self-hosted` / `community`), go straight to
      the **CE** path.
+   - If the argument is `oauth` (or `login` / `browser` / `google`), go
+     straight to the **Cloud OAuth sign-in** below.
    - If the argument is `cloud`, go straight to the **Cloud** path.
    - With no argument, reuse a valid explicit backend already present in the
      trusted host/user configuration. If none is present, select **Cloud**.
@@ -166,19 +168,21 @@ If resolution failed, stop rather than trying another executable alias.
    1. Prefer an explicit `KUMIHO_AUTH_TOKEN` configured persistently in the
       OS/user or trusted host environment **before Claude starts**. The plugin
       only passes the inherited value to the SDK; it never saves it.
-   2. Otherwise authenticate the shared SDK credential store from a local
-      terminal with `kumiho-auth login` or `kumiho-cli login`.
+   2. Otherwise use the shared SDK credential store: a browser OAuth sign-in
+      (below), or `kumiho-auth login` / `kumiho-cli login` in a local terminal.
 
-   If neither credential is currently available, do not ask for a secret.
-   Report the two actions above and that Claude must be fully restarted after
-   either one. Setup may still provision the runtime now and report Cloud as
-   unauthenticated. Run setup without a token, using the resolved interpreter
-   and platform-specific invocation form above:
+   Run setup without a token, using the resolved interpreter and
+   platform-specific invocation form above:
 
    ```bash
    KUMIHO_CLAUDE_HOST=claude "$KUMIHO_PY" -I \
      "${CLAUDE_PLUGIN_ROOT}/scripts/setup.py" --yes
    ```
+
+   If it reports Cloud as unauthenticated, do not ask for a secret: continue
+   with the **Cloud OAuth sign-in** below. Mention that a persistent
+   `KUMIHO_AUTH_TOKEN` or `kumiho-auth login` / `kumiho-cli login` in the
+   user's own terminal remain alternatives.
 
    `setup.py` provisions the shared venv, asks the SDK to verify authentication,
    and ingests skills; it does not own or persist Cloud credentials. Its legacy
@@ -187,6 +191,38 @@ If resolution failed, stop rather than trying another executable alias.
    do not configure the next Claude restart. The runtime keeps discovery in
    `~/.kumiho/official-cloud/discovery-cache.json`, isolated from legacy or
    custom-origin cache entries.
+
+   **Cloud OAuth sign-in** — signs in on the Kumiho consent page at
+   `control.kumiho.cloud` (Google or email), the same page the hosted
+   `mcp.kumiho.cloud/mcp` connector uses. The SDK registers a public client,
+   receives the authorization code on a `127.0.0.1` loopback port with PKCE, and
+   keeps a rotating refresh token in the shared `~/.kumiho` credential store;
+   the MCP server and hooks then refresh it on their own. Nothing is typed into
+   the terminal, so it works from this command. Run:
+
+   ```bash
+   KUMIHO_CLAUDE_HOST=claude "$KUMIHO_PY" -I \
+     "${CLAUDE_PLUGIN_ROOT}/scripts/setup.py" --oauth --yes
+   ```
+
+   Run it in the background (the sign-in waits up to five minutes, longer than
+   the default command timeout) and tell the user a browser tab is waiting for
+   them. As soon as the output shows the
+   `https://control.kumiho.cloud/oauth/authorize?...` URL, give it to the user
+   too, in case no tab appeared; it carries no secret. Do not start a second
+   run while the first is waiting — wait for it to finish and report its
+   result.
+
+   The browser must run on the same machine as Claude: the consent page
+   redirects to `127.0.0.1` here. When Claude runs on a remote or headless
+   machine, do not attempt the browser sign-in; point the user to a persistent
+   `KUMIHO_AUTH_TOKEN`, or to `kumiho-auth login --oauth --no-browser --port
+   PORT` in their own terminal after `ssh -L PORT:127.0.0.1:PORT`.
+
+   Setup refuses the sign-in while `KUMIHO_AUTH_TOKEN` is set, because that
+   token would keep taking precedence; relay that it must be removed and Claude
+   restarted first. The sign-in needs kumiho SDK 0.15.0 or newer, which setup
+   installs into the shared runtime.
 
 3. **CE path** — no token is needed. Run:
 
@@ -228,10 +264,15 @@ If resolution failed, stop rather than trying another executable alias.
      memory connects on first message."
    - If setup succeeded (CE): "CE onboarding complete. Ensure your
      kumiho-server CE is running, then start a new session."
-   - If auth was skipped: "Onboarding complete but unauthenticated. Configure
-     persistent `KUMIHO_AUTH_TOKEN` before starting Claude, or run
-     `kumiho-auth login` / `kumiho-cli login` locally; restart Claude, then
-     re-run `/kumiho-onboard`."
+   - If setup succeeded with OAuth: "Signed in to Kumiho Cloud. Start a new
+     Claude session (restart the app on Claude Desktop) — the memory server
+     that is running now started without the sign-in, and `/clear` does not
+     restart it."
+   - If auth was skipped or the sign-in did not complete: "Onboarding complete
+     but unauthenticated. Run `/kumiho-onboard oauth` to sign in in the
+     browser, or configure persistent `KUMIHO_AUTH_TOKEN` before starting
+     Claude, or run `kumiho-auth login` / `kumiho-cli login` locally; restart
+     Claude, then re-run `/kumiho-onboard`."
    - If the script failed: relay the error and suggest running it manually
      from a terminal using the resolved interpreter:
      `KUMIHO_CLAUDE_HOST=claude "$KUMIHO_PY" -I scripts/setup.py`
@@ -242,7 +283,7 @@ If resolution failed, stop rather than trying another executable alias.
 - The wizard is designed to be re-runnable (idempotent) — re-running it
   upgrades packages, verifies SDK authentication or rewrites CE config, and
   re-ingests skills (stacking revisions, not duplicating).
-- If the user just needs to re-authenticate, configure persistent
-  `KUMIHO_AUTH_TOKEN` before host startup or run `kumiho-auth login` /
-  `kumiho-cli login` in a local terminal. Never implement token storage,
-  refresh, discovery, or regional routing in this command.
+- If the user just needs to re-authenticate, run the **Cloud OAuth sign-in**,
+  configure persistent `KUMIHO_AUTH_TOKEN` before host startup, or run
+  `kumiho-auth login` / `kumiho-cli login` in a local terminal. Never implement
+  token storage, refresh, discovery, or regional routing in this command.

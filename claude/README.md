@@ -3,7 +3,7 @@
 Persistent graph-native memory plugin for Claude. Runs a local Kumiho MCP
 server with `kumiho-memory` so Claude **remembers you across sessions**.
 
-Version: **0.23.4** | Requires: `kumiho>=0.12.2`, `kumiho-memory>=1.5.0`
+Version: **0.24.0** | Requires: `kumiho>=0.12.2`, `kumiho-memory>=1.5.0`
 (reused or installed automatically in `~/.kumiho/venv` — nothing to `pip install`)
 
 **OpenAI Codex** uses the parallel native package under `../codex`,
@@ -42,6 +42,7 @@ Select **self-hosted CE** explicitly when you run your own local
 
 ```bash
 /kumiho-onboard                 # reuses explicit config; otherwise defaults to Cloud
+/kumiho-onboard oauth           # Kumiho Cloud, browser sign-in (Google or email)
 /kumiho-onboard ce              # self-hosted CE (defaults to 127.0.0.1:9190)
 ```
 
@@ -53,10 +54,12 @@ The bare `python` spelling in manual POSIX examples below is shorthand; on
 Windows use `/kumiho-onboard` so the OS-account venv or a native PE launcher is
 resolved by absolute path instead of a Windows App Execution Alias.
 
-Cloud credentials are owned by the Python SDK. Before starting Claude, either
-configure a persistent `KUMIHO_AUTH_TOKEN` in the OS/user or trusted host
-environment, or authenticate the shared SDK store from a local terminal with
-`kumiho-auth login` / `kumiho-cli login`. Then run setup without a token:
+Cloud credentials are owned by the Python SDK. Sign in in the browser with
+`/kumiho-onboard oauth` (see [Method C](#method-c--browser-sign-in-oauth)), or
+before starting Claude either configure a persistent `KUMIHO_AUTH_TOKEN` in the
+OS/user or trusted host environment, or authenticate the shared SDK store from a
+local terminal with `kumiho-auth login` / `kumiho-cli login`. Then run setup
+without a token:
 
 ```bash
 python -I ./claude/scripts/setup.py --yes
@@ -150,7 +153,7 @@ claude --plugin-dir ./claude
 
 1. **Install** the plugin (marketplace commands above)
 2. **Choose a backend** — see [Choosing a backend](#choosing-a-backend-cloud-vs-ce):
-   - **Cloud**: reuse an explicit API token, or sign in locally with `kumiho-auth login` / `kumiho-cli login`
+   - **Cloud**: sign in in the browser with `/kumiho-onboard oauth`, reuse an explicit API token, or sign in locally with `kumiho-auth login` / `kumiho-cli login`
    - **CE**: stand up your own local [`kumiho-server` Community Edition](https://github.com/KumihoIO/kumiho-server-community) (Neo4j + Redis + embedding)
 3. **Run `/kumiho-onboard`** inside Claude — the wizard handles backend selection, SDK auth verification, MCP config, and skill ingestion
 4. **Start chatting** — Claude now remembers you across sessions
@@ -159,9 +162,9 @@ claude --plugin-dir ./claude
 
 | | **Cloud** (managed) | **Self-hosted CE** |
 |---|---|---|
-| Auth | Explicit API token, or SDK-managed CLI login/cache | none — the CE server enforces its own |
+| Auth | Browser OAuth sign-in, explicit API token, or SDK-managed CLI login/cache | none — the CE server enforces its own |
 | Backend store | managed Neo4j + Redis | **you run** Neo4j + Redis (+ an embedding/LLM) |
-| Setup | configure persistent `KUMIHO_AUTH_TOKEN` before host start, or use SDK login; then `/kumiho-onboard cloud` | stand up `kumiho-server-community`, then `/kumiho-onboard ce` |
+| Setup | `/kumiho-onboard oauth`; or configure persistent `KUMIHO_AUTH_TOKEN` before host start, or use SDK login, then `/kumiho-onboard cloud` | stand up `kumiho-server-community`, then `/kumiho-onboard ce` |
 | Data | summaries in Kumiho Cloud; raw transcripts stay local | everything on the same machine as the plugin |
 
 **Cloud** — the plugin pins `https://control.kumiho.cloud`, then the Python SDK
@@ -170,7 +173,9 @@ An explicit `KUMIHO_AUTH_TOKEN` is passed through as the preferred credential;
 otherwise use either supported local login command:
 
 ```bash
-# Authenticate once in a local terminal when no persistent token is set:
+# Sign in in the browser, from inside Claude:
+/kumiho-onboard oauth
+# Or authenticate once in a local terminal when no persistent token is set:
 kumiho-auth login              # kumiho-cli login is also supported
 # Then, inside Claude:
 /kumiho-onboard cloud
@@ -424,6 +429,29 @@ kumiho-cli login
 
 Both commands populate the SDK-owned credential store under `~/.kumiho`. The
 SDK loads and refreshes those credentials when Cloud starts.
+
+### Method C — Browser sign-in (OAuth)
+
+```text
+/kumiho-onboard oauth
+```
+
+Signs in on the Kumiho consent page at `control.kumiho.cloud` — continue with
+Google or email — the same OAuth sign-in the hosted `mcp.kumiho.cloud/mcp`
+connector uses. The Python SDK (0.15.0 or newer) registers a public client,
+receives the authorization code on a `127.0.0.1` loopback port with PKCE, and
+stores a rotating refresh token in `~/.kumiho`; the MCP server and hooks refresh
+it on their own, under a lock so concurrent processes never reuse a rotated
+token. No password or token passes through the terminal, the chat or argv, so
+Claude can run it for you. From a terminal the same sign-in is
+`python -I ./claude/scripts/setup.py --oauth --yes` or
+`kumiho-auth login --oauth`. The browser must run on the same machine, since
+the consent page redirects to `127.0.0.1` there; `--no-browser` only skips
+opening it. Over SSH, run `kumiho-auth login --oauth --no-browser --port PORT`
+after `ssh -L PORT:127.0.0.1:PORT`. Setup refuses the sign-in while
+`KUMIHO_AUTH_TOKEN` is set, because that token takes precedence. Tools that
+share `~/.kumiho` with an SDK older than 0.15.0 (for example an older Kumiho
+Desktop) can use the sign-in for about an hour but cannot refresh it.
 
 ### Trusted host environment example
 
