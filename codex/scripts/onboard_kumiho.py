@@ -37,8 +37,10 @@ OFFICIAL_CONTROL_PLANE_URL = "https://control.kumiho.cloud"
 INGEST_TIMEOUT_S = 2 * 60
 #: Application name the Kumiho consent page shows for this plugin's sign-in.
 OAUTH_CLIENT_NAME = "Kumiho Memory for Codex"
-#: The SDK waits 300 s for the browser; allow for startup and the exchange.
-OAUTH_LOGIN_TIMEOUT_S = 330
+#: How long the SDK waits for the browser sign-in.
+OAUTH_BROWSER_WAIT_S = 300
+#: Plus interpreter start, metadata, registration, code exchange and the lock.
+OAUTH_LOGIN_TIMEOUT_S = OAUTH_BROWSER_WAIT_S + 90
 
 # Installed plugin snapshots execute this file directly, while unit tests may
 # load it by path. Resolve the vendored bounded runner from this script's own
@@ -412,6 +414,16 @@ def _oauth_login(venv_python: Path, *, open_browser: bool) -> bool:
     The SDK receives the code on a loopback port and keeps a rotating refresh
     token in the shared ``~/.kumiho`` store; no credential crosses Codex.
     """
+    if (os.getenv("KUMIHO_AUTH_TOKEN") or "").strip():
+        # The runtime, ingestion and verification all use an explicit token
+        # before the SDK store, so a browser sign-in would never be used.
+        print(
+            "[kumiho-codex] KUMIHO_AUTH_TOKEN is set and takes precedence over "
+            "a browser sign-in. Remove it from the environment, restart Codex, "
+            "then run the sign-in again.",
+            file=sys.stderr,
+        )
+        return False
     if not _sdk_supports_oauth(venv_python):
         print(
             "[kumiho-codex] Browser sign-in needs kumiho SDK 0.15.0 or newer; "
@@ -419,30 +431,29 @@ def _oauth_login(venv_python: Path, *, open_browser: bool) -> bool:
             file=sys.stderr,
         )
         return False
-    if (os.getenv("KUMIHO_AUTH_TOKEN") or "").strip():
-        print(
-            "[kumiho-codex] KUMIHO_AUTH_TOKEN is set and takes precedence over "
-            "the browser sign-in; remove it from the environment to use OAuth.",
-            file=sys.stderr,
-        )
     command = [
         str(venv_python), "-I", "-m", "kumiho.auth_cli", "login", "--oauth",
         "--client-name", OAUTH_CLIENT_NAME,
+        "--timeout", str(OAUTH_BROWSER_WAIT_S),
     ]
     if not open_browser:
         command.append("--no-browser")
     print(
-        "[kumiho-codex] Opening the Kumiho sign-in page in your browser "
-        "(waiting up to 5 minutes)..."
+        "[kumiho-codex] Opening the Kumiho sign-in page in a browser on this "
+        "machine (waiting up to 5 minutes)...",
+        flush=True,
     )
     try:
-        result = _run_interactive(
+        # Not bounded_proc: on Windows its job object kills the whole tree when
+        # the run ends, and a browser the SDK had to start inherits that job,
+        # so a successful sign-in would close the user's browser. The listener
+        # lives in this one child; a timeout ends it.
+        result = subprocess.run(
             command,
+            env=_child_env(drop_auth_token=True, isolate_cloud_auth=True),
             timeout=OAUTH_LOGIN_TIMEOUT_S,
-            drop_auth_token=True,
-            isolate_cloud_auth=True,
         )
-    except subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):
         print("[kumiho-codex] Browser sign-in timed out.", file=sys.stderr)
         return False
     if result.returncode != 0 or not _cached_auth_works(
@@ -796,6 +807,7 @@ def main(argv: list[str] | None = None) -> int:
         explicit_repair = (
             args.backend in {"cloud", "ce"}
             or args.reauth
+            or args.oauth
             or bool(args.ce_endpoint or args.ce_redis_url or args.ce_llm_base_url)
         )
         if not explicit_repair:

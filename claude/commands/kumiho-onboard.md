@@ -207,13 +207,22 @@ If resolution failed, stop rather than trying another executable alias.
 
    Run it in the background (the sign-in waits up to five minutes, longer than
    the default command timeout) and tell the user a browser tab is waiting for
-   them. Read the output as it arrives: it prints the
-   `https://control.kumiho.cloud/oauth/authorize?...` URL, which carries no
-   secret. If the browser did not open — a remote or headless machine — rerun
-   with `--no-browser` added and give the user that URL. The sign-in needs
-   kumiho SDK 0.15.0 or newer; setup provisions it. An explicit
-   `KUMIHO_AUTH_TOKEN` still takes precedence over the OAuth login; setup warns
-   when one is set.
+   them. As soon as the output shows the
+   `https://control.kumiho.cloud/oauth/authorize?...` URL, give it to the user
+   too, in case no tab appeared; it carries no secret. Do not start a second
+   run while the first is waiting — wait for it to finish and report its
+   result.
+
+   The browser must run on the same machine as Claude: the consent page
+   redirects to `127.0.0.1` here. When Claude runs on a remote or headless
+   machine, do not attempt the browser sign-in; point the user to a persistent
+   `KUMIHO_AUTH_TOKEN`, or to `kumiho-auth login --oauth --no-browser --port
+   PORT` in their own terminal after `ssh -L PORT:127.0.0.1:PORT`.
+
+   Setup refuses the sign-in while `KUMIHO_AUTH_TOKEN` is set, because that
+   token would keep taking precedence; relay that it must be removed and Claude
+   restarted first. The sign-in needs kumiho SDK 0.15.0 or newer, which setup
+   installs into the shared runtime.
 
 3. **CE path** — no token is needed. Run:
 
@@ -256,7 +265,9 @@ If resolution failed, stop rather than trying another executable alias.
    - If setup succeeded (CE): "CE onboarding complete. Ensure your
      kumiho-server CE is running, then start a new session."
    - If setup succeeded with OAuth: "Signed in to Kumiho Cloud. Start a new
-     session — memory connects on first message."
+     Claude session (restart the app on Claude Desktop) — the memory server
+     that is running now started without the sign-in, and `/clear` does not
+     restart it."
    - If auth was skipped or the sign-in did not complete: "Onboarding complete
      but unauthenticated. Run `/kumiho-onboard oauth` to sign in in the
      browser, or configure persistent `KUMIHO_AUTH_TOKEN` before starting

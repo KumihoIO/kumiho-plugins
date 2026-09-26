@@ -1157,8 +1157,10 @@ def cache_token(token: str) -> bool:
 
 #: Application name the Kumiho consent page shows for this plugin's sign-in.
 OAUTH_CLIENT_NAME = "Kumiho Memory for Claude Code"
-#: The SDK waits 300 s for the browser; allow for startup and the exchange.
-OAUTH_LOGIN_TIMEOUT_S = 330
+#: How long the SDK waits for the browser sign-in.
+OAUTH_BROWSER_WAIT_S = 300
+#: Plus interpreter start, metadata, registration, code exchange and the lock.
+OAUTH_LOGIN_TIMEOUT_S = OAUTH_BROWSER_WAIT_S + 90
 
 
 def _sdk_cloud_auth_works(
@@ -1202,34 +1204,45 @@ def oauth_login(*, open_browser: bool = True) -> bool:
     credential store, which it then refreshes on its own. No credential passes
     through this process, the chat or argv.
     """
+    if (os.getenv("KUMIHO_AUTH_TOKEN", "") or "").strip():
+        # The MCP server, hooks, ingestion and verification all use an explicit
+        # token before the SDK store, so a browser sign-in would be recorded
+        # but never used; skills would even be ingested into the token's
+        # account. Refuse instead of reporting a sign-in that does not apply.
+        fail(
+            "KUMIHO_AUTH_TOKEN is set and takes precedence over a browser "
+            "sign-in. Remove it from the host environment, restart Claude, "
+            "then run /kumiho-onboard oauth again"
+        )
+        return False
     if not _sdk_supports_oauth():
         fail(
             "Browser sign-in needs kumiho SDK 0.15.0 or newer in "
             f"{VENV_DIR}; re-run onboarding to upgrade the runtime"
         )
         return False
-    if (os.getenv("KUMIHO_AUTH_TOKEN", "") or "").strip():
-        warn(
-            "KUMIHO_AUTH_TOKEN is set and takes precedence over the browser "
-            "sign-in; remove it from the host environment to use OAuth"
-        )
 
     env = {**os.environ, "KUMIHO_CONFIG_DIR": str(KUMIHO_DIR)}
     # The plugin pins the official control plane; so does its OAuth issuer.
     env.pop("KUMIHO_CONTROL_PLANE_API_URL", None)
-    env.pop("KUMIHO_AUTH_TOKEN", None)
     command = [
         str(VENV_PYTHON), "-I", "-m", "kumiho.auth_cli", "login", "--oauth",
         "--client-name", OAUTH_CLIENT_NAME,
+        "--timeout", str(OAUTH_BROWSER_WAIT_S),
     ]
     if not open_browser:
         command.append("--no-browser")
-    log("Opening the Kumiho sign-in page in your browser (waiting up to 5 minutes)...")
+    log(
+        "Opening the Kumiho sign-in page in a browser on this machine "
+        "(waiting up to 5 minutes)..."
+    )
     try:
-        # Output stays on the console: the SDK prints the sign-in URL there.
-        result = bounded_proc.run(
-            command, timeout=OAUTH_LOGIN_TIMEOUT_S, env=env, stdout=None, stderr=None,
-        )
+        # Not bounded_proc: on Windows its job object kills the whole tree when
+        # the run ends, and a browser the SDK had to start inherits that job,
+        # so a successful sign-in would close the user's browser. The listener
+        # lives in this one child; a timeout ends it. Output stays on the
+        # console, where the SDK prints the sign-in URL.
+        result = subprocess.run(command, timeout=OAUTH_LOGIN_TIMEOUT_S, env=env)
     except (OSError, subprocess.TimeoutExpired):
         result = None
     if result is None or result.returncode != 0:
@@ -2074,6 +2087,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.token and args.token_stdin:
         fail("Use only one of --token or --token-stdin")
+        return 2
+    if args.no_browser and not args.oauth:
+        fail("--no-browser applies only to --oauth")
         return 2
     if args.oauth and (args.token or args.token_stdin):
         fail("Use only one of --oauth or --token/--token-stdin")

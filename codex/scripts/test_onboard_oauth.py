@@ -39,15 +39,19 @@ class _Runs:
         return subprocess.CompletedProcess(argv, self.returncode, "", "")
 
 
-def test_oauth_runs_the_sdk_browser_login_on_the_official_issuer(
-    onboard, monkeypatch, capsys
-):
+def _no_bounded_login(*_a, **_k):
+    pytest.fail("the sign-in child must not run under bounded_proc's job object")
+
+
+def test_oauth_runs_the_sdk_browser_login_on_the_official_issuer(onboard, monkeypatch):
     runs = _Runs()
     checks = []
-    monkeypatch.setenv("KUMIHO_AUTH_TOKEN", "ambient-token")
+    monkeypatch.delenv("KUMIHO_AUTH_TOKEN", raising=False)
     monkeypatch.setenv("KUMIHO_CONTROL_PLANE_API_URL", "https://control.invalid")
     monkeypatch.setattr(onboard, "_sdk_supports_oauth", lambda _python: True)
-    monkeypatch.setattr(onboard.bounded_proc, "run", runs)
+    monkeypatch.setattr(onboard.subprocess, "run", runs)
+    # On Windows bounded_proc's job would kill a browser the SDK starts.
+    monkeypatch.setattr(onboard.bounded_proc, "run", _no_bounded_login)
     monkeypatch.setattr(
         onboard,
         "_cached_auth_works",
@@ -62,18 +66,34 @@ def test_oauth_runs_the_sdk_browser_login_on_the_official_issuer(
     assert argv[1:] == [
         "-I", "-m", "kumiho.auth_cli", "login", "--oauth",
         "--client-name", onboard.OAUTH_CLIENT_NAME,
+        "--timeout", str(onboard.OAUTH_BROWSER_WAIT_S),
     ]
     env = kwargs["env"]
     assert "KUMIHO_AUTH_TOKEN" not in env
     assert "KUMIHO_CONTROL_PLANE_API_URL" not in env
     assert env["KUMIHO_CONTROL_PLANE_URL"] == onboard.OFFICIAL_CONTROL_PLANE_URL
-    assert kwargs["stdout"] is None and kwargs["stderr"] is None
-    assert kwargs["timeout"] >= 300
+    assert "stdout" not in kwargs and "capture_output" not in kwargs
+    assert kwargs["timeout"] > onboard.OAUTH_BROWSER_WAIT_S
     assert checks == [{"drop_auth_token": True}]
+    assert (onboard._config_dir() / "codex.json").is_file()
+
+
+def test_oauth_refuses_while_an_explicit_token_would_win(onboard, monkeypatch, capsys):
+    monkeypatch.setenv("KUMIHO_AUTH_TOKEN", "ambient-token")
+    monkeypatch.setattr(onboard, "_sdk_supports_oauth", lambda _python: True)
+    monkeypatch.setattr(
+        onboard.subprocess,
+        "run",
+        lambda *_a, **_k: pytest.fail("a sign-in the runtime would ignore must not run"),
+    )
+
+    assert not onboard._configure_cloud(
+        Path(sys.executable), non_interactive=False, reauth=False, oauth=True
+    )
     captured = capsys.readouterr()
     assert "takes precedence" in captured.err
     assert "ambient-token" not in captured.out + captured.err
-    assert (onboard._config_dir() / "codex.json").is_file()
+    assert not (onboard._config_dir() / "codex.json").exists()
 
 
 def test_oauth_does_not_need_a_terminal(onboard, monkeypatch):
@@ -85,7 +105,7 @@ def test_oauth_does_not_need_a_terminal(onboard, monkeypatch):
     monkeypatch.setattr(onboard.sys, "stdin", NoTty())
     monkeypatch.setattr(onboard, "_sdk_supports_oauth", lambda _python: True)
     runs = _Runs()
-    monkeypatch.setattr(onboard.bounded_proc, "run", runs)
+    monkeypatch.setattr(onboard.subprocess, "run", runs)
     monkeypatch.setattr(onboard, "_cached_auth_works", lambda _python, **kw: True)
 
     assert onboard._configure_cloud(
@@ -99,9 +119,10 @@ def test_oauth_does_not_need_a_terminal(onboard, monkeypatch):
 
 
 def test_oauth_fails_closed_on_an_sdk_without_oauth(onboard, monkeypatch, capsys):
+    monkeypatch.delenv("KUMIHO_AUTH_TOKEN", raising=False)
     monkeypatch.setattr(onboard, "_sdk_supports_oauth", lambda _python: False)
     monkeypatch.setattr(
-        onboard.bounded_proc,
+        onboard.subprocess,
         "run",
         lambda *_a, **_k: pytest.fail("an old SDK must not be asked to sign in"),
     )
@@ -116,7 +137,7 @@ def test_oauth_fails_closed_on_an_sdk_without_oauth(onboard, monkeypatch, capsys
 def test_oauth_that_is_not_completed_writes_no_backend(onboard, monkeypatch):
     monkeypatch.delenv("KUMIHO_AUTH_TOKEN", raising=False)
     monkeypatch.setattr(onboard, "_sdk_supports_oauth", lambda _python: True)
-    monkeypatch.setattr(onboard.bounded_proc, "run", _Runs(returncode=2))
+    monkeypatch.setattr(onboard.subprocess, "run", _Runs(returncode=2))
     monkeypatch.setattr(
         onboard,
         "_cached_auth_works",
@@ -157,9 +178,28 @@ def test_noninteractive_cloud_points_at_the_browser_sign_in(onboard, monkeypatch
     assert "--onboard cloud --oauth" in capsys.readouterr().err
 
 
+def test_oauth_repairs_an_invalid_backend_config_as_an_explicit_cloud_choice(
+    onboard, monkeypatch
+):
+    def invalid():
+        raise ValueError("the existing Codex backend config names an unknown backend")
+
+    seen = {}
+    monkeypatch.setattr(onboard, "_provision", lambda: Path(sys.executable))
+    monkeypatch.setattr(onboard, "_existing_config", invalid)
+    monkeypatch.setattr(
+        onboard, "_configure_cloud", lambda _python, **kw: seen.update(kw) or False
+    )
+
+    # Configuration was reached (returns 2 because the stub declines), rather
+    # than stopping early to demand an explicit backend.
+    assert onboard.main(["--oauth"]) == 2
+    assert seen["oauth"] is True
+
+
 def test_onboard_skill_documents_the_oauth_sign_in():
     skill = (HERE.parent / "skills" / "kumiho-onboard" / "SKILL.md").read_text(
         encoding="utf-8"
     )
     assert "--onboard cloud --oauth" in skill
-    assert "--no-browser" in skill
+    assert "on this machine" in skill

@@ -445,8 +445,13 @@ it on their own, under a lock so concurrent processes never reuse a rotated
 token. No password or token passes through the terminal, the chat or argv, so
 Claude can run it for you. From a terminal the same sign-in is
 `python -I ./claude/scripts/setup.py --oauth --yes` or
-`kumiho-auth login --oauth`; add `--no-browser` to print the URL instead of
-opening a browser. An explicit `KUMIHO_AUTH_TOKEN` still takes precedence.
+`kumiho-auth login --oauth`. The browser must run on the same machine, since
+the consent page redirects to `127.0.0.1` there; `--no-browser` only skips
+opening it. Over SSH, run `kumiho-auth login --oauth --no-browser --port PORT`
+after `ssh -L PORT:127.0.0.1:PORT`. Setup refuses the sign-in while
+`KUMIHO_AUTH_TOKEN` is set, because that token takes precedence. Tools that
+share `~/.kumiho` with an SDK older than 0.15.0 (for example an older Kumiho
+Desktop) can use the sign-in for about an hour but cannot refresh it.
 
 ### Trusted host environment example
 

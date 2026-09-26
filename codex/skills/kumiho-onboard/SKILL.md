@@ -74,11 +74,24 @@ node <absolute-plugin-root>/scripts/run_kumiho_mcp.mjs --onboard ...
    email), receives the authorization code on a `127.0.0.1` loopback port with
    PKCE, and stores a rotating refresh token under `~/.kumiho` that it
    refreshes on its own. It needs no terminal input, so it may run from Codex.
-   Tell the user a browser tab is waiting for them; the helper waits up to five
-   minutes. If the browser cannot open on this machine, rerun with
-   `--no-browser` and relay the printed `control.kumiho.cloud/oauth/authorize`
-   URL — it carries no secret. The sign-in needs kumiho SDK 0.15.0 or newer in
-   the shared runtime; onboarding provisions it.
+
+   Before running it, tell the user a browser tab on this machine is about to
+   open and that the command waits up to five minutes for them. Give the
+   command a timeout of at least ten minutes (provisioning can precede the
+   wait); a shorter one kills the listener before the user finishes. If the
+   output reaches you while it waits, relay the printed
+   `https://control.kumiho.cloud/oauth/authorize?...` URL in case no tab
+   appeared; it carries no secret. Never start a second run while one is
+   waiting.
+
+   The browser must run on the same machine as Codex, because the consent
+   page redirects to `127.0.0.1` here. On a remote or headless machine, do not
+   attempt the browser sign-in; point the user to a persistent
+   `KUMIHO_AUTH_TOKEN`, or to `kumiho-auth login --oauth --no-browser --port
+   PORT` in their own terminal after `ssh -L PORT:127.0.0.1:PORT`. The helper
+   refuses the sign-in while `KUMIHO_AUTH_TOKEN` is set, since that token
+   would keep taking precedence. The sign-in needs kumiho SDK 0.15.0 or newer
+   in the shared runtime; onboarding installs it.
 
    If the user prefers email and password, state the exact command without
    `--non-interactive` as the required next action for their own terminal and

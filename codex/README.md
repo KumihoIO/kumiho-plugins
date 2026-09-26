@@ -202,8 +202,12 @@ at `control.kumiho.cloud`, the same OAuth sign-in the hosted
 `mcp.kumiho.cloud/mcp` connector uses — run onboarding with `--oauth`. It needs
 no terminal input, so `$kumiho-onboard` can run it from Codex. The SDK (0.15.0
 or newer) receives the code on a `127.0.0.1` loopback port with PKCE and keeps a
-rotating refresh token in `~/.kumiho`, which it refreshes on its own. Add
-`--no-browser` to print the sign-in URL instead of opening a browser.
+rotating refresh token in `~/.kumiho`, which it refreshes on its own. The
+browser must run on the same machine, since the consent page redirects to
+`127.0.0.1` there; `--no-browser` only skips opening it. Over SSH, run
+`kumiho-auth login --oauth --no-browser --port PORT` after
+`ssh -L PORT:127.0.0.1:PORT`. The sign-in is refused while `KUMIHO_AUTH_TOKEN`
+is set, because that token takes precedence.
 
 ```bash
 node codex/scripts/run_kumiho_mcp.mjs --onboard cloud --oauth
