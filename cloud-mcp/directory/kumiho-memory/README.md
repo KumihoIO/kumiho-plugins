@@ -23,12 +23,14 @@ tools and the skills have nothing to work with. Connect once:
 3. **Use.** Say "remember that we chose Postgres for the events service", then ask
    "what did we decide about the events service?" in a new conversation.
 
-You need a Kumiho Cloud account for now (see Requirements). The steps for each app
-are under [Install in Claude](#install-in-claude).
+You need a paid Kumiho Cloud workspace for now (see Requirements). If sign-in is
+refused because your account has no workspace, reconnecting will not help: create a
+workspace at kumiho.io first. The steps for each app are under
+[Install in Claude](#install-in-claude).
 
 <!-- TODO(free-trial): a free trial is being designed separately. Do not claim one
 here, in the plugin manifests or in the skills until it exists; when it does,
-replace "You need a Kumiho Cloud account for now" above with how to start it. -->
+replace "You need a paid Kumiho Cloud workspace for now" above with how to start it. -->
 
 ## Requirements
 

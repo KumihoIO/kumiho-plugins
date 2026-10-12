@@ -324,7 +324,7 @@ type or space. Read a result with kumiho_get_revision_by_tag (item kref, tag \
 "latest").
 
 Capture: reflect when the user asks you to remember, save or note something, \
-and at the moment something is settled; not at the end and not on routine \
+and at the moment something is settled; not only at conversation end, nor on routine \
 turns. Use brief typed captures, absolute dates in titles, an existing space \
 name in space_hint, and engage's source_krefs. kumiho_memory_store is a \
 lower-level write of one pre-formed entry.

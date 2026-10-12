@@ -11,7 +11,12 @@ import sys
 import zipfile
 from pathlib import Path
 
-from kumiho_cloud_mcp.connector_profile import CONNECTOR_TOOL_DESCRIPTIONS, CONNECTOR_TOOLS
+from kumiho_cloud_mcp.connector_profile import (
+    CONNECTOR_INSTRUCTIONS,
+    CONNECTOR_TOOL_DESCRIPTIONS,
+    CONNECTOR_TOOLS,
+    MAX_INSTRUCTIONS_BYTES,
+)
 
 DIRECTORY = Path(__file__).resolve().parents[1] / "directory"
 BUNDLE = DIRECTORY / "kumiho-memory"
@@ -170,13 +175,14 @@ def test_skills_route_general_recall_to_engage_and_remember_this_to_reflect():
     meta = _frontmatter(BUNDLE / "skills" / "kumiho-memory" / "SKILL.md")
     assert meta["name"] == "kumiho-memory"
     assert len(meta["description"]) <= 200, len(meta["description"])
-    for cue in ("what you know about them", "preference", "what's my", "earlier chats",
+    for cue in ("what you know about them", "decision", "preference", "earlier chats",
                 "remember", "save", "forget", "correct", "recent memories"):
         assert cue in meta["description"], cue
+    # A subject and verbs, not a bare list of cues.
+    assert meta["description"].startswith("Use when the user ")
     # A new user who has not signed in has no Kumiho tools: the skill has to load
     # for that situation too, or nothing ever tells them to connect.
     assert "Kumiho tools are missing" in meta["description"]
-    assert "signed out" in meta["description"]
 
 
 def test_claude_code_backfill_keeps_the_conversation_and_drops_harness_records():
@@ -250,6 +256,26 @@ STALE_REFLECT_TIMING = re.compile(
     r"after (?:responding|you respond|a substantive response|the response)", re.I)
 
 
+#: A follow-up that needs reflect's result (a retire after a correction that did not
+#: revise, decompose, a requested consolidate) runs silently, so the answer is still
+#: written once. Every place that states the ordering rule carries this exception, or
+#: the rule reads as "nothing may follow reflect" and contradicts those instructions.
+SILENT_FOLLOW_UP = (
+    "follow-up that needs reflect's result",
+    "silently right after it, with no user-visible text",
+)
+
+
+def _requires_a_call_after_the_answer(text):
+    """Sentences that tell the model to make a tool call AFTER the final answer."""
+    anchor = re.compile(r"\bafter (?:a |the |your )?(?:substantive |final )?(?:answer|answering|"
+                        r"responding|response|reply|replying)\b|\bafter you (?:answer|respond|reply)\b",
+                        re.I)
+    call = re.compile(r"\bkumiho_\w+|\b(?:call|run)\b", re.I)
+    return [s for s in re.split(r"(?<=[.;])\s+", " ".join(text.split()))
+            if anchor.search(s) and call.search(s)]
+
+
 def test_reflect_comes_before_the_final_answer_so_the_user_reads_it_once():
     for skill in SKILL_DIRS:
         text = (skill / "SKILL.md").read_text(encoding="utf-8")
@@ -259,25 +285,60 @@ def test_reflect_comes_before_the_final_answer_so_the_user_reads_it_once():
     flat = " ".join((BUNDLE / "skills" / "kumiho-memory" / "SKILL.md")
                     .read_text(encoding="utf-8").split())
     for needle in (
-        "`kumiho_memory_reflect` is the last tool call of the turn",
-        "comes before the final answer text",
+        "`kumiho_memory_reflect` is the last memory write before the final answer text",
         "show only short progress notes",
         "`response` a concise summary of the answer you are about to give",
         "never a verbatim second copy",
         "then write the answer once",
-        "end the turn right after reflect with no restatement",
+        "end the turn right after reflect and any such follow-up, with no restatement",
         "at most one short line that adds new information",
     ):
         assert needle in flat, needle
+    # "Last tool call" contradicted the follow-ups below; it must not come back.
+    assert "last tool call" not in flat
 
-    # The served tool description must not reintroduce "after responding" either.
+    # The served tool descriptions and server instructions must not reintroduce
+    # "after responding" either.
     for name, description in CONNECTOR_TOOL_DESCRIPTIONS.items():
         assert STALE_REFLECT_TIMING.search(" ".join(description.split())) is None, name
+    assert STALE_REFLECT_TIMING.search(" ".join(CONNECTOR_INSTRUCTIONS.split())) is None
 
 
-# Directory data through 2026-10-10: 52 installs, 1,274 loads, 0 active accounts. In
-# Claude Code the bundled HTTP server needs a sign-in only the user can start, and
-# until then no Kumiho tool exists, so nothing in the bundle ever ran.
+def test_the_silent_follow_up_exception_is_stated_wherever_the_rule_is():
+    flat = " ".join((BUNDLE / "skills" / "kumiho-memory" / "SKILL.md")
+                    .read_text(encoding="utf-8").split())
+    for marker in SILENT_FOLLOW_UP:
+        assert marker in flat, marker
+    # kumiho_deprecate_item still follows a correction that stored a separate item.
+    assert "`kumiho_deprecate_item` after a correction that did not revise the old memory" in flat
+    assert "when the result is a separate item" in flat
+    assert "a `kumiho_memory_consolidate` the user asked for" in flat
+
+
+def test_no_hosted_instruction_requires_a_tool_call_after_the_final_answer():
+    for skill in SKILL_DIRS:
+        text = (skill / "SKILL.md").read_text(encoding="utf-8")
+        flagged = [s for s in _requires_a_call_after_the_answer(text) if "reflect" in s.lower()]
+        assert flagged == [], skill.name
+    assert _requires_a_call_after_the_answer(
+        "After a substantive response, call kumiho_memory_reflect with your response text.")
+    assert not _requires_a_call_after_the_answer(
+        "A follow-up that needs reflect's result runs silently right after it, with no "
+        "user-visible text.")
+
+
+def test_server_instructions_say_capture_is_not_only_at_the_end_and_fit_the_budget():
+    flat = " ".join(CONNECTOR_INSTRUCTIONS.split())
+    # "not at the end" could be read as "never reflect once the answer is written".
+    assert "not at the end" not in flat
+    assert "at the moment something is settled; not only at conversation end, nor on routine turns" in flat
+    # Claude Code truncates the instructions at 2KB, so the longer wording must still fit.
+    assert len(CONNECTOR_INSTRUCTIONS.encode("utf-8")) <= MAX_INSTRUCTIONS_BYTES <= 2000
+
+
+# Installed users were not becoming active. In Claude Code the bundled HTTP server
+# needs a sign-in only the user can start, and until then no Kumiho tool exists, so
+# nothing in the bundle ever ran. The skill is the one place that can tell them.
 def test_the_first_instruction_tells_an_unconnected_user_how_to_connect():
     text = (BUNDLE / "skills" / "kumiho-memory" / "SKILL.md").read_text(encoding="utf-8")
     body = text.split("\n---\n", 1)[1]
@@ -289,21 +350,36 @@ def test_the_first_instruction_tells_an_unconnected_user_how_to_connect():
         "tell them once, in their language",
         "continue the task without memory",
         "Never pretend to remember",
-        "Claude Code: run `/mcp`, select `plugin:kumiho-memory-cloud:kumiho-memory`, choose Authenticate",
-        "Claude apps and Cowork: use the plugin's Connect flow",
+        # One bullet per host, in the order Claude Code, Cowork, claude.ai and Desktop
+        # chat, then the OpenAI hosts that ship the same skills/ directory.
+        "- Claude Code: run `/mcp`, select `plugin:kumiho-memory-cloud:kumiho-memory`, choose Authenticate",
+        "- Cowork: use the plugin's Connect prompt, or Customize > Connectors > Kumiho Memory.",
+        "- claude.ai and Claude Desktop chat: Customize > Connectors > Kumiho Memory.",
+        "- ChatGPT and Codex: use the app's Connect flow.",
+        "Connecting needs a paid Kumiho Cloud workspace",
         "Never ask for a password, token or MFA code in chat",
-        "Say this once per conversation",
+        "If sign-in was refused because the account has no workspace, reconnecting will not help",
+        "create a workspace at kumiho.io first",
+        "Say all this once per conversation",
     ):
         assert needle in first, needle
+    order = [first.index(host) for host in (
+        "- Claude Code:", "- Cowork:", "- claude.ai and Claude Desktop chat:", "- ChatGPT and Codex:")]
+    assert order == sorted(order)
+    # No trial or price claim before one exists, and "account" alone was not enough:
+    # a sign-in without a workspace is the case reconnecting cannot fix.
+    assert "trial" not in first.lower() and "free" not in first.lower()
+    assert "Kumiho Cloud account" not in first
     # One definition of the rule: the older "connector settings" bullet is gone.
     assert text.count("authentication error") == 1
     assert "in the app's connector settings" not in text
 
 
-def test_the_claude_manifest_leads_with_the_connect_step():
+def test_the_claude_manifest_says_what_it_does_then_how_to_connect():
     description = _json(BUNDLE / ".claude-plugin" / "plugin.json")["description"]
-    assert description.startswith("Connect first: after installing, run /mcp, select "
-                                  "plugin:kumiho-memory-cloud:kumiho-memory and choose Authenticate")
+    assert description.startswith("Persistent memory for Claude across conversations.")
+    assert "Connect via /mcp after installing." in description
+    assert description.index("Connect via /mcp after installing.") < description.index("Bundles the hosted")
     # The account requirement stays, and no trial or price is claimed before one exists.
     assert description.endswith("Requires a paid Kumiho Cloud account.")
     assert "trial" not in description.lower() and "free" not in description.lower()
@@ -316,11 +392,30 @@ def test_the_readme_leads_with_a_short_getting_started_and_marks_the_trial_todo(
     started = readme.split("## Getting started", 1)[1].split("\n## ", 1)[0]
     assert started.index("**Connect.**") < started.index("**Check.**") < started.index("**Use.**")
     assert "`/mcp`" in started and "`plugin:kumiho-memory-cloud:kumiho-memory`" in started
-    # The marker lives in the README only, as a comment.
+    # The requirement is a workspace, and a refused sign-in without one is explained.
+    flat_started = " ".join(started.split())
+    assert "paid Kumiho Cloud workspace" in flat_started
+    assert "reconnecting will not help" in flat_started
+    assert "create a workspace at kumiho.io first" in flat_started
+    # The marker lives in the README only, as a comment, and nothing outside the
+    # comment claims a trial.
     assert "<!-- TODO(free-trial)" in started
+    claims = started.split("<!-- TODO(free-trial)", 1)[0].lower()
+    assert "trial" not in claims and "free" not in claims
     for path in (BUNDLE / ".claude-plugin" / "plugin.json", BUNDLE / ".codex-plugin" / "plugin.json",
                  *(skill / "SKILL.md" for skill in SKILL_DIRS)):
         assert "TODO" not in path.read_text(encoding="utf-8"), path
+
+
+def test_submission_docs_keep_internal_metrics_out_and_flag_the_shared_skills_change():
+    submission = (DIRECTORY / "CLAUDE-PLUGIN-SUBMISSION.md").read_text(encoding="utf-8")
+    for metric in ("52 installs", "1,274", "925 sessions", "active accounts"):
+        assert metric not in submission, metric
+    # The skills/ directory is shared with the OpenAI bundle, so a skill change there
+    # is flagged for the owner, who decides whether a resubmission is needed.
+    chatgpt = (DIRECTORY.parent / "CHATGPT-SUBMISSION.md").read_text(encoding="utf-8")
+    assert "0.1.4" in chatgpt and "owner decision" in chatgpt
+    assert "OpenAI resubmission" in chatgpt
 
 
 def test_the_bundle_still_runs_nothing_locally_beyond_the_optional_backfill_helper():

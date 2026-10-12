@@ -93,15 +93,14 @@ Memories are stored in your own Kumiho Cloud workspace. Requires a paid Kumiho C
 #### Listing update for 0.1.4 (hand edit in the directory dashboard)
 
 The listing text lives in the directory dashboard, not in this repository, so it
-does not change when 0.1.4 merges. Through 2026-10-10 the directory showed 52
-installs and 0 active accounts: in Claude Code the bundled HTTP server needs a
-sign-in that only the user can start (`/mcp`), and until then no Kumiho tool
-exists. Put the connect step first by adding this paragraph above the three above
-(it makes no free-trial or pricing claim; keep "Requires a paid Kumiho Cloud
-account" until a trial exists):
+does not change when 0.1.4 merges. Installed users were not becoming active: in
+Claude Code the bundled HTTP server needs a sign-in that only the user can start
+(`/mcp`), and until then no Kumiho tool exists. Make the connect step visible by
+adding this short paragraph after the three above (it makes no free-trial or
+pricing claim; keep "Requires a paid Kumiho Cloud account" until a trial exists):
 
 ```
-Connect first: after installing, run /mcp, select plugin:kumiho-memory-cloud:kumiho-memory and choose Authenticate (Cowork: use Connect). Until you sign in to Kumiho, Claude has no Kumiho tools.
+Getting started: after installing, run /mcp, select plugin:kumiho-memory-cloud:kumiho-memory and choose Authenticate (Cowork: use Connect). Until you sign in to Kumiho, Claude has no Kumiho tools.
 ```
 
 ### Example use cases *
