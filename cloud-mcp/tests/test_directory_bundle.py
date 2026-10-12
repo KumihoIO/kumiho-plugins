@@ -171,6 +171,10 @@ def test_skills_route_general_recall_to_engage_and_remember_this_to_reflect():
     for cue in ("what you know about them", "preference", "what's my", "earlier chats",
                 "remember", "save", "forget", "correct", "recent memories"):
         assert cue in meta["description"], cue
+    # A new user who has not signed in has no Kumiho tools: the skill has to load
+    # for that situation too, or nothing ever tells them to connect.
+    assert "Kumiho tools are missing" in meta["description"]
+    assert "signed out" in meta["description"]
 
 
 def test_claude_code_backfill_keeps_the_conversation_and_drops_harness_records():
@@ -267,6 +271,64 @@ def test_reflect_comes_before_the_final_answer_so_the_user_reads_it_once():
     # The served tool description must not reintroduce "after responding" either.
     for name, description in CONNECTOR_TOOL_DESCRIPTIONS.items():
         assert STALE_REFLECT_TIMING.search(" ".join(description.split())) is None, name
+
+
+# Directory data through 2026-10-10: 52 installs, 1,274 loads, 0 active accounts. In
+# Claude Code the bundled HTTP server needs a sign-in only the user can start, and
+# until then no Kumiho tool exists, so nothing in the bundle ever ran.
+def test_the_first_instruction_tells_an_unconnected_user_how_to_connect():
+    text = (BUNDLE / "skills" / "kumiho-memory" / "SKILL.md").read_text(encoding="utf-8")
+    body = text.split("\n---\n", 1)[1]
+    assert body.lstrip().startswith("# Kumiho Memory")
+    # Everything between the title and the first section heading is the first instruction.
+    first = " ".join(body.split("\n## ", 1)[0].split())
+    assert first.startswith("# Kumiho Memory First, check that the Kumiho tools (`kumiho_*`) are available.")
+    for needle in (
+        "tell them once, in their language",
+        "continue the task without memory",
+        "Never pretend to remember",
+        "Claude Code: run `/mcp`, select `plugin:kumiho-memory-cloud:kumiho-memory`, choose Authenticate",
+        "Claude apps and Cowork: use the plugin's Connect flow",
+        "Never ask for a password, token or MFA code in chat",
+        "Say this once per conversation",
+    ):
+        assert needle in first, needle
+    # One definition of the rule: the older "connector settings" bullet is gone.
+    assert text.count("authentication error") == 1
+    assert "in the app's connector settings" not in text
+
+
+def test_the_claude_manifest_leads_with_the_connect_step():
+    description = _json(BUNDLE / ".claude-plugin" / "plugin.json")["description"]
+    assert description.startswith("Connect first: after installing, run /mcp, select "
+                                  "plugin:kumiho-memory-cloud:kumiho-memory and choose Authenticate")
+    # The account requirement stays, and no trial or price is claimed before one exists.
+    assert description.endswith("Requires a paid Kumiho Cloud account.")
+    assert "trial" not in description.lower() and "free" not in description.lower()
+    assert "TODO" not in description
+
+
+def test_the_readme_leads_with_a_short_getting_started_and_marks_the_trial_todo():
+    readme = (BUNDLE / "README.md").read_text(encoding="utf-8")
+    assert readme.index("## Getting started") < readme.index("## Requirements")
+    started = readme.split("## Getting started", 1)[1].split("\n## ", 1)[0]
+    assert started.index("**Connect.**") < started.index("**Check.**") < started.index("**Use.**")
+    assert "`/mcp`" in started and "`plugin:kumiho-memory-cloud:kumiho-memory`" in started
+    # The marker lives in the README only, as a comment.
+    assert "<!-- TODO(free-trial)" in started
+    for path in (BUNDLE / ".claude-plugin" / "plugin.json", BUNDLE / ".codex-plugin" / "plugin.json",
+                 *(skill / "SKILL.md" for skill in SKILL_DIRS)):
+        assert "TODO" not in path.read_text(encoding="utf-8"), path
+
+
+def test_the_bundle_still_runs_nothing_locally_beyond_the_optional_backfill_helper():
+    # The directory review depends on this: no hooks, agents, commands or MCP stdio server.
+    assert not (BUNDLE / "hooks").exists()
+    assert not (BUNDLE / "commands").exists()
+    assert not (BUNDLE / "agents").exists()
+    assert "hooks" not in _json(BUNDLE / ".claude-plugin" / "plugin.json")
+    scripts = sorted(path.relative_to(BUNDLE).as_posix() for path in BUNDLE.rglob("*.py"))
+    assert scripts == ["skills/kumiho-backfill/scripts/prepare_backfill.py"]
 
 
 def test_web_skill_zip_is_one_skill_folder_and_reproducible(tmp_path):

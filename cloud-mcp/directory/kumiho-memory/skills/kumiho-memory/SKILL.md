@@ -1,9 +1,25 @@
 ---
 name: kumiho-memory
-description: Use when the user asks what you know about them (what's my...), refers to earlier chats, settles a decision or preference, or asks to remember, save, forget, correct or list recent memories.
+description: Use for what you know about them (what's my...), earlier chats, a preference or decision, or to remember, save, forget, correct or list recent memories, or if Kumiho tools are missing or signed out.
 ---
 
 # Kumiho Memory
+
+First, check that the Kumiho tools (`kumiho_*`) are available. If none are, or a
+call reports an authentication error, the user has not connected Kumiho yet: tell
+them once, in their language, how to connect, then continue the task without
+memory. Never pretend to remember.
+
+- Claude Code: run `/mcp`, select `plugin:kumiho-memory-cloud:kumiho-memory`,
+  choose Authenticate and approve access in the browser.
+- Claude apps and Cowork: use the plugin's Connect flow (the Connect prompt, or
+  Customize > Connectors > Kumiho Memory).
+- ChatGPT and Codex: use the plugin's Connect flow.
+
+Connecting needs a Kumiho Cloud account, and sign-in happens on Kumiho's own page.
+Never ask for a password, token or MFA code in chat. Say this once per
+conversation rather than on every turn. After connecting, the `kumiho-onboard`
+skill verifies the workspace.
 
 This is the complete protocol for the connected Kumiho Memory tools (`kumiho_*`).
 Follow it whether or not the connector supplied its own instructions, and without
@@ -19,9 +35,6 @@ Installing this skill does not authorize recording every conversation.
 - Do not call Kumiho tools for unrelated live information (weather, news, prices)
   or for data belonging to a workspace or person the user is not authorized to
   access.
-- If no Kumiho tools are available or a call reports an authentication error,
-  tell the user the Kumiho Memory connector needs to be connected or reconnected
-  in the app's connector settings. Never pretend to remember.
 
 ## Recall
 
