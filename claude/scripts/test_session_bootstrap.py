@@ -453,37 +453,52 @@ _SILENT_FOLLOW_UP = (
 )
 
 
-def _requires_a_call_after_the_answer(text: str) -> list:
-    """Sentences that tell the model to make a tool call AFTER the final answer.
-
-    That instruction produced the duplicate answer (2026-10-12): write the answer,
-    call reflect, then restate the answer. The silent follow-up sentence anchors on
-    reflect, not on the answer, so it is not flagged."""
-    anchor = re.compile(r"\bafter (?:a |the |your )?(?:substantive |final )?(?:answer|answering|"
-                        r"responding|response|reply|replying)\b|\bafter you (?:answer|respond|reply)\b",
-                        re.I)
-    call = re.compile(r"\bkumiho_\w+|\b(?:call|run)\b", re.I)
-    return [s for s in re.split(r"(?<=[.;])\s+", _flat(text)) if anchor.search(s) and call.search(s)]
+#: The ordering rule, as every place that states it words it.
+_REFLECT_RULE = ("the last memory call before the final answer, apart from silent "
+                 "follow-ups that need its result")
 
 
-def test_the_after_the_answer_check_flags_the_instruction_that_caused_the_duplicate():
-    assert _requires_a_call_after_the_answer(
-        "After a substantive response, call kumiho_memory_reflect with your response text.")
-    assert _requires_a_call_after_the_answer("After you answer, run the reflect call.")
-    assert not _requires_a_call_after_the_answer(
-        "A follow-up that needs reflect's result runs silently right after it, with no "
-        "user-visible text.")
+def _load_reflect_order_check():
+    """The shared "no call after the final answer" checker.
+
+    One definition for the claude/scripts tests and the cloud-mcp tests, kept in the
+    repository-root tests/ directory because neither tree can import the other; each
+    loads it by path."""
+    path = SCRIPTS.parents[1] / "tests" / "reflect_order_check.py"
+    spec = importlib.util.spec_from_file_location("reflect_order_check", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_reflect_order = _load_reflect_order_check()
+_requires_a_call_after_the_answer = _reflect_order.calls_after_the_answer
+
+
+def test_the_after_the_answer_check_flags_every_phrasing_that_puts_a_call_after_the_answer():
+    for positive in _reflect_order.POSITIVES:
+        assert _requires_a_call_after_the_answer(positive), positive
+    for negative in _reflect_order.NEGATIVES:
+        assert _requires_a_call_after_the_answer(negative) == [], negative
+    # Phrasings the first version of the check missed.
+    for missed in ("Write the full answer, then call kumiho_memory_reflect.",
+                   "Once you have answered, call kumiho_memory_reflect.",
+                   "After writing your answer, call kumiho_memory_reflect.",
+                   "Reflect after you reply.",
+                   "REFLECT — after you respond.",
+                   "Capture what matters after responding."):
+        assert _requires_a_call_after_the_answer(missed), missed
 
 
 def test_card_orders_reflect_before_the_final_answer(tmp_path):
-    """Reflect is the last memory write before the final answer text and precedes it,
+    """Reflect is the last memory call before the final answer text and precedes it,
     with a summary (not a second copy) as ``response``. The card is the one
     instruction read every turn, so the ordering has to live here."""
     ctx = _flat(_card(tmp_path))
     for stale in _STALE_REFLECT_TIMING:
         assert stale not in ctx, stale
-    assert "kumiho_memory_reflect (the last memory write before your final answer)" in ctx
-    assert "kumiho_memory_reflect is the last memory write before the final answer" in ctx
+    assert f"kumiho_memory_reflect ({_REFLECT_RULE})" in ctx
+    assert f"kumiho_memory_reflect is {_REFLECT_RULE}, so call it BEFORE the final answer text" in ctx
     assert "BEFORE the final answer text" in ctx
     assert "show only short progress notes" in ctx
     assert "concise summary of the answer you are about to give as `response`" in ctx
@@ -492,8 +507,9 @@ def test_card_orders_reflect_before_the_final_answer(tmp_path):
     # The case where the answer was already written: no restatement after reflect.
     assert "end the turn right after reflect and any such follow-up, with no restatement" in ctx
     assert "at most one short line that adds new information" in ctx
-    # "LAST tool call" contradicted the follow-ups below; it must not come back.
-    assert "LAST tool call" not in ctx and "last tool call" not in ctx
+    # "last tool call" and "last memory write" are the earlier wordings; the first
+    # contradicted the follow-ups, the second hid that a retire is a write too.
+    assert "last tool call" not in ctx.lower() and "last memory write" not in ctx.lower()
 
 
 def test_card_names_the_silent_follow_ups_that_may_follow_reflect(tmp_path):
@@ -510,8 +526,9 @@ def test_claude_skill_orders_reflect_before_the_final_answer():
                   .read_text(encoding="utf-8"))
     for stale in _STALE_REFLECT_TIMING:
         assert stale not in skill, stale
-    assert "### Reflect — last memory write, before the final answer" in skill
-    assert "is the **last memory write before the final answer** and happens **before** the final answer text" in skill
+    assert "### Reflect — last memory call, before the final answer" in skill
+    emphasised = _REFLECT_RULE.removeprefix("the ")
+    assert f"is the **{emphasised}**, and happens **before** the final answer text" in skill
     assert "concise summary of the answer you are about to give" in skill
     assert "never a verbatim second copy" in skill
     assert "end the turn right after reflect and any such follow-up, with no restatement" in skill
@@ -521,7 +538,7 @@ def test_claude_skill_orders_reflect_before_the_final_answer():
     for follow_up in ("`kumiho_deprecate_item` after a correction that did not revise the old memory",
                       "`kumiho_memory_decompose`", "a `kumiho_memory_consolidate` the host asked for"):
         assert follow_up in skill, follow_up
-    assert "last tool call" not in skill
+    assert "last tool call" not in skill.lower() and "last memory write" not in skill.lower()
 
 
 def test_no_reflect_example_asks_for_the_full_response_text():
@@ -548,9 +565,10 @@ def test_no_reflect_example_asks_for_the_full_response_text():
 def test_card_and_skill_never_require_a_tool_call_after_the_final_answer(tmp_path):
     skill = (SCRIPTS.parent / "skills" / "kumiho-memory" / "SKILL.md").read_text(encoding="utf-8")
     assert _requires_a_call_after_the_answer(_card(tmp_path)) == []
-    # The skill covers much more than reflect; only reflect/answer ordering is in scope.
-    flagged = [s for s in _requires_a_call_after_the_answer(skill) if "reflect" in s.lower()]
-    assert flagged == []
+    assert _requires_a_call_after_the_answer(skill) == []
+    # The references the skill points to are held to the same rule.
+    for path in sorted((SCRIPTS.parent / "skills" / "kumiho-memory" / "references").glob("*.md")):
+        assert _requires_a_call_after_the_answer(path.read_text(encoding="utf-8")) == [], path.name
 
 
 if __name__ == "__main__":

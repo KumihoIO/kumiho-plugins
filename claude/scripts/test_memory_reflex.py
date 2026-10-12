@@ -14,9 +14,9 @@ Run: python -m pytest claude/scripts/test_memory_reflex.py -q
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
-import re
 import shlex
 import subprocess
 import sys
@@ -48,28 +48,23 @@ def _run(payload: dict, home: Path, args=(), env_extra: dict | None = None):
     return r
 
 
-def _requires_a_call_after_the_answer(text: str) -> list:
-    """Sentences that tell the model to make a tool call AFTER the final answer.
+def _load_reflect_order_check():
+    """The shared "no call after the final answer" checker (repo-root tests/).
 
-    That is the instruction that produced the duplicate answer (2026-10-12): write
-    the answer, call reflect, then restate the answer. The only call allowed to
-    follow a reflect is a silent follow-up, and that sentence never names the
-    answer as its anchor, so it is not flagged."""
-    anchor = re.compile(r"\bafter (?:a |the |your )?(?:substantive |final )?(?:answer|answering|"
-                        r"responding|response|reply|replying)\b|\bafter you (?:answer|respond|reply)\b",
-                        re.I)
-    call = re.compile(r"\bkumiho_\w+|\b(?:call|run)\b", re.I)
-    return [s for s in re.split(r"(?<=[.;])\s+", " ".join(text.split()))
-            if anchor.search(s) and call.search(s)]
+    Neither test tree is a package, so it is loaded by path; its own positives and
+    negatives are asserted in test_session_bootstrap.py."""
+    path = SCRIPTS.parents[1] / "tests" / "reflect_order_check.py"
+    spec = importlib.util.spec_from_file_location("reflect_order_check", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-def test_the_after_the_answer_check_flags_the_instruction_that_caused_the_duplicate():
-    assert _requires_a_call_after_the_answer(
-        "After a substantive response, call kumiho_memory_reflect with your response text.")
-    assert _requires_a_call_after_the_answer("After you answer, run the reflect call.")
-    assert not _requires_a_call_after_the_answer(
-        "A follow-up that needs reflect's result runs silently right after it, with no "
-        "user-visible text.")
+_requires_a_call_after_the_answer = _load_reflect_order_check().calls_after_the_answer
+
+#: The ordering rule, as the floor nudge states it.
+REFLECT_RULE = ("the last memory call before the final answer, apart from silent "
+                "follow-ups that need its result")
 
 
 def _seed_cache(home: Path, sid: str, block: str, sha: str = "deadbeef1234",
@@ -153,10 +148,11 @@ def test_floor_fires_at_threshold(tmp_path):
     assert "gggg" in r.stdout  # carries the session_id the model cannot otherwise know
     # Same ordering as the session card: reflect first, then the answer, written once.
     ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "the last memory write before your final answer text" in ctx
-    # ...and the same exception, so the nudge cannot be read as "no other call after it".
-    assert ("a follow-up that needs reflect's result runs silently right after it, "
-            "with no user-visible text") in ctx
+    assert REFLECT_RULE in ctx
+    # ...and the exception spelled out, so the nudge cannot be read as "no other call
+    # after it".
+    assert "they run silently right after it, with no user-visible text" in ctx
+    assert "last memory write" not in ctx and "last tool call" not in ctx
     assert _requires_a_call_after_the_answer(ctx) == []
 
 

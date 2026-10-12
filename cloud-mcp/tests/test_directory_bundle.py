@@ -18,6 +18,7 @@ from kumiho_cloud_mcp.connector_profile import (
     MAX_INSTRUCTIONS_BYTES,
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DIRECTORY = Path(__file__).resolve().parents[1] / "directory"
 BUNDLE = DIRECTORY / "kumiho-memory"
 SKILL_DIRS = sorted(path.parent for path in BUNDLE.glob("skills/*/SKILL.md"))
@@ -178,8 +179,10 @@ def test_skills_route_general_recall_to_engage_and_remember_this_to_reflect():
     for cue in ("what you know about them", "decision", "preference", "earlier chats",
                 "remember", "save", "forget", "correct", "recent memories"):
         assert cue in meta["description"], cue
-    # A subject and verbs, not a bare list of cues.
+    # A subject and verbs, not a bare list of cues. The literal "what's my..." cue was
+    # dropped to make room; "asks what you know about them" covers it.
     assert meta["description"].startswith("Use when the user ")
+    assert "asks what you know about them" in meta["description"]
     # A new user who has not signed in has no Kumiho tools: the skill has to load
     # for that situation too, or nothing ever tells them to connect.
     assert "Kumiho tools are missing" in meta["description"]
@@ -266,14 +269,15 @@ SILENT_FOLLOW_UP = (
 )
 
 
-def _requires_a_call_after_the_answer(text):
-    """Sentences that tell the model to make a tool call AFTER the final answer."""
-    anchor = re.compile(r"\bafter (?:a |the |your )?(?:substantive |final )?(?:answer|answering|"
-                        r"responding|response|reply|replying)\b|\bafter you (?:answer|respond|reply)\b",
-                        re.I)
-    call = re.compile(r"\bkumiho_\w+|\b(?:call|run)\b", re.I)
-    return [s for s in re.split(r"(?<=[.;])\s+", " ".join(text.split()))
-            if anchor.search(s) and call.search(s)]
+#: The ordering rule, as every place that states it words it.
+REFLECT_RULE = ("the last memory call before the final answer, apart from silent "
+                "follow-ups that need its result")
+
+# One definition of "an instruction that puts a call after the answer", shared with
+# the claude/scripts tests. It lives in the repository-root tests/ directory because
+# neither test tree can import the other, so each loads it by path.
+_reflect_order = _load("reflect_order_check", REPO_ROOT / "tests" / "reflect_order_check.py")
+_requires_a_call_after_the_answer = _reflect_order.calls_after_the_answer
 
 
 def test_reflect_comes_before_the_final_answer_so_the_user_reads_it_once():
@@ -285,7 +289,7 @@ def test_reflect_comes_before_the_final_answer_so_the_user_reads_it_once():
     flat = " ".join((BUNDLE / "skills" / "kumiho-memory" / "SKILL.md")
                     .read_text(encoding="utf-8").split())
     for needle in (
-        "`kumiho_memory_reflect` is the last memory write before the final answer text",
+        f"`kumiho_memory_reflect` is {REFLECT_RULE}",
         "show only short progress notes",
         "`response` a concise summary of the answer you are about to give",
         "never a verbatim second copy",
@@ -294,8 +298,12 @@ def test_reflect_comes_before_the_final_answer_so_the_user_reads_it_once():
         "at most one short line that adds new information",
     ):
         assert needle in flat, needle
-    # "Last tool call" contradicted the follow-ups below; it must not come back.
-    assert "last tool call" not in flat
+    # "last tool call" and "last memory write" are the earlier wordings; the first
+    # contradicted the follow-ups, the second hid that a retire is a write too.
+    assert "last tool call" not in flat.lower() and "last memory write" not in flat.lower()
+    # Capture happens when something settles, not saved for the end.
+    assert "Capture it as soon as it is settled, not saved for the end of the conversation" in flat
+    assert "not only at the end" not in flat
 
     # The served tool descriptions and server instructions must not reintroduce
     # "after responding" either.
@@ -318,21 +326,34 @@ def test_the_silent_follow_up_exception_is_stated_wherever_the_rule_is():
 def test_no_hosted_instruction_requires_a_tool_call_after_the_final_answer():
     for skill in SKILL_DIRS:
         text = (skill / "SKILL.md").read_text(encoding="utf-8")
-        flagged = [s for s in _requires_a_call_after_the_answer(text) if "reflect" in s.lower()]
-        assert flagged == [], skill.name
-    assert _requires_a_call_after_the_answer(
-        "After a substantive response, call kumiho_memory_reflect with your response text.")
-    assert not _requires_a_call_after_the_answer(
-        "A follow-up that needs reflect's result runs silently right after it, with no "
-        "user-visible text.")
+        assert _requires_a_call_after_the_answer(text) == [], skill.name
+    flat_instructions = " ".join(CONNECTOR_INSTRUCTIONS.split())
+    assert _requires_a_call_after_the_answer(flat_instructions) == []
+    for name, description in CONNECTOR_TOOL_DESCRIPTIONS.items():
+        assert _requires_a_call_after_the_answer(description) == [], name
 
 
-def test_server_instructions_say_capture_is_not_only_at_the_end_and_fit_the_budget():
+def test_the_after_the_answer_check_flags_every_phrasing_that_puts_a_call_after_the_answer():
+    for positive in _reflect_order.POSITIVES:
+        assert _requires_a_call_after_the_answer(positive), positive
+    for negative in _reflect_order.NEGATIVES:
+        assert _requires_a_call_after_the_answer(negative) == [], negative
+    # Phrasings the first version of the check missed.
+    for missed in ("Write the full answer, then call kumiho_memory_reflect.",
+                   "Once you have answered, call kumiho_memory_reflect.",
+                   "After writing your answer, call kumiho_memory_reflect.",
+                   "Reflect after you reply.",
+                   "REFLECT — after you respond.",
+                   "Capture what matters after responding."):
+        assert _requires_a_call_after_the_answer(missed), missed
+
+
+def test_server_instructions_say_to_capture_when_settled_and_fit_the_budget():
     flat = " ".join(CONNECTOR_INSTRUCTIONS.split())
     # "not at the end" could be read as "never reflect once the answer is written".
-    assert "not at the end" not in flat
-    assert "at the moment something is settled; not only at conversation end, nor on routine turns" in flat
-    # Claude Code truncates the instructions at 2KB, so the longer wording must still fit.
+    assert "not at the end" not in flat and "not only at conversation end" not in flat
+    assert "as soon as something is settled, not saved for the end; never on routine turns" in flat
+    # Claude Code truncates the instructions at 2KB, so the wording must still fit.
     assert len(CONNECTOR_INSTRUCTIONS.encode("utf-8")) <= MAX_INSTRUCTIONS_BYTES <= 2000
 
 
@@ -378,8 +399,9 @@ def test_the_first_instruction_tells_an_unconnected_user_how_to_connect():
 def test_the_claude_manifest_says_what_it_does_then_how_to_connect():
     description = _json(BUNDLE / ".claude-plugin" / "plugin.json")["description"]
     assert description.startswith("Persistent memory for Claude across conversations.")
-    assert "Connect via /mcp after installing." in description
-    assert description.index("Connect via /mcp after installing.") < description.index("Bundles the hosted")
+    connect = "Connect via /mcp (Cowork: Connect) after installing."
+    assert connect in description
+    assert description.index(connect) < description.index("Bundles the hosted")
     # The account requirement stays, and no trial or price is claimed before one exists.
     assert description.endswith("Requires a paid Kumiho Cloud account.")
     assert "trial" not in description.lower() and "free" not in description.lower()
@@ -409,8 +431,16 @@ def test_the_readme_leads_with_a_short_getting_started_and_marks_the_trial_todo(
 
 def test_submission_docs_keep_internal_metrics_out_and_flag_the_shared_skills_change():
     submission = (DIRECTORY / "CLAUDE-PLUGIN-SUBMISSION.md").read_text(encoding="utf-8")
-    for metric in ("52 installs", "1,274", "925 sessions", "active accounts"):
-        assert metric not in submission, metric
+    # Directory analytics (install, load and session counts, active accounts) are
+    # internal: matched by shape, so no figure has to be written down to be kept out.
+    metric = re.compile(r"\b\d[\d,]*\s+(?:installs|loads|sessions)\b|active accounts", re.I)
+    for count, noun in (("7", "installs"), ("1,234", "loads"), ("99", "sessions")):
+        assert metric.search(f"{count} {noun}"), (count, noun)
+    assert metric.search("no active accounts")
+    for path in (DIRECTORY / "CLAUDE-PLUGIN-SUBMISSION.md", DIRECTORY.parent / "CHATGPT-SUBMISSION.md",
+                 BUNDLE / "README.md", BUNDLE / ".claude-plugin" / "plugin.json",
+                 *(skill / "SKILL.md" for skill in SKILL_DIRS)):
+        assert metric.search(path.read_text(encoding="utf-8")) is None, path.name
     # The skills/ directory is shared with the OpenAI bundle, so a skill change there
     # is flagged for the owner, who decides whether a resubmission is needed.
     chatgpt = (DIRECTORY.parent / "CHATGPT-SUBMISSION.md").read_text(encoding="utf-8")

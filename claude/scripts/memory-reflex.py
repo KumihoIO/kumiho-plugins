@@ -302,9 +302,9 @@ def main(argv: list) -> int:
                 "Turns since your last kumiho_memory_reflect: %d. session_id=%s. "
                 "If a decision, preference, fact or correction landed, call "
                 "kumiho_memory_reflect with typed captures, as the last memory "
-                "write before your final answer text (a follow-up that needs "
-                "reflect's result runs silently right after it, with no "
-                "user-visible text), and pass any Kref values above as "
+                "call before the final answer, apart from silent follow-ups "
+                "that need its result (they run silently right after it, with "
+                "no user-visible text), and pass any Kref values above as "
                 "source_krefs. Otherwise ignore this line."
                 % (n_since, session_id))
             turn["last_floor_turn"] = n_turn
