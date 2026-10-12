@@ -75,6 +75,11 @@ copied exactly: reflect forwards the hint as a space path verbatim, so
 Fall back to the capture type (`decisions`, `facts`, `preferences`,
 `corrections`) when none fits.
 
+A Stop-hook follow-up happens after the user-facing answer was already delivered.
+Complete only the requested memory tools, then end silently. Do not repeat the
+answer, add a save acknowledgment, or send another user-facing message. Keep the
+normal reflect-before-final order for ordinary user turns.
+
 ## Bounded recall — Codex only
 
 Recall is a working context, not a transcript dump. For a substantive request

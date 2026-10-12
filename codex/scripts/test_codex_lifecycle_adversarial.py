@@ -258,6 +258,49 @@ def test_own_stop_continuation_is_bounded_and_does_not_start_new_turn(tmp_path):
     assert third.get("decision") != "block"
 
 
+@pytest.mark.parametrize("mode", ["reflect", "reflect_and_consolidate", "consolidate"])
+def test_stop_followups_finish_memory_without_repeating_delivered_answer(tmp_path, mode):
+    backend = Backend({"kumiho_memory_engage": {"context": "", "results": [], "count": 0}})
+    if mode != "reflect":
+        for number in range(1, 20):
+            turn = f"completed-{number}"
+            prompt(backend, tmp_path, turn=turn)
+            lifecycle.dispatch(reflect_event(turn=turn, response=reflect_result()), backend, tmp_path)
+            assert lifecycle.dispatch(event("Stop", turn=turn), backend, tmp_path) == {}
+    prompt(backend, tmp_path, turn="original")
+    if mode == "consolidate":
+        lifecycle.dispatch(reflect_event(turn="original", response=reflect_result()), backend, tmp_path)
+    stopped = lifecycle.dispatch(event("Stop", turn="original"), backend, tmp_path)
+    assert stopped["decision"] == "block"
+    reason = stopped["reason"]
+    assert "already delivered" in reason
+    assert "Do not send another user-facing message" in reason
+    assert "show the user that complete answer" not in reason
+    assert "Do not repeat uncertain writes" in reason
+    assert ("kumiho_memory_reflect" in reason) == (mode != "consolidate")
+    assert ("kumiho_memory_consolidate" in reason) == (mode != "reflect")
+
+    # A tools-only continuation still satisfies the original turn, without
+    # another recall, duplicate completed turn, or a second continuation.
+    assert lifecycle.dispatch(event("UserPromptSubmit", turn="followup", prompt=reason), backend, tmp_path) == {}
+    if mode != "consolidate":
+        lifecycle.dispatch(reflect_event(turn="followup", response=reflect_result()), backend, tmp_path)
+    if mode != "reflect":
+        lifecycle.dispatch(event("PostToolUse", turn="followup",
+            tool_name="mcp__kumiho__kumiho_memory_consolidate",
+            tool_input={"summary_present": True},
+            tool_response={"success": True, "session_id": "thread-a",
+                "session_id_source": "codex-thread-meta",
+                "store_result": {"revision_kref": "kref://project/space/item?r=20"}}), backend, tmp_path)
+    assert lifecycle.dispatch(event("Stop", turn="followup", stop_hook_active=True), backend, tmp_path) == {}
+    assert lifecycle.dispatch(event("Stop", turn="followup", stop_hook_active=True), backend, tmp_path) == {}
+    state_path, = tmp_path.glob("*.json")
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["count"] == (1 if mode == "reflect" else 20)
+    assert state["watermark"] == (0 if mode == "reflect" else 20)
+    assert [name for name, _ in backend.calls].count("kumiho_memory_engage") == state["count"]
+
+
 def test_thread_and_transcript_identity_do_not_share_receipts(tmp_path):
     backend = Backend({"kumiho_memory_engage": {"context": "", "results": [], "count": 0}})
     for session, transcript in (("thread-a", "parent.jsonl"),

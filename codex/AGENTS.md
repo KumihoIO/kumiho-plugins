@@ -60,6 +60,12 @@ Treat a call or success-looking text without a verified stored-result receipt
 as pending; do not repeat an uncertain write automatically. Use absolute dates
 in capture titles (`on Jul 11`, never `today`). Skip captures for trivial
 responses; pass `source_krefs` from engage for provenance.
+
+A Stop-hook follow-up happens after the user-facing answer was already delivered.
+Complete only the requested memory tools, then end silently. Do not repeat the
+answer, add a save acknowledgment, or send another user-facing message. Keep the
+normal reflect-before-final order for ordinary user turns.
+
 ## Adaptive insight and experience
 
 Choose depth by usefulness without asking for a mode or toggle each turn. Honor

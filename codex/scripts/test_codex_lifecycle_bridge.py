@@ -139,7 +139,8 @@ def test_continuation_new_turn_skips_recall_and_resolves_original(tmp_path):
     assert first_stop["decision"] == "block"
     assert first_stop["reason"].startswith("Kumiho memory follow-up:")
     assert "KUMIHO_LIFECYCLE_CONTINUE_" not in first_stop["reason"]
-    assert "show the user that complete answer" in first_stop["reason"]
+    assert "already delivered" in first_stop["reason"]
+    assert "Do not send another user-facing message" in first_stop["reason"]
     continuation = filtered(base("UserPromptSubmit", turn="turn-2", prompt=first_stop["reason"]))
     assert lifecycle.dispatch(continuation, backend, state) == {}
     assert [name for name, _ in backend.calls].count("kumiho_memory_engage") == 1

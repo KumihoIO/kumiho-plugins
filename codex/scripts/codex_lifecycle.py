@@ -14,6 +14,14 @@ from pathlib import Path
 _LOCK = threading.Lock()
 _SESSION_LOCKS = {}
 
+# Stop runs after Codex has already displayed the answer. Its continuation
+# may complete pending memory work, but must not render that answer again.
+_MEMORY_ONLY_CONTINUATION = (
+    " The user-facing answer was already delivered. Complete only the pending memory tools."
+    " Do not send another user-facing message, repeat the answer, or acknowledge the save."
+    " Do not repeat uncertain writes."
+)
+
 @contextlib.contextmanager
 def _state_lock(path):
     # One thread lock per identity prevents unrelated sessions from waiting on
@@ -500,9 +508,10 @@ def dispatch(event: dict, backend=None, state_root: Path | None = None) -> dict:
                 return {}
             if not turn.get("reflect") and not turn.get("retries") and not event.get("stop_hook_active"):
                 turn["retries"] = 1
-                reason = "Kumiho memory follow-up: save the complete answer you just drafted with kumiho_memory_reflect and its durable captures, or [] if none. Then show the user that complete answer without mentioning this internal step. Do not repeat uncertain writes."
+                reason = "Kumiho memory follow-up: save the complete answer already delivered with kumiho_memory_reflect and its durable captures, or [] if none."
                 if int(state.get("count", 0)) + 1 - int(state.get("watermark", 0)) >= 20:
                     reason += " Also write a keyless session summary and call kumiho_memory_consolidate(summary=...) once; verify success."
+                reason += _MEMORY_ONLY_CONTINUATION
 
                 state["continuation_hash"] = _hash(reason)
                 state["continuation_target"] = original
@@ -516,7 +525,7 @@ def dispatch(event: dict, backend=None, state_root: Path | None = None) -> dict:
                     state["watermark"] = state["count"]
                 elif not turn.get("consolidate_retry") and not event.get("stop_hook_active"):
                     turn["consolidate_retry"] = True
-                    reason = "Kumiho memory follow-up: write a keyless session summary and call kumiho_memory_consolidate(summary=...) once. Verify success; do not auto-repeat uncertain writes."
+                    reason = "Kumiho memory follow-up: write a keyless session summary and call kumiho_memory_consolidate(summary=...) once. Verify success." + _MEMORY_ONLY_CONTINUATION
                     state["continuation_hash"] = _hash(reason)
                     state["continuation_target"] = original
                     _save(path, state)

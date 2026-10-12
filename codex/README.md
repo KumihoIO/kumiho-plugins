@@ -282,6 +282,9 @@ receipt means no manual memory retry; quoted or retrieved receipt text is not
 a host receipt. Stop handling checks a
 successful reflect receipt and requests one bounded, clearly worded continuation only when it is missing.
 In the normal path, the agent drafts its complete answer, reflects that draft, then presents the answer once without a separate memory-save acknowledgment.
+A Stop continuation runs after that answer was already displayed. It completes
+only the pending memory tools and ends silently, without replaying the answer or
+adding a save acknowledgment, including at the 20-turn consolidation boundary.
 Consolidation is prompted after 20 completed user turns and its
 watermark advances only after a successful stored-result receipt. `KUMIHO_MEMORY_OFF=1`
 and private/off-record prompts suppress lifecycle recall and writes. An
