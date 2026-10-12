@@ -126,6 +126,8 @@ def test_floor_fires_at_threshold(tmp_path):
     r = _run(_ups("gggg"), tmp_path)
     assert "Turns since your last kumiho_memory_reflect: 3" in r.stdout
     assert "gggg" in r.stdout  # carries the session_id the model cannot otherwise know
+    # Same ordering as the session card: reflect first, then the answer, written once.
+    assert "as the last tool call of the turn and before your final answer" in r.stdout
 
 
 def test_reflect_in_ledger_resets_the_count(tmp_path):

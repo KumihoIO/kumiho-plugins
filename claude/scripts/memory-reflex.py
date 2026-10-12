@@ -299,8 +299,9 @@ def main(argv: list) -> int:
             parts.append(
                 "Turns since your last kumiho_memory_reflect: %d. session_id=%s. "
                 "If a decision, preference, fact or correction landed, call "
-                "kumiho_memory_reflect with typed captures and pass any Kref "
-                "values above as source_krefs. Otherwise ignore this line."
+                "kumiho_memory_reflect with typed captures, as the last tool "
+                "call of the turn and before your final answer, and pass any "
+                "Kref values above as source_krefs. Otherwise ignore this line."
                 % (n_since, session_id))
             turn["last_floor_turn"] = n_turn
 

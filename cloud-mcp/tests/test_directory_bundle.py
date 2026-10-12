@@ -11,7 +11,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-from kumiho_cloud_mcp.connector_profile import CONNECTOR_TOOLS
+from kumiho_cloud_mcp.connector_profile import CONNECTOR_TOOL_DESCRIPTIONS, CONNECTOR_TOOLS
 
 DIRECTORY = Path(__file__).resolve().parents[1] / "directory"
 BUNDLE = DIRECTORY / "kumiho-memory"
@@ -235,6 +235,38 @@ def test_core_skill_carries_the_whole_protocol_on_its_own():
         "does not authorize recording every conversation",
     ):
         assert needle in text, needle
+
+
+# Observed 2026-10-12: a protocol that said "reflect after you respond" made the
+# assistant write its full answer, call kumiho_memory_reflect, and then write a
+# second, rephrased copy of the whole answer. Reflect now comes first.
+STALE_REFLECT_TIMING = re.compile(
+    r"after (?:responding|you respond|a substantive response|the response)", re.I)
+
+
+def test_reflect_comes_before_the_final_answer_so_the_user_reads_it_once():
+    for skill in SKILL_DIRS:
+        text = (skill / "SKILL.md").read_text(encoding="utf-8")
+        assert STALE_REFLECT_TIMING.search(" ".join(text.split())) is None, skill.name
+        assert "After a substantive response, call" not in text, skill.name
+
+    flat = " ".join((BUNDLE / "skills" / "kumiho-memory" / "SKILL.md")
+                    .read_text(encoding="utf-8").split())
+    for needle in (
+        "`kumiho_memory_reflect` is the last tool call of the turn",
+        "comes before the final answer text",
+        "show only short progress notes",
+        "`response` a concise summary of the answer you are about to give",
+        "never a verbatim second copy",
+        "then write the answer once",
+        "end the turn right after reflect with no restatement",
+        "at most one short line that adds new information",
+    ):
+        assert needle in flat, needle
+
+    # The served tool description must not reintroduce "after responding" either.
+    for name, description in CONNECTOR_TOOL_DESCRIPTIONS.items():
+        assert STALE_REFLECT_TIMING.search(" ".join(description.split())) is None, name
 
 
 def test_web_skill_zip_is_one_skill_folder_and_reproducible(tmp_path):

@@ -426,5 +426,51 @@ def test_later_turns_may_finish_a_pending_onboarding(tmp_path):
     assert "finish it before anything else" in ctx
 
 
+#: The reflect wording that told the model to reflect "after responding". The
+#: assistant followed it literally: full answer, then kumiho_memory_reflect, then a
+#: second rephrased copy of the whole answer as the final message (2026-10-12).
+_STALE_REFLECT_TIMING = (
+    "After a substantive response, call",
+    "kumiho_memory_reflect (after responding)",
+    "Reflect — after you respond",
+    "After a substantive response, **reflect**",
+)
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_card_orders_reflect_before_the_final_answer(tmp_path):
+    """Reflect is the last tool call of the turn and precedes the final answer
+    text, with a summary (not a second copy) as ``response``. The card is the one
+    instruction read every turn, so the ordering has to live here."""
+    ctx = _flat(_card(tmp_path))
+    for stale in _STALE_REFLECT_TIMING:
+        assert stale not in ctx, stale
+    assert "kumiho_memory_reflect is the LAST tool call of the turn" in ctx
+    assert "BEFORE the final answer text" in ctx
+    assert "show only short progress notes" in ctx
+    assert "concise summary of the answer you are about to give as `response`" in ctx
+    assert "not a verbatim second copy" in ctx
+    assert "write the answer ONCE" in ctx
+    # The case where the answer was already written: no restatement after reflect.
+    assert "end the turn right after reflect with no restatement" in ctx
+    assert "at most one short line that adds new information" in ctx
+
+
+def test_claude_skill_orders_reflect_before_the_final_answer():
+    skill = _flat((SCRIPTS.parent / "skills" / "kumiho-memory" / "SKILL.md")
+                  .read_text(encoding="utf-8"))
+    for stale in _STALE_REFLECT_TIMING:
+        assert stale not in skill, stale
+    assert "### Reflect — last tool call, before the final answer" in skill
+    assert "is the **last tool call of the turn** and happens **before** the final answer text" in skill
+    assert "concise summary of the answer you are about to give" in skill
+    assert "never a verbatim second copy" in skill
+    assert "end the turn right after reflect with no restatement" in skill
+    assert "Then write the answer once" in skill
+
+
 if __name__ == "__main__":
     sys.exit(subprocess.call([sys.executable, "-m", "pytest", __file__, "-q"]))

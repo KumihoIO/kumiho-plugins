@@ -60,6 +60,15 @@ on every turn, and do not store transient chatter, open brainstorming, guesses,
 raw logs, full transcripts, credentials, unrelated private information or anything
 the user asked you not to keep.
 
+Keep the order, so the user reads your answer exactly once. In a turn where you
+both reflect and answer, `kumiho_memory_reflect` is the last tool call of the turn
+and comes before the final answer text; until then show only short progress notes.
+Make `response` a concise summary of the answer you are about to give, never a
+verbatim second copy, then write the answer once. If the full answer was already
+written before reflect (the turn needed tools after answering), end the turn right
+after reflect with no restatement, or at most one short line that adds new
+information.
+
 Pass a short `response` and typed `captures`, each with `type` (usually
 `decision`, `preference`, `fact` or `correction`), `title`, `content` and
 `space_hint`. Reuse exact existing space casing; otherwise use `decisions`,
