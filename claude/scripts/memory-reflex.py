@@ -164,7 +164,9 @@ def _consolidate_line(n: int, floor: int, session_id: str) -> str:
         "classification: {topics, entities}}, implications=[...]) -- only "
         "summary is required. Never call it without summary: that path needs an "
         "external LLM and fails keyless. The working memory expires after %s "
-        "idle, so do not defer this past a long pause."
+        "idle, so do not defer this past a long pause. If you also reflect "
+        "this turn, reflect first and run this consolidate silently right "
+        "after it, with no user-visible text, before the final answer."
         % (n, floor, session_id, session_id, _idle_expiry_phrase())
     )
 
@@ -299,8 +301,11 @@ def main(argv: list) -> int:
             parts.append(
                 "Turns since your last kumiho_memory_reflect: %d. session_id=%s. "
                 "If a decision, preference, fact or correction landed, call "
-                "kumiho_memory_reflect with typed captures and pass any Kref "
-                "values above as source_krefs. Otherwise ignore this line."
+                "kumiho_memory_reflect with typed captures, as the last memory "
+                "call before the final answer, apart from silent follow-ups "
+                "that need its result (they run silently right after it, with "
+                "no user-visible text), and pass any Kref values above as "
+                "source_krefs. Otherwise ignore this line."
                 % (n_since, session_id))
             turn["last_floor_turn"] = n_turn
 

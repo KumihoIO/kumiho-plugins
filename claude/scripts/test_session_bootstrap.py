@@ -22,6 +22,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -424,6 +425,150 @@ def test_later_turns_may_finish_a_pending_onboarding(tmp_path):
     ctx = _card(tmp_path)
     assert "Identity is already loaded" not in ctx
     assert "finish it before anything else" in ctx
+
+
+#: The reflect wording that told the model to reflect "after responding". The
+#: assistant followed it literally: full answer, then kumiho_memory_reflect, then a
+#: second rephrased copy of the whole answer as the final message (2026-10-12).
+_STALE_REFLECT_TIMING = (
+    "After a substantive response, call",
+    "kumiho_memory_reflect (after responding)",
+    "Reflect — after you respond",
+    "After a substantive response, **reflect**",
+)
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+#: The one call allowed to follow a reflect: a follow-up that needs reflect's result
+#: (a retire after a correction that did not revise, decompose, a requested
+#: consolidate). It runs silently, so the answer is still written once. Every place
+#: that states the ordering rule has to carry this exception, or the rule reads as
+#: "nothing may follow reflect" and contradicts those instructions.
+_SILENT_FOLLOW_UP = (
+    "follow-up that needs reflect's result",
+    "silently right after it, with no user-visible text",
+)
+
+
+#: The ordering rule, as every place that states it words it.
+_REFLECT_RULE = ("the last memory call before the final answer, apart from silent "
+                 "follow-ups that need its result")
+
+
+def _load_reflect_order_check():
+    """The shared "no call after the final answer" checker.
+
+    One definition for the claude/scripts tests and the cloud-mcp tests, kept in the
+    repository-root tests/ directory because neither tree can import the other; each
+    loads it by path."""
+    path = SCRIPTS.parents[1] / "tests" / "reflect_order_check.py"
+    spec = importlib.util.spec_from_file_location("reflect_order_check", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_reflect_order = _load_reflect_order_check()
+_requires_a_call_after_the_answer = _reflect_order.calls_after_the_answer
+
+
+def test_the_after_the_answer_check_flags_every_phrasing_that_puts_a_call_after_the_answer():
+    for positive in _reflect_order.POSITIVES:
+        assert _requires_a_call_after_the_answer(positive), positive
+    for negative in _reflect_order.NEGATIVES:
+        assert _requires_a_call_after_the_answer(negative) == [], negative
+    # Phrasings the first version of the check missed.
+    for missed in ("Write the full answer, then call kumiho_memory_reflect.",
+                   "Once you have answered, call kumiho_memory_reflect.",
+                   "After writing your answer, call kumiho_memory_reflect.",
+                   "Reflect after you reply.",
+                   "REFLECT — after you respond.",
+                   "Capture what matters after responding."):
+        assert _requires_a_call_after_the_answer(missed), missed
+
+
+def test_card_orders_reflect_before_the_final_answer(tmp_path):
+    """Reflect is the last memory call before the final answer text and precedes it,
+    with a summary (not a second copy) as ``response``. The card is the one
+    instruction read every turn, so the ordering has to live here."""
+    ctx = _flat(_card(tmp_path))
+    for stale in _STALE_REFLECT_TIMING:
+        assert stale not in ctx, stale
+    assert f"kumiho_memory_reflect ({_REFLECT_RULE})" in ctx
+    assert f"kumiho_memory_reflect is {_REFLECT_RULE}, so call it BEFORE the final answer text" in ctx
+    assert "BEFORE the final answer text" in ctx
+    assert "show only short progress notes" in ctx
+    assert "concise summary of the answer you are about to give as `response`" in ctx
+    assert "not a verbatim second copy" in ctx
+    assert "write the answer ONCE" in ctx
+    # The case where the answer was already written: no restatement after reflect.
+    assert "end the turn right after reflect and any such follow-up, with no restatement" in ctx
+    assert "at most one short line that adds new information" in ctx
+    # "last tool call" and "last memory write" are the earlier wordings; the first
+    # contradicted the follow-ups, the second hid that a retire is a write too.
+    assert "last tool call" not in ctx.lower() and "last memory write" not in ctx.lower()
+
+
+def test_card_names_the_silent_follow_ups_that_may_follow_reflect(tmp_path):
+    ctx = _flat(_card(tmp_path))
+    for marker in _SILENT_FOLLOW_UP:
+        assert marker in ctx, marker
+    for follow_up in ("kumiho_deprecate_item after a correction that did not revise the old memory",
+                      "kumiho_memory_decompose", "a consolidate the host asked for"):
+        assert follow_up in ctx, follow_up
+
+
+def test_claude_skill_orders_reflect_before_the_final_answer():
+    skill = _flat((SCRIPTS.parent / "skills" / "kumiho-memory" / "SKILL.md")
+                  .read_text(encoding="utf-8"))
+    for stale in _STALE_REFLECT_TIMING:
+        assert stale not in skill, stale
+    assert "### Reflect — last memory call, before the final answer" in skill
+    emphasised = _REFLECT_RULE.removeprefix("the ")
+    assert f"is the **{emphasised}**, and happens **before** the final answer text" in skill
+    assert "concise summary of the answer you are about to give" in skill
+    assert "never a verbatim second copy" in skill
+    assert "end the turn right after reflect and any such follow-up, with no restatement" in skill
+    assert "Then write the answer once" in skill
+    for marker in _SILENT_FOLLOW_UP:
+        assert marker in skill, marker
+    for follow_up in ("`kumiho_deprecate_item` after a correction that did not revise the old memory",
+                      "`kumiho_memory_decompose`", "a `kumiho_memory_consolidate` the host asked for"):
+        assert follow_up in skill, follow_up
+    assert "last tool call" not in skill.lower() and "last memory write" not in skill.lower()
+
+
+def test_no_reflect_example_asks_for_the_full_response_text():
+    """A reflect example that passes "<your response>" invites the verbatim second
+    copy of the answer. Every example passes a summary instead."""
+    root = SCRIPTS.parent / "skills" / "kumiho-memory"
+    placeholder = re.compile(r"response\s*[:=]\s*\"?<([^<>]*)>")
+    seen = 0
+    for path in [root / "SKILL.md", *sorted((root / "references").glob("*.md"))]:
+        text = path.read_text(encoding="utf-8")
+        for call in re.finditer(r"kumiho_memory_reflect\(", text):
+            match = placeholder.search(text[call.end():call.end() + 300])
+            if match is None:
+                continue
+            seen += 1
+            content = match.group(1).lower()
+            # "<concise summary of the answer ...>" and "<compact summary>" are
+            # summaries; "<your response>" or "<the full answer>" are the answer itself.
+            assert "summary" in content or not re.search(
+                r"\b(?:response|answer|reply|text)\b", content), (path.name, match.group(0))
+    assert seen >= 4  # SKILL.md (2), artifacts.md and creative-memory.md
+
+
+def test_card_and_skill_never_require_a_tool_call_after_the_final_answer(tmp_path):
+    skill = (SCRIPTS.parent / "skills" / "kumiho-memory" / "SKILL.md").read_text(encoding="utf-8")
+    assert _requires_a_call_after_the_answer(_card(tmp_path)) == []
+    assert _requires_a_call_after_the_answer(skill) == []
+    # The references the skill points to are held to the same rule.
+    for path in sorted((SCRIPTS.parent / "skills" / "kumiho-memory" / "references").glob("*.md")):
+        assert _requires_a_call_after_the_answer(path.read_text(encoding="utf-8")) == [], path.name
 
 
 if __name__ == "__main__":
