@@ -1,9 +1,27 @@
 ---
 name: kumiho-memory
-description: Use when the user asks what you know about them (what's my...), refers to earlier chats, settles a decision or preference, or asks to remember, save, forget, correct or list recent memories.
+description: Use when the user asks what you know about them, refers to earlier chats, settles a decision or preference, asks to remember/save/forget/correct/list recent memories, or Kumiho tools are missing.
 ---
 
 # Kumiho Memory
+
+First, check that the Kumiho tools (`kumiho_*`) are available. If none are, or a
+call reports an authentication error, the user has not connected Kumiho yet: tell
+them once, in their language, how to connect, then continue the task without
+memory. Never pretend to remember.
+
+- Claude Code: run `/mcp`, select `plugin:kumiho-memory-cloud:kumiho-memory`,
+  choose Authenticate and approve access in the browser.
+- Cowork: use the plugin's Connect prompt, or Customize > Connectors > Kumiho Memory.
+- claude.ai and Claude Desktop chat: Customize > Connectors > Kumiho Memory.
+- ChatGPT and Codex: use the app's Connect flow.
+
+Connecting needs a paid Kumiho Cloud workspace, and sign-in happens on Kumiho's own
+page. Never ask for a password, token or MFA code in chat. If sign-in was refused
+because the account has no workspace, reconnecting will not help: tell the user to
+create a workspace at kumiho.io first. Say all this once per conversation rather
+than on every turn. After connecting, the `kumiho-onboard` skill verifies the
+workspace.
 
 This is the complete protocol for the connected Kumiho Memory tools (`kumiho_*`).
 Follow it whether or not the connector supplied its own instructions, and without
@@ -19,9 +37,6 @@ Installing this skill does not authorize recording every conversation.
 - Do not call Kumiho tools for unrelated live information (weather, news, prices)
   or for data belonging to a workspace or person the user is not authorized to
   access.
-- If no Kumiho tools are available or a call reports an authentication error,
-  tell the user the Kumiho Memory connector needs to be connected or reconnected
-  in the app's connector settings. Never pretend to remember.
 
 ## Recall
 
@@ -55,10 +70,23 @@ one of these becomes settled within the scope the user allows:
 - a durable fact about the user's work or situation;
 - a correction to something previously remembered.
 
-Capture it when it is settled, not at the end of the conversation. Do not reflect
+Capture it as soon as it is settled, not saved for the end of the conversation. Do not reflect
 on every turn, and do not store transient chatter, open brainstorming, guesses,
 raw logs, full transcripts, credentials, unrelated private information or anything
 the user asked you not to keep.
+
+Keep the order, so the user reads your answer exactly once. In a turn where you
+both reflect and answer, `kumiho_memory_reflect` is the last memory call before
+the final answer, apart from silent follow-ups that need its result: call it before
+the final answer text, and until then show only short progress notes. Make
+`response` a concise summary of the answer you are about to give, never a verbatim
+second copy. A follow-up that needs reflect's result
+(`kumiho_deprecate_item` after a correction that did not revise the old memory, or
+a `kumiho_memory_consolidate` the user asked for) runs silently right after it,
+with no user-visible text; then write the answer once. If the full answer was
+already written before reflect (the turn needed tools after answering), end the
+turn right after reflect and any such follow-up, with no restatement, or at most
+one short line that adds new information.
 
 Pass a short `response` and typed `captures`, each with `type` (usually
 `decision`, `preference`, `fact` or `correction`), `title`, `content` and

@@ -83,6 +83,17 @@ Signing keys and regional database assignments were not changed.
   activation; see `ADVERSARIAL-REVIEW.md`.
 - A finite acceptance run does not guarantee future model tool choices.
 
+## Directory plugin bundle (0.1.4)
+
+`directory/kumiho-memory/.codex-plugin/plugin.json` shares its `skills/` directory
+with the Claude plugin, so the 0.1.4 skill changes also ship in the Codex and
+ChatGPT bundle: the `kumiho-memory` skill now opens with connect guidance written
+as one bullet per host (Claude Code, Cowork, claude.ai and Claude Desktop chat,
+then ChatGPT and Codex: the app's Connect flow), and it calls reflect before the
+final answer. The Codex manifest changed only in `version` (0.1.3 to 0.1.4, kept
+equal to the Claude manifest by `tests/test_directory_bundle.py`). Whether this
+needs an OpenAI resubmission is an owner decision; nothing was submitted.
+
 ## References
 
 - [Official submission flow](https://developers.openai.com/plugins/deploy/submission)
