@@ -53,7 +53,7 @@ After that first turn it is **permanently done for this session**:
 <!-- inline -->
 ## Two Reflexes
 
-Every meaningful turn after bootstrap uses two natural reflexes, in this order: **engage** first, then the work, then **reflect** as the last tool call of the turn, and only then the final answer, written once.
+Every meaningful turn after bootstrap uses two natural reflexes, in this order: **engage** first, then the work, then **reflect** as the last memory write before the final answer (any follow-up that needs its result runs silently right after it), and only then the final answer, written once.
 
 ### Engage — before you respond
 
@@ -102,13 +102,14 @@ Leave that reference unloaded on factual or brief-connection turns. Experience,
 outcome, and pattern writes need the user's request or established authorization;
 do not ask again when already authorized.
 
-### Reflect — last tool call, before the final answer
+### Reflect — last memory write, before the final answer
 
 On a substantive turn, **reflect** on what matters. Order is the whole rule, because the user must read your answer exactly once:
 
-- `kumiho_memory_reflect` is the **last tool call of the turn** and happens **before** the final answer text. Until then show only short progress notes. A follow-up that needs reflect's returned kref (such as `kumiho_memory_decompose`) may follow it silently, with no visible text.
+- `kumiho_memory_reflect` is the **last memory write before the final answer** and happens **before** the final answer text. Until then show only short progress notes.
+- A follow-up that needs reflect's result (`kumiho_deprecate_item` after a correction that did not revise the old memory, `kumiho_memory_decompose`, a `kumiho_memory_consolidate` the host asked for) runs silently right after it, with no user-visible text.
 - Pass a **concise summary of the answer you are about to give** as `response`, never a verbatim second copy of it, plus the captures. Then write the answer once.
-- If the full answer was already written before reflect (the turn needed tools after answering), end the turn right after reflect with no restatement — at most one short line that adds new information.
+- If the full answer was already written before reflect (the turn needed tools after answering), end the turn right after reflect and any such follow-up, with no restatement — at most one short line that adds new information.
 
 ```
 kumiho_memory_reflect(
@@ -237,7 +238,7 @@ Skill discovery consumes your one engage-per-turn. Mitigations:
 If no skill matches and you improvised a procedure, capture it via reflect:
 ```
 kumiho_memory_reflect(
-  response: "<your response>",
+  response: "<concise summary of the answer you are about to give>",
   captures: [{
     type: "skill",
     title: "<skill name>",

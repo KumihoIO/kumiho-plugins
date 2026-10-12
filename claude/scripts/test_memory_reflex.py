@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -45,6 +46,30 @@ def _run(payload: dict, home: Path, args=(), env_extra: dict | None = None):
     r.stdout = r.stdout.decode("utf-8", "replace")
     r.stderr = r.stderr.decode("utf-8", "replace")
     return r
+
+
+def _requires_a_call_after_the_answer(text: str) -> list:
+    """Sentences that tell the model to make a tool call AFTER the final answer.
+
+    That is the instruction that produced the duplicate answer (2026-10-12): write
+    the answer, call reflect, then restate the answer. The only call allowed to
+    follow a reflect is a silent follow-up, and that sentence never names the
+    answer as its anchor, so it is not flagged."""
+    anchor = re.compile(r"\bafter (?:a |the |your )?(?:substantive |final )?(?:answer|answering|"
+                        r"responding|response|reply|replying)\b|\bafter you (?:answer|respond|reply)\b",
+                        re.I)
+    call = re.compile(r"\bkumiho_\w+|\b(?:call|run)\b", re.I)
+    return [s for s in re.split(r"(?<=[.;])\s+", " ".join(text.split()))
+            if anchor.search(s) and call.search(s)]
+
+
+def test_the_after_the_answer_check_flags_the_instruction_that_caused_the_duplicate():
+    assert _requires_a_call_after_the_answer(
+        "After a substantive response, call kumiho_memory_reflect with your response text.")
+    assert _requires_a_call_after_the_answer("After you answer, run the reflect call.")
+    assert not _requires_a_call_after_the_answer(
+        "A follow-up that needs reflect's result runs silently right after it, with no "
+        "user-visible text.")
 
 
 def _seed_cache(home: Path, sid: str, block: str, sha: str = "deadbeef1234",
@@ -127,7 +152,12 @@ def test_floor_fires_at_threshold(tmp_path):
     assert "Turns since your last kumiho_memory_reflect: 3" in r.stdout
     assert "gggg" in r.stdout  # carries the session_id the model cannot otherwise know
     # Same ordering as the session card: reflect first, then the answer, written once.
-    assert "as the last tool call of the turn and before your final answer" in r.stdout
+    ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "the last memory write before your final answer text" in ctx
+    # ...and the same exception, so the nudge cannot be read as "no other call after it".
+    assert ("a follow-up that needs reflect's result runs silently right after it, "
+            "with no user-visible text") in ctx
+    assert _requires_a_call_after_the_answer(ctx) == []
 
 
 def test_reflect_in_ledger_resets_the_count(tmp_path):
@@ -264,6 +294,12 @@ def test_consolidate_floor_fires_at_threshold_with_the_keyless_call_shape(tmp_pa
     assert "kumiho_memory_consolidate(session_id=cf02, summary=" in ctx
     assert "subagent" in ctx
     assert "Never call it without summary" in ctx
+    # When the same turn also reflects, the consolidate is a silent follow-up of the
+    # reflect, so the answer is still written once.
+    assert ("If you also reflect this turn, reflect first and run this consolidate "
+            "silently right after it, with no user-visible text, before the final "
+            "answer.") in ctx
+    assert _requires_a_call_after_the_answer(ctx) == []
 
 
 def test_a_successful_consolidate_in_the_ledger_resets_the_count(tmp_path):
