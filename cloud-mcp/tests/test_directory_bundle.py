@@ -437,7 +437,8 @@ def test_submission_docs_keep_internal_metrics_out_and_flag_the_shared_skills_ch
     for count, noun in (("7", "installs"), ("1,234", "loads"), ("99", "sessions")):
         assert metric.search(f"{count} {noun}"), (count, noun)
     assert metric.search("no active accounts")
-    for path in (DIRECTORY / "CLAUDE-PLUGIN-SUBMISSION.md", DIRECTORY.parent / "CHATGPT-SUBMISSION.md",
+    assert metric.search(submission) is None, "CLAUDE-PLUGIN-SUBMISSION.md"
+    for path in (DIRECTORY.parent / "CHATGPT-SUBMISSION.md",
                  BUNDLE / "README.md", BUNDLE / ".claude-plugin" / "plugin.json",
                  *(skill / "SKILL.md" for skill in SKILL_DIRS)):
         assert metric.search(path.read_text(encoding="utf-8")) is None, path.name
