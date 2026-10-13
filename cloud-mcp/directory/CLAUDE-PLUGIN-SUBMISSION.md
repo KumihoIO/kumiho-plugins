@@ -87,20 +87,16 @@ Kumiho Memory gives Claude a persistent memory that carries across conversations
 
 The plugin bundles the hosted Kumiho Memory MCP connector (https://mcp.kumiho.cloud/mcp, OAuth sign-in) with six skills: kumiho-memory (recall and save context), memory-capture (save one approved item), kumiho-onboard (connect and verify the workspace), kumiho-personalize (communication preferences), dream-state (bounded review and cleanup of stored memories) and kumiho-backfill (preview and import selected past conversations). Imports and cleanup changes are shown for approval before anything is written. Nothing runs locally except an optional stdlib-only helper that prepares selected history files for review.
 
-Memories are stored in your own Kumiho Cloud workspace. Requires a paid Kumiho Cloud account; the self-hosted Community Edition is not supported by this plugin.
+Memories are stored in your own Kumiho Cloud workspace. Start a 14-day free trial with Google, no card required, at https://kumiho.io/signup?intent=trial, or connect a paid workspace. The self-hosted Community Edition is not supported by this plugin.
 ```
 
-#### Listing update for 0.1.4 (hand edit in the directory dashboard)
+#### Listing update for 0.1.5 (hand edit in the directory dashboard)
 
-The listing text lives in the directory dashboard, not in this repository, so it
-does not change when 0.1.4 merges. Installed users were not becoming active: in
-Claude Code the bundled HTTP server needs a sign-in that only the user can start
-(`/mcp`), and until then no Kumiho tool exists. Make the connect step visible by
-adding this short paragraph after the three above (it makes no free-trial or
-pricing claim; keep "Requires a paid Kumiho Cloud account" until a trial exists):
+The listing text lives in the directory dashboard and does not change when this
+repository merges. Use the trial paragraph above and keep this connection step:
 
 ```
-Getting started: after installing, run /mcp, select plugin:kumiho-memory-cloud:kumiho-memory and choose Authenticate (Cowork: use Connect). Until you sign in to Kumiho, Claude has no Kumiho tools.
+Getting started: after installing, run /mcp, select plugin:kumiho-memory-cloud:kumiho-memory and choose Authenticate (Cowork: use Connect). Until you sign in to Kumiho, Claude has no Kumiho tools. New accounts can start the 14-day trial on the sign-in/consent page with Google, no card required.
 ```
 
 ### Example use cases *

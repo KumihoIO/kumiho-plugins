@@ -16,12 +16,15 @@ memory. Never pretend to remember.
 - claude.ai and Claude Desktop chat: Customize > Connectors > Kumiho Memory.
 - ChatGPT and Codex: use the app's Connect flow.
 
-Connecting needs a paid Kumiho Cloud workspace, and sign-in happens on Kumiho's own
+Connect a trial or paid Kumiho Cloud workspace; sign-in happens on Kumiho's own
 page. Never ask for a password, token or MFA code in chat. If sign-in was refused
-because the account has no workspace, reconnecting will not help: tell the user to
-create a workspace at kumiho.io first. Say all this once per conversation rather
-than on every turn. After connecting, the `kumiho-onboard` skill verifies the
-workspace.
+because the account has no workspace, reconnecting will not help: offer the
+14-day free trial at https://kumiho.io/signup?intent=trial. Google sign-in is
+required for the trial; no card is required, and each account can start once.
+The trial includes 1 seat, CognitiveMemory only and 2,000 nodes. After 14 days,
+recall and export remain available for 30 days while new saves stop. Subscribe
+to continue using the same workspace. Say all this once per conversation rather
+than on every turn. After connecting, the `kumiho-onboard` skill verifies access.
 
 This is the complete protocol for the connected Kumiho Memory tools (`kumiho_*`).
 Follow it whether or not the connector supplied its own instructions, and without
