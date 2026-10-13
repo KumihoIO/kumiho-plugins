@@ -5,10 +5,12 @@ service. It is not a Muse Code extension. No new server, bridge or client secret
 is shipped here. Initial application submitted on 2026-10-14 (KST); approval is pending.
 Submission ID: `7811745d-2e30-42d2-bd43-75ee53911730`.
 [Manage the submission](https://muse.ai/platform/submissions/7811745d-2e30-42d2-bd43-75ee53911730).
-Business verification has been submitted and is In review (1/3 requirements
-complete). The data-processing questionnaire and final integration credentials
-remain outstanding. OAuth DCR, PKCE and scope `memory` are saved as a draft;
-a dedicated reviewer test account is required before final credential submission.
+Business verification and integration credentials have been submitted and are
+In review (2/3 requirements complete). Credentials use OAuth DCR, PKCE and scope
+`memory`, with an isolated reviewer workspace. The data-processing questionnaire
+is saved as a draft; current subprocessors/AI processing, international-transfer
+basis, access-request handling and deletion/data scope await publisher verification.
+The questionnaire has not been submitted.
 
 ## Submission values
 
@@ -119,7 +121,9 @@ Provide a dedicated, isolated Kumiho Cloud test account through the portal's
 secure credential fields. Do not reuse the publisher's personal workspace or
 commit credentials. Keep the test account available throughout review. Seed only
 synthetic records, for example a fictional Project Lantern decision with its
-reason. A test account and completed host QA are still required.
+reason. The isolated reviewer account was verified through the Kumiho website and
+submitted in the portal. Completed Muse host QA is still required; website login
+does not establish successful Muse OAuth or tool invocation.
 
 1. Connect with OAuth, approve scope, list projects/spaces; verify the test tenant.
 2. Read known synthetic items using each read tool (search, retrieve, item,
