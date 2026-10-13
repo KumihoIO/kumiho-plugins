@@ -8,8 +8,11 @@ Submission ID: `7811745d-2e30-42d2-bd43-75ee53911730`.
 Business verification and integration credentials have been submitted and are
 In review (2/3 requirements complete). Credentials use OAuth DCR, PKCE and scope
 `memory`, with an isolated reviewer workspace. The data-processing questionnaire
-is saved as a draft; current subprocessors/AI processing, international-transfer
-basis, access-request handling and deletion/data scope await publisher verification.
+is saved as a draft. The publisher confirmed the subprocessor list, legal review
+of access requests, and processing of end-user, contact and child information.
+The SCC answer is approved and saved; Google Cloud DPA acceptance and European-law
+applicability certification were completed with explicit publisher approval.
+Deletion coverage and external AI processing still await factual confirmation.
 The questionnaire has not been submitted.
 
 ## Submission values

@@ -30,6 +30,7 @@
   "submission_id": "7811745d-2e30-42d2-bd43-75ee53911730",
   "submitted_date_kst": "2026-10-14",
   "business_verification": "submitted_in_review",
-  "data_processing_questionnaire": "draft_saved_publisher_facts_pending",
-  "integration_credentials": "submitted_in_review_oauth_dcr_pkce_memory"
+  "data_processing_questionnaire": "draft_saved_deletion_ai_confirmation_pending",
+  "integration_credentials": "submitted_in_review_oauth_dcr_pkce_memory",
+  "scc_declaration": "owner_approved_draft_saved"
 }
