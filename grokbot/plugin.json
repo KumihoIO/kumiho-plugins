@@ -1,0 +1,21 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "kumiho-memory",
+  "version": "0.1.0",
+  "description": "Recall and save decisions, preferences and facts in your Kumiho Cloud workspace. Hosted OAuth MCP and six memory skills for Grok Bot and Cursor.",
+  "author": {
+    "name": "Kumiho Inc.",
+    "url": "https://kumiho.io"
+  },
+  "homepage": "https://kumiho.io",
+  "repository": "https://github.com/KumihoIO/kumiho-plugins",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "kumiho",
+    "mcp",
+    "grok-bot",
+    "cursor",
+    "decisions"
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "name": "Kumiho Memory",
+  "version": "0.1.0",
+  "target": "Meta Muse app",
+  "format": "Kumiho submission reference; not a Meta import manifest",
+  "endpoint": "https://mcp.kumiho.cloud/mcp",
+  "transport": "streamable-http",
+  "environment": "production",
+  "authentication": {
+    "type": "oauth2",
+    "issuer": "https://control.kumiho.cloud",
+    "scopes": [
+      "memory"
+    ],
+    "pkce": "S256",
+    "discovery": "MCP protected resource metadata",
+    "client_registration": [
+      "CIMD",
+      "DCR"
+    ],
+    "read_only_scope_available": false
+  },
+  "publisher": "Kumiho Inc.",
+  "homepage": "https://kumiho.io",
+  "privacy_policy": "https://kumiho.io/en/legal#privacy",
+  "product_terms": "https://kumiho.io/en/legal",
+  "support": "support@kumiho.io",
+  "submission_url": "https://muse.ai/platform",
+  "status": "prepared_not_submitted"
+}
