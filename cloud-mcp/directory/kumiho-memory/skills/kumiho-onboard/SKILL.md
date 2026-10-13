@@ -9,9 +9,13 @@ This directory plugin uses the hosted MCP endpoint `https://mcp.kumiho.cloud/mcp
 through the host's OAuth connection. It does not install a local server, Python
 SDK, hook or background job.
 
-It requires a paid Kumiho Cloud workspace. The free self-hosted Community Edition
-(CE) is not reachable from this connector; CE is served by the separate local
-Kumiho plugin described at the end of this workflow.
+It connects a trial or paid Kumiho Cloud workspace. Start a 14-day free trial at
+https://kumiho.io/signup?intent=trial with Google sign-in and no card. Each account
+can start once; the trial includes 1 seat, CognitiveMemory only and 2,000 nodes.
+After expiration, recall and export remain available for 30 days while new saves
+stop. Subscribe to continue using the same workspace. Deletion is announced by
+email beforehand. The free self-hosted Community Edition (CE) is not reachable
+from this connector; CE uses the separate local plugin described below.
 
 1. Inspect which Kumiho tools the host exposes. If none are available or a tool
    reports an authentication error, connect or reconnect through the host:
@@ -31,7 +35,9 @@ Kumiho plugin described at the end of this workflow.
 2. Call `kumiho_list_projects` to verify account access. Do not switch accounts,
    regions or backends merely to get a passing result. If multiple destinations
    matter, ask the user to choose from the returned projects. A sign-in without a
-   Kumiho Cloud workspace cannot be fixed from chat; say so plainly.
+   Kumiho Cloud workspace can start the trial on the sign-in/consent page or at
+   https://kumiho.io/signup?intent=trial. Let the user sign in and accept terms;
+   never create the account or accept an agreement silently.
 3. Explain that only authorized memories will be stored. Offer a small first-use
    workflow: save one decision and recall it in a fresh conversation, or backfill
    selected past conversations. Installation alone does not authorize history

@@ -60,7 +60,7 @@ def test_claude_and_codex_manifests_describe_the_same_plugin():
     assert codex["name"] == "kumiho-memory"
     # One shared skills/ directory ships in both bundles, so a skill change is a
     # change to both; the test keeps the two version numbers from drifting apart.
-    assert claude["version"] == codex["version"] == "0.1.4"
+    assert claude["version"] == codex["version"] == "0.1.5"
     assert claude["license"] == codex["license"]
 
 
@@ -377,19 +377,20 @@ def test_the_first_instruction_tells_an_unconnected_user_how_to_connect():
         "- Cowork: use the plugin's Connect prompt, or Customize > Connectors > Kumiho Memory.",
         "- claude.ai and Claude Desktop chat: Customize > Connectors > Kumiho Memory.",
         "- ChatGPT and Codex: use the app's Connect flow.",
-        "Connecting needs a paid Kumiho Cloud workspace",
+        "Connect a trial or paid Kumiho Cloud workspace",
         "Never ask for a password, token or MFA code in chat",
         "If sign-in was refused because the account has no workspace, reconnecting will not help",
-        "create a workspace at kumiho.io first",
+        "14-day free trial at https://kumiho.io/signup?intent=trial",
         "Say all this once per conversation",
     ):
         assert needle in first, needle
     order = [first.index(host) for host in (
         "- Claude Code:", "- Cowork:", "- claude.ai and Claude Desktop chat:", "- ChatGPT and Codex:")]
     assert order == sorted(order)
-    # No trial or price claim before one exists, and "account" alone was not enough:
+    # The live trial must state its limits; a bare account still is not a workspace:
     # a sign-in without a workspace is the case reconnecting cannot fix.
-    assert "trial" not in first.lower() and "free" not in first.lower()
+    assert "no card is required" in first and "2,000 nodes" in first
+    assert "Google sign-in is required" in first and "30 days" in first
     assert "Kumiho Cloud account" not in first
     # One definition of the rule: the older "connector settings" bullet is gone.
     assert text.count("authentication error") == 1
@@ -402,13 +403,13 @@ def test_the_claude_manifest_says_what_it_does_then_how_to_connect():
     connect = "Connect via /mcp (Cowork: Connect) after installing."
     assert connect in description
     assert description.index(connect) < description.index("Bundles the hosted")
-    # The account requirement stays, and no trial or price is claimed before one exists.
-    assert description.endswith("Requires a paid Kumiho Cloud account.")
-    assert "trial" not in description.lower() and "free" not in description.lower()
+    # A workspace remains required, with the now-live trial offered explicitly.
+    assert description.endswith("or connect a paid Kumiho Cloud workspace.")
+    assert "14-day free trial with Google, no card required" in description
     assert "TODO" not in description
 
 
-def test_the_readme_leads_with_a_short_getting_started_and_marks_the_trial_todo():
+def test_the_readme_leads_with_connection_and_the_live_trial_policy():
     readme = (BUNDLE / "README.md").read_text(encoding="utf-8")
     assert readme.index("## Getting started") < readme.index("## Requirements")
     started = readme.split("## Getting started", 1)[1].split("\n## ", 1)[0]
@@ -418,12 +419,12 @@ def test_the_readme_leads_with_a_short_getting_started_and_marks_the_trial_todo(
     flat_started = " ".join(started.split())
     assert "paid Kumiho Cloud workspace" in flat_started
     assert "reconnecting will not help" in flat_started
-    assert "create a workspace at kumiho.io first" in flat_started
-    # The marker lives in the README only, as a comment, and nothing outside the
-    # comment claims a trial.
-    assert "<!-- TODO(free-trial)" in started
-    claims = started.split("<!-- TODO(free-trial)", 1)[0].lower()
-    assert "trial" not in claims and "free" not in claims
+    assert "https://kumiho.io/signup?intent=trial" in flat_started
+    # The shipped README must describe the live trial and remove the old TODO.
+    assert "<!-- TODO(free-trial)" not in started
+    claims = started.lower()
+    assert "14-day free trial" in claims and "no card required" in claims
+    assert "2,000 nodes" in claims and "30 days" in claims
     for path in (BUNDLE / ".claude-plugin" / "plugin.json", BUNDLE / ".codex-plugin" / "plugin.json",
                  *(skill / "SKILL.md" for skill in SKILL_DIRS)):
         assert "TODO" not in path.read_text(encoding="utf-8"), path

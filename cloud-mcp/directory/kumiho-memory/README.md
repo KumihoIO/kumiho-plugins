@@ -23,18 +23,18 @@ tools and the skills have nothing to work with. Connect once:
 3. **Use.** Say "remember that we chose Postgres for the events service", then ask
    "what did we decide about the events service?" in a new conversation.
 
-You need a paid Kumiho Cloud workspace for now (see Requirements). If sign-in is
-refused because your account has no workspace, reconnecting will not help: create a
-workspace at kumiho.io first. The steps for each app are under
-[Install in Claude](#install-in-claude).
-
-<!-- TODO(free-trial): a free trial is being designed separately. Do not claim one
-here, in the plugin manifests or in the skills until it exists; when it does,
-replace "You need a paid Kumiho Cloud workspace for now" above with how to start it. -->
+Start the [14-day free trial](https://kumiho.io/signup?intent=trial) with Google,
+no card required, or connect a paid Kumiho Cloud workspace. Each account can start
+once. The trial includes 1 seat, CognitiveMemory only and 2,000 nodes. When it
+ends, recall and export remain available for 30 days while new saves stop.
+Subscribe to continue using the same workspace; no data move is needed. Deletion
+is announced by email beforehand. If your account has no workspace, reconnecting
+will not help: start the trial from the link or the sign-in/consent page.
+The steps for each app are under [Install in Claude](#install-in-claude).
 
 ## Requirements
 
-- **A paid Kumiho Cloud workspace.** The connector serves Kumiho Cloud workspaces
+- **A trial or paid Kumiho Cloud workspace.** The connector serves Kumiho Cloud workspaces
   only. Signing in happens on Kumiho's own OAuth page at `control.kumiho.cloud`
   (continue with Google or email); the plugin never asks for a password or token.
 - **Self-hosted Community Edition (CE) is not reachable from this plugin.** CE is
