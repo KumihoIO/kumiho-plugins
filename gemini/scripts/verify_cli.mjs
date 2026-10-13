@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = resolve(process.argv[2] ?? join(root, 'cli'));
 const binary = resolve(process.argv[3] ?? '');
+const installSource = process.argv[4] ?? pkg;
 assert(process.argv[3], 'Usage: node verify_cli.mjs <extension-directory> <gemini.js>');
 const manifest = JSON.parse(readFileSync(join(pkg, 'gemini-extension.json'), 'utf8'));
 assert.equal(manifest.name, 'kumiho-memory');
@@ -37,7 +38,7 @@ function run(args, input='') {
  return r.stdout+r.stderr;
 }
 assert.match(run(['--version']), /0\.64\.0/);
-assert.match(run(['extensions','install',pkg,'--consent'], 'y\n'), /installed successfully/);
+assert.match(run(['extensions','install',installSource,'--consent'], 'y\n'), /installed successfully/);
 const list = run(['extensions','list']);
 assert.match(list, /kumiho-memory \(0\.1\.0\)/);
 assert.match(list, /GEMINI\.md/);

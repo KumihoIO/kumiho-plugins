@@ -9,7 +9,7 @@
   },
   "cli": {
     "version": "0.1.0",
-    "status": "validated_not_published",
+    "status": "published_gallery_discovery_configured",
     "official_cli_version": "0.64.0",
     "validation": {
       "install": true,
@@ -19,11 +19,33 @@
       "four_command_toml_parse": true,
       "deterministic_root_archive": true,
       "oauth_discovery": "CLI recognized live protected-resource metadata and required memory scope; authenticated flow not completed",
-      "authenticated_save_recall": "not_run"
+      "authenticated_save_recall": "not_run",
+      "remote_url_install_six_skills_uninstall": {
+        "result": "passed",
+        "platform": "Windows",
+        "node": "22.23.3",
+        "cli": "0.64.0"
+      },
+      "linux_official_loader_ci": "passed on Node 22",
+      "windows_node24_uninstall": "CLI emitted successful removal then native UV_HANDLE_CLOSING assertion on Node 24.12.0 and 24.19.0; Node 22.23.3 passed. Use Node 22 LTS for reproducible Windows QA."
     },
     "package": {
       "version": "0.1.0",
       "sha256": "1f721b2aa349d248b295520b074ab31ab538f4f75c93fc708ac4dc8b2f7cda6b"
-    }
+    },
+    "repository": "https://github.com/KumihoIO/gemini-kumiho-memory",
+    "release": "https://github.com/KumihoIO/gemini-kumiho-memory/releases/tag/v0.1.0",
+    "distribution_commit": "58cdf8080fbd35dc73e7b040213332c790f9af94",
+    "upstream_source_commit": "b3b413ad689db73ab1104c973d57fcd5641b0d70",
+    "source_distribution_tree": "eab139fc94918ebe3ddb37507f9bd9002d9c9ba8",
+    "source_pull_request": "https://github.com/KumihoIO/kumiho-plugins/pull/137",
+    "gallery": {
+      "github_topic": "gemini-cli-extension",
+      "topic_confirmed": true,
+      "root_manifest_confirmed": true,
+      "visible_listing": "not_confirmed",
+      "crawl_frequency": "daily, per Google documentation"
+    },
+    "ci": "https://github.com/KumihoIO/kumiho-plugins/actions/runs/38484963755"
   }
 }
