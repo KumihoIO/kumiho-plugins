@@ -1,0 +1,64 @@
+name: Hermes plugin
+
+on:
+  pull_request:
+    paths:
+      - 'hermes/**'
+      - 'tests/test_hermes_portable.py'
+      - '.github/workflows/hermes.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'hermes/**'
+      - 'tests/test_hermes_portable.py'
+      - '.github/workflows/hermes.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable:
+    name: Hermes portable load and catalog validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Check out the verified Hermes validator
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: NousResearch/hermes-agent
+          ref: 63d0b94120027d487c9a5235b9ec64b696af1b26
+          path: .hermes-ci
+          persist-credentials: false
+      # Follow Hermes's official plugin-validate action, retaining the runtime
+      # path so the same real loader can also run our integration assertion.
+      - name: Prepare locked Hermes toolchain
+        run: python3 -S .hermes-ci/scripts/ci/setup_toolchain.py prepare --toolchain python --home .hermes-ci/.build/pm
+      - name: Install locked Hermes toolchain
+        run: python3 -S .hermes-ci/scripts/ci/setup_toolchain.py install --toolchain python --home .hermes-ci/.build/pm
+      - name: Build isolated validator runtime
+        id: runtime
+        working-directory: .hermes-ci
+        run: |
+          "$HERMES_PYTHON" - <<'PY'
+          import os
+          from pathlib import Path
+          from pm import build_environment
+          source = Path.cwd()
+          python = build_environment(source=source, out=source / ".build/validator", explicit=True)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"python={python}\n")
+          PY
+      - name: Validate catalog admission
+        env:
+          VALIDATOR_PYTHON: ${{ steps.runtime.outputs.python }}
+        run: '"$VALIDATOR_PYTHON" -I -m hermes_cli.main plugins validate "$GITHUB_WORKSPACE/hermes" --install-deps'
+      - name: Verify real portable loading and transport permissions
+        env:
+          VALIDATOR_PYTHON: ${{ steps.runtime.outputs.python }}
+        run: '"$VALIDATOR_PYTHON" -I "$GITHUB_WORKSPACE/tests/test_hermes_portable.py"'

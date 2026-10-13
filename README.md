@@ -94,6 +94,18 @@ Detailed setup, PowerShell examples, first-run diagnostics, and stale-cache
 recovery:
 **[codex/README.md](codex/README.md)**.
 
+## Install for Hermes Agent
+
+```bash
+hermes plugins install KumihoIO/kumiho-plugins/hermes --no-enable
+hermes plugins enable kumiho-memory
+hermes mcp login kumiho-memory
+```
+
+The [Hermes plugin](hermes/README.md) bundles the hosted OAuth connector and six
+memory skills. Connect a trial or paid Kumiho Cloud workspace, then start a new
+chat. Hermes owns authentication and asks before write-capable memory calls.
+
 ## All integrations
 
 | Host | Directory | What it is |
@@ -101,6 +113,7 @@ recovery:
 | **Claude Code / Desktop / Cowork** | [`claude/`](claude/README.md) | Full plugin: skills (two-reflex protocol), MCP server, hooks, Decision Memory, History Backfill |
 | **OpenAI Codex** (CLI · ChatGPT desktop; manual MCP for IDE) | [`codex/`](codex/README.md) | Native Codex plugin selected by `.agents/plugins/marketplace.json`: onboarding + memory skills, Node-to-Python MCP launcher, agent-driven capture, optional full-checkout git hook |
 | **ChatGPT** (remote connector) | [`gpt/`](gpt/README.md) | `kumiho-gpt-connect` — OAuth 2.1 remote MCP connector gateway (developer mode / Apps SDK contract) |
+| **Hermes Agent** | [`hermes/`](hermes/README.md) | Portable Agent Plugins v1: hosted OAuth MCP, six skills, user-approved memory writes |
 | **OpenClaw** | [`openclaw/`](openclaw/README.md) | Full code plugin (`@kumiho/openclaw-kumiho`) with tools + setup wizard |
 | **n8n** | [`n8n/`](n8n/README.md) | `n8n-nodes-kumiho` workflow nodes |
 | **ComfyUI** | [`comfyui/`](comfyui/README.md) | Custom nodes for asset/graph workflows |
