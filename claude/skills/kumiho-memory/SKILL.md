@@ -24,7 +24,7 @@ a host hook has already retrieved before the prompt is processed.
 1. **One engage per turn** — AT MOST one `kumiho_memory_engage` call per response. The server enforces a 5-second deduplication window. Derive your query from the user's current message. Never say "I don't know" without engaging first.
 2. **Remember via reflect** — When the user says "remember this", "keep this in mind", "note that", or similar, you MUST capture it via `kumiho_memory_reflect`. Kumiho MCP tools are the canonical memory store — never rely on Claude's auto-memory. Also proactively capture decisions, preferences, facts, corrections, and your own significant responses (architecture decisions, bug fixes, drafts, creative outputs).
 3. **Reference, don't recite** — Weave memories naturally: "Since you prefer gRPC..." Never narrate the plumbing. No "Let me recall...", "My memory shows...", "I have context now..." visible to the user. You just *know*.
-4. **Never repeat yourself** — If information was already stated, decided, or shown in this conversation, use it directly. Do not re-ask answered questions, re-execute completed tasks, or re-output content already shown — refer to it briefly instead. Across sessions the same rule runs through memory: engage before asking anything a past session might have settled, and capture every answer you do have to ask for (see "Every answer you had to ask for is a decision").
+4. **Never repeat yourself** — If information was already stated, decided, or shown in this conversation, use it directly. Do not re-ask answered questions, re-execute completed tasks, or re-output content already shown — refer to it briefly instead. That includes your own answer: write it once, never again after reflect (see "Reflect"). Across sessions the same rule runs through memory: engage before asking anything a past session might have settled, and capture every answer you do have to ask for (see "Every answer you had to ask for is a decision").
 5. **Never self-play** — If you need user input, ask the question and **stop**. Never simulate or fill in the user's answer.
 6. **Anticipate** — Connect dots across sessions. Recognize patterns.
 7. **Earn trust** — Be transparent about what you remember. Respect "forget X" immediately via `kumiho_deprecate_item`. Raw conversations stay local; cloud stores only summaries.
@@ -53,7 +53,7 @@ After that first turn it is **permanently done for this session**:
 <!-- inline -->
 ## Two Reflexes
 
-Every meaningful turn after bootstrap uses two natural reflexes:
+Every meaningful turn after bootstrap uses two natural reflexes, in this order: **engage** first, then the work, then **reflect** as the last memory call before the final answer, apart from silent follow-ups that need its result, and only then the final answer, written once.
 
 ### Engage — before you respond
 
@@ -102,13 +102,18 @@ Leave that reference unloaded on factual or brief-connection turns. Experience,
 outcome, and pattern writes need the user's request or established authorization;
 do not ask again when already authorized.
 
-### Reflect — after you respond
+### Reflect — last memory call, before the final answer
 
-After a substantive response, **reflect** on what matters:
+On a substantive turn, **reflect** on what matters. Order is the whole rule, because the user must read your answer exactly once:
+
+- `kumiho_memory_reflect` is the **last memory call before the final answer, apart from silent follow-ups that need its result**, and happens **before** the final answer text. Until then show only short progress notes.
+- A follow-up that needs reflect's result (`kumiho_deprecate_item` after a correction that did not revise the old memory, `kumiho_memory_decompose`, a `kumiho_memory_consolidate` the host asked for) runs silently right after it, with no user-visible text.
+- Pass a **concise summary of the answer you are about to give** as `response`, never a verbatim second copy of it, plus the captures. Then write the answer once.
+- If the full answer was already written before reflect (the turn needed tools after answering), end the turn right after reflect and any such follow-up, with no restatement — at most one short line that adds new information.
 
 ```
 kumiho_memory_reflect(
-  response: "<your response text>",
+  response: "<concise summary of the answer you are about to give>",
   captures: [
     { type: "decision", title: "Chose gRPC on Mar 27", content: "...", space_hint: "architecture" },
     { type: "preference", title: "Prefers concise output", content: "...", space_hint: "preferences" }
@@ -118,7 +123,7 @@ kumiho_memory_reflect(
 ```
 
 This does three things in one call:
-1. **Buffers** your response for session continuity
+1. **Buffers** your response summary for session continuity
 2. **Stores** each capture as a graph memory with `DERIVED_FROM` edges to source_krefs
 3. **Discovers** additional edges for significant captures (decisions, architecture, implementations)
 
@@ -126,7 +131,7 @@ This does three things in one call:
 
 **Route every capture — `space_hint` is not optional.** A capture without one is filed at the project root alongside every other unrouted memory, and the automatic revision stacking then searches *that whole bucket* for something to stack onto — which is how an unrelated capture ends up as a new revision of a months-old item. Reuse a space the graph already has: engage results come back as krefs of the form `kref://<project>/<space>/<item>.<kind>`, so they show you the live space names. Copy the name **exactly**: reflect forwards the hint as a space path verbatim, capitalization included, so `Skills` reaches the real skill library while `skills` would open a second one beside it. Bare or project-qualified both resolve the same (`marketing`, `CognitiveMemory/marketing`). When none fits, fall back to the capture's type — `decisions`, `facts`, `preferences`, `corrections`.
 
-**What to skip**: trivial one-liners, uncommitted brainstorming, credentials, or secrets. For trivial exchanges, call reflect without captures to buffer the response only.
+**What to skip**: trivial one-liners, uncommitted brainstorming, credentials, or secrets. For trivial exchanges, call reflect without captures to buffer the response summary only.
 
 ### Every answer you had to ask for is a decision — capture it
 
@@ -233,7 +238,7 @@ Skill discovery consumes your one engage-per-turn. Mitigations:
 If no skill matches and you improvised a procedure, capture it via reflect:
 ```
 kumiho_memory_reflect(
-  response: "<your response>",
+  response: "<concise summary of the answer you are about to give>",
   captures: [{
     type: "skill",
     title: "<skill name>",

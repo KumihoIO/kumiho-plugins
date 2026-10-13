@@ -83,6 +83,27 @@ Signing keys and regional database assignments were not changed.
   activation; see `ADVERSARIAL-REVIEW.md`.
 - A finite acceptance run does not guarantee future model tool choices.
 
+## Directory plugin bundle (0.1.4)
+
+`directory/kumiho-memory/.codex-plugin/plugin.json` shares its `skills/` directory
+with the Claude plugin, so the 0.1.4 skill changes also ship in the Codex and
+ChatGPT bundle: the `kumiho-memory` skill now opens with connect guidance written
+as one bullet per host (Claude Code, Cowork, claude.ai and Claude Desktop chat,
+then ChatGPT and Codex: the app's Connect flow), and it calls reflect before the
+final answer. The Codex manifest changed only in `version` (0.1.3 to 0.1.4, kept
+equal to the Claude manifest by `tests/test_directory_bundle.py`). Whether this
+needs an OpenAI resubmission is an owner decision; nothing was submitted.
+
+## Directory free-trial update (0.1.5)
+
+The shared directory skills now offer the public 14-day Memory trial with Google
+sign-in, no card, one trial per account, 1 seat, CognitiveMemory only and 2,000
+nodes. They explain the 30-day recall/export window and continuing in the same
+workspace after subscribing. Both directory manifests are 0.1.5. This changes
+onboarding guidance only; it does not expand connector access or auto-create an
+account. Whether to resubmit the OpenAI directory bundle remains an owner
+decision; publishing this repository does not submit a directory listing.
+
 ## References
 
 - [Official submission flow](https://developers.openai.com/plugins/deploy/submission)

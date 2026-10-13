@@ -222,7 +222,9 @@ If resolution failed, stop rather than trying another executable alias.
    Setup refuses the sign-in while `KUMIHO_AUTH_TOKEN` is set, because that
    token would keep taking precedence; relay that it must be removed and Claude
    restarted first. The sign-in needs kumiho SDK 0.15.0 or newer, which setup
-   installs into the shared runtime.
+   installs into the shared runtime. If that SDK release is not available on
+   the configured package index, report the provisioning failure and the
+   existing token/terminal-login alternatives; do not claim sign-in succeeded.
 
 3. **CE path** — no token is needed. Run:
 
@@ -268,8 +270,8 @@ If resolution failed, stop rather than trying another executable alias.
      Claude session (restart the app on Claude Desktop) — the memory server
      that is running now started without the sign-in, and `/clear` does not
      restart it."
-   - If auth was skipped or the sign-in did not complete: "Onboarding complete
-     but unauthenticated. Run `/kumiho-onboard oauth` to sign in in the
+   - If auth was skipped or the sign-in did not complete: "Onboarding is
+     incomplete because Cloud authentication has not succeeded. Run `/kumiho-onboard oauth` to sign in in the
      browser, or configure persistent `KUMIHO_AUTH_TOKEN` before starting
      Claude, or run `kumiho-auth login` / `kumiho-cli login` locally; restart
      Claude, then re-run `/kumiho-onboard`."

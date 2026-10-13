@@ -1167,26 +1167,7 @@ OAUTH_SDK_FLOOR = "0.15.0"
 
 
 def oauth_package_spec(spec: str) -> str:
-    """*spec* with its ``kumiho`` floor raised to :data:`OAUTH_SDK_FLOOR`.
-
-    Only a browser sign-in needs that SDK, so the plugin-wide floor stays
-    where every channel has it and this run alone installs the newer one into
-    the shared venv. Names and extras are untouched: the launcher compares
-    installed versions against its own (lower) floor and the marker only for
-    that identity, so it will not reinstall at the next start.
-    """
-    def version(text: str) -> tuple[int, ...]:
-        return tuple(int(part) for part in re.findall(r"\d+", text)[:3])
-
-    tokens = spec.split()
-    for index, token in enumerate(tokens):
-        match = re.fullmatch(r"(kumiho(?:\[[a-z0-9,_-]+\])?)(?:>=([0-9][0-9.]*))?", token)
-        if not match:
-            continue
-        floor = match.group(2)
-        if floor is None or version(floor) < version(OAUTH_SDK_FLOOR):
-            tokens[index] = f"{match.group(1)}>={OAUTH_SDK_FLOOR}"
-    return " ".join(tokens)
+    return LAUNCHER.oauth_package_spec(spec)
 
 
 def _sdk_cloud_auth_works(
@@ -1346,6 +1327,8 @@ def setup_auth(
         },
     ])
     if method["value"] == "oauth":
+        os.environ["KUMIHO_CLAUDE_PACKAGE_SPEC"] = oauth_package_spec(package_spec())
+        setup_venv(sys.executable)
         return None, oauth_login(open_browser=open_browser)
 
     log("No cached SDK credential found; running kumiho-auth login...")
@@ -2181,6 +2164,9 @@ def main(argv: list[str] | None = None) -> int:
             oauth=args.oauth,
             open_browser=not args.no_browser,
         )
+        if args.oauth and not cloud_authenticated:
+            fail("Browser sign-in failed; onboarding is incomplete")
+            return 2
         if token:
             os.environ["KUMIHO_AUTH_TOKEN"] = token
     print()

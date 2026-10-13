@@ -77,8 +77,9 @@ node <absolute-plugin-root>/scripts/run_kumiho_mcp.mjs --onboard ...
 
    Before running it, tell the user a browser tab on this machine is about to
    open and that the command waits up to five minutes for them. Give the
-   command a timeout of at least ten minutes (provisioning can precede the
-   wait); a shorter one kills the listener before the user finishes. If the
+   command a timeout of at least 25 minutes, or keep it running in a background
+   session: provisioning can take 15 minutes before the browser wait and
+   exchange. A shorter timeout can kill the listener before the user finishes. If the
    output reaches you while it waits, relay the printed
    `https://control.kumiho.cloud/oauth/authorize?...` URL in case no tab
    appeared; it carries no secret. Never start a second run while one is
@@ -91,7 +92,9 @@ node <absolute-plugin-root>/scripts/run_kumiho_mcp.mjs --onboard ...
    PORT` in their own terminal after `ssh -L PORT:127.0.0.1:PORT`. The helper
    refuses the sign-in while `KUMIHO_AUTH_TOKEN` is set, since that token
    would keep taking precedence. The sign-in needs kumiho SDK 0.15.0 or newer
-   in the shared runtime; onboarding installs it.
+   in the shared runtime; onboarding installs it. If that SDK release is not
+   available on the configured package index, report the provisioning failure
+   and the existing token/terminal-login alternatives; do not claim success.
 
    If the user prefers email and password, state the exact command without
    `--non-interactive` as the required next action for their own terminal and

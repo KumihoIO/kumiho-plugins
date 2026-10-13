@@ -4224,6 +4224,32 @@ def _configure_llm_fallback() -> None:
     )
 
 
+OAUTH_SDK_FLOOR = "0.15.0"
+
+
+def oauth_package_spec(spec: str) -> str:
+    """*spec* with its ``kumiho`` floor raised to :data:`OAUTH_SDK_FLOOR`.
+
+    Only a browser sign-in needs that SDK, so the plugin-wide floor stays
+    where every channel has it and this run alone installs the newer one into
+    the shared venv. Names and extras are untouched: the launcher compares
+    installed versions against its own (lower) floor and the marker only for
+    that identity, so it will not reinstall at the next start.
+    """
+    def version(text: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in re.findall(r"\d+", text)[:3])
+
+    tokens = spec.split()
+    for index, token in enumerate(tokens):
+        match = re.fullmatch(r"(kumiho(?:\[[a-z0-9,_-]+\])?)(?:>=([0-9][0-9.]*))?", token)
+        if not match:
+            continue
+        floor = match.group(2)
+        if floor is None or version(floor) < version(OAUTH_SDK_FLOOR):
+            tokens[index] = f"{match.group(1)}>={OAUTH_SDK_FLOOR}"
+    return " ".join(tokens)
+
+
 def main() -> int:
     _configure_host_diagnostics()
     parser = argparse.ArgumentParser(description="Run Kumiho MCP with auto-bootstrap.")
@@ -4246,7 +4272,13 @@ def main() -> int:
         help="Build the runtime and exit. Used by the detached first-run "
              "provisioner, which is not on the host's MCP startup clock.",
     )
+    parser.add_argument(
+        "--oauth-sdk", action="store_true",
+        help="With --provision: require the SDK browser-login capability.",
+    )
     args, passthrough = parser.parse_known_args()
+    if args.oauth_sdk and not args.provision:
+        parser.error("--oauth-sdk requires --provision")
 
     # Detached provisioning must transfer the parent's reservation within the
     # five-second handshake in _spawn_detached_provisioning.  In particular,
@@ -4279,6 +4311,12 @@ def main() -> int:
         # must succeed for a user who has not authenticated yet.
         _hydrate_env_from_local_config()
         _sanitize_placeholder_env_vars()
+        if args.oauth_sdk:
+            # Apply only the fixed capability floor AFTER removing project
+            # overrides and restoring the trusted user package identity.
+            os.environ["KUMIHO_CLAUDE_PACKAGE_SPEC"] = oauth_package_spec(
+                os.getenv("KUMIHO_CLAUDE_PACKAGE_SPEC") or DEFAULT_PACKAGE_SPEC
+            )
         _ensure_runtime()
         print("[kumiho-claude] Provisioning complete.", file=sys.stderr)
         return 0

@@ -14,6 +14,7 @@ Run: python -m pytest claude/scripts/test_memory_reflex.py -q
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shlex
@@ -45,6 +46,25 @@ def _run(payload: dict, home: Path, args=(), env_extra: dict | None = None):
     r.stdout = r.stdout.decode("utf-8", "replace")
     r.stderr = r.stderr.decode("utf-8", "replace")
     return r
+
+
+def _load_reflect_order_check():
+    """The shared "no call after the final answer" checker (repo-root tests/).
+
+    Neither test tree is a package, so it is loaded by path; its own positives and
+    negatives are asserted in test_session_bootstrap.py."""
+    path = SCRIPTS.parents[1] / "tests" / "reflect_order_check.py"
+    spec = importlib.util.spec_from_file_location("reflect_order_check", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_requires_a_call_after_the_answer = _load_reflect_order_check().calls_after_the_answer
+
+#: The ordering rule, as the floor nudge states it.
+REFLECT_RULE = ("the last memory call before the final answer, apart from silent "
+                "follow-ups that need its result")
 
 
 def _seed_cache(home: Path, sid: str, block: str, sha: str = "deadbeef1234",
@@ -126,6 +146,14 @@ def test_floor_fires_at_threshold(tmp_path):
     r = _run(_ups("gggg"), tmp_path)
     assert "Turns since your last kumiho_memory_reflect: 3" in r.stdout
     assert "gggg" in r.stdout  # carries the session_id the model cannot otherwise know
+    # Same ordering as the session card: reflect first, then the answer, written once.
+    ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert REFLECT_RULE in ctx
+    # ...and the exception spelled out, so the nudge cannot be read as "no other call
+    # after it".
+    assert "they run silently right after it, with no user-visible text" in ctx
+    assert "last memory write" not in ctx and "last tool call" not in ctx
+    assert _requires_a_call_after_the_answer(ctx) == []
 
 
 def test_reflect_in_ledger_resets_the_count(tmp_path):
@@ -262,6 +290,12 @@ def test_consolidate_floor_fires_at_threshold_with_the_keyless_call_shape(tmp_pa
     assert "kumiho_memory_consolidate(session_id=cf02, summary=" in ctx
     assert "subagent" in ctx
     assert "Never call it without summary" in ctx
+    # When the same turn also reflects, the consolidate is a silent follow-up of the
+    # reflect, so the answer is still written once.
+    assert ("If you also reflect this turn, reflect first and run this consolidate "
+            "silently right after it, with no user-visible text, before the final "
+            "answer.") in ctx
+    assert _requires_a_call_after_the_answer(ctx) == []
 
 
 def test_a_successful_consolidate_in_the_ledger_resets_the_count(tmp_path):

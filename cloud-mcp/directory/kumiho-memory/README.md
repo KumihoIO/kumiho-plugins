@@ -9,9 +9,32 @@ is shared by two manifests:
 | `.claude-plugin/plugin.json` + `.mcp.json` | `kumiho-memory-cloud` (Kumiho Memory Cloud) | Claude Code and Cowork |
 | `.codex-plugin/plugin.json` + `skills/*/agents/openai.yaml` | `kumiho-memory` (Kumiho Memory) | ChatGPT and Codex |
 
+## Getting started
+
+Installing the plugin does not sign you in, and until you do, Claude has no Kumiho
+tools and the skills have nothing to work with. Connect once:
+
+1. **Connect.** In Claude Code run `/mcp`, select
+   `plugin:kumiho-memory-cloud:kumiho-memory` and choose **Authenticate**; your
+   browser opens the Kumiho sign-in page. In Cowork use the plugin's **Connect**
+   prompt (or Customize > Connectors).
+2. **Check.** Ask Claude to list your Kumiho projects, or run
+   `/kumiho-memory-cloud:kumiho-onboard`.
+3. **Use.** Say "remember that we chose Postgres for the events service", then ask
+   "what did we decide about the events service?" in a new conversation.
+
+Start the [14-day free trial](https://kumiho.io/signup?intent=trial) with Google,
+no card required, or connect a paid Kumiho Cloud workspace. Each account can start
+once. The trial includes 1 seat, CognitiveMemory only and 2,000 nodes. When it
+ends, recall and export remain available for 30 days while new saves stop.
+Subscribe to continue using the same workspace; no data move is needed. Deletion
+is announced by email beforehand. If your account has no workspace, reconnecting
+will not help: start the trial from the link or the sign-in/consent page.
+The steps for each app are under [Install in Claude](#install-in-claude).
+
 ## Requirements
 
-- **A paid Kumiho Cloud workspace.** The connector serves Kumiho Cloud workspaces
+- **A trial or paid Kumiho Cloud workspace.** The connector serves Kumiho Cloud workspaces
   only. Signing in happens on Kumiho's own OAuth page at `control.kumiho.cloud`
   (continue with Google or email); the plugin never asks for a password or token.
 - **Self-hosted Community Edition (CE) is not reachable from this plugin.** CE is
@@ -43,9 +66,9 @@ is shared by two manifests:
 1. Run `/plugin`, find **Kumiho Memory Cloud** in Anthropic's official marketplace
    (`claude-plugins-official`) and install it, or run
    `claude plugin install kumiho-memory-cloud@claude-plugins-official`.
-2. Run `/mcp`, select `plugin:kumiho-memory-cloud:kumiho-memory` and authenticate.
-   Your browser opens the Kumiho sign-in and consent page. Use the same menu to
-   re-authenticate after a login expires.
+2. Connect: run `/mcp`, select `plugin:kumiho-memory-cloud:kumiho-memory` and
+   authenticate. Your browser opens the Kumiho sign-in and consent page. Use the
+   same menu to re-authenticate after a login expires.
 3. Run `/kumiho-memory-cloud:kumiho-onboard` to verify the workspace, or ask
    Claude to list your Kumiho projects.
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -185,7 +186,7 @@ def test_oauth_repairs_an_invalid_backend_config_as_an_explicit_cloud_choice(
         raise ValueError("the existing Codex backend config names an unknown backend")
 
     seen = {}
-    monkeypatch.setattr(onboard, "_provision", lambda: Path(sys.executable))
+    monkeypatch.setattr(onboard, "_provision", lambda **kw: Path(sys.executable))
     monkeypatch.setattr(onboard, "_existing_config", invalid)
     monkeypatch.setattr(
         onboard, "_configure_cloud", lambda _python, **kw: seen.update(kw) or False
@@ -197,37 +198,21 @@ def test_oauth_repairs_an_invalid_backend_config_as_an_explicit_cloud_choice(
     assert seen["oauth"] is True
 
 
-def test_package_spec_matches_the_vendored_launcher_default(onboard, monkeypatch):
-    monkeypatch.delenv("KUMIHO_CLAUDE_PACKAGE_SPEC", raising=False)
-    launcher = importlib.util.spec_from_file_location(
-        "kumiho_codex_launcher_spec_test", HERE / "_vendored_launcher.py"
-    )
-    module = importlib.util.module_from_spec(launcher)
-    sys.path.insert(0, str(HERE))
-    launcher.loader.exec_module(module)
-    assert onboard._package_spec() == module.DEFAULT_PACKAGE_SPEC
-    assert onboard._oauth_package_spec(module.DEFAULT_PACKAGE_SPEC).startswith(
-        "kumiho[mcp]>=0.15.0 "
-    )
-
-
-def test_oauth_run_provisions_with_the_raised_floor(onboard, monkeypatch):
-    seen = {}
-    monkeypatch.delenv("KUMIHO_CLAUDE_PACKAGE_SPEC", raising=False)
-
-    def fake_provision():
-        seen["spec"] = onboard.os.environ.get("KUMIHO_CLAUDE_PACKAGE_SPEC")
-        return None
-
-    monkeypatch.setattr(onboard, "_provision", fake_provision)
+def test_oauth_run_requests_capability_after_host_hydration(onboard, monkeypatch):
+    seen = []
+    monkeypatch.setattr(onboard, "_provision", lambda **kw: seen.append(kw))
     assert onboard.main(["cloud", "--oauth"]) == 1
-    assert seen["spec"] == onboard._oauth_package_spec(onboard._package_spec())
-    assert "kumiho[mcp]>=0.15.0" in seen["spec"]
+    assert seen == [{"oauth": True}]
+    seen.clear()
+    assert onboard.main(["cloud", "--non-interactive"]) == 1
+    assert seen == [{}]
 
-    # Without --oauth the plugin-wide spec is left alone.
-    monkeypatch.delenv("KUMIHO_CLAUDE_PACKAGE_SPEC", raising=False)
-    onboard.main(["cloud", "--non-interactive"])
-    assert seen["spec"] is None
+
+def test_oauth_provision_passes_fixed_capability_flag(onboard, monkeypatch):
+    calls = []
+    monkeypatch.setattr(onboard, "_run", lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 1))
+    assert onboard._provision(oauth=True) is None
+    assert calls[0][-2:] == ["--provision", "--oauth-sdk"]
 
 
 def test_onboard_skill_documents_the_oauth_sign_in():
@@ -236,3 +221,37 @@ def test_onboard_skill_documents_the_oauth_sign_in():
     )
     assert "--onboard cloud --oauth" in skill
     assert "on this machine" in skill
+
+
+@pytest.mark.parametrize("filename", [HERE / "_vendored_launcher.py", HERE.parents[1] / "claude/scripts/run_kumiho_mcp.py"])
+@pytest.mark.parametrize("trusted_spec", [None, "kumiho[mcp]>=0.16.1 kumiho-memory[all]>=1.5.0"])
+def test_oauth_floor_survives_real_host_environment_hydration(onboard, monkeypatch, tmp_path, filename, trusted_spec):
+    spec = importlib.util.spec_from_file_location("oauth_launcher_boundary", filename)
+    launcher = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(launcher)
+    monkeypatch.setenv("KUMIHO_CLAUDE_HOST", "codex")
+    monkeypatch.setenv("KUMIHO_CLAUDE_PACKAGE_SPEC", "untrusted-package>=99.0")
+    if trusted_spec:
+        settings = tmp_path / ".claude" / "settings.json"
+        settings.parent.mkdir()
+        settings.write_text(json.dumps({"env": {"KUMIHO_CLAUDE_PACKAGE_SPEC": trusted_spec}}), encoding="utf-8")
+    monkeypatch.setattr(launcher, "_account_home", lambda: tmp_path)
+    monkeypatch.setattr(launcher, "_trusted_persisted_user_environment", lambda: {})
+    monkeypatch.setattr(launcher, "_configure_host_diagnostics", lambda: None)
+    monkeypatch.setattr(launcher.sys, "argv", ["launcher", "--provision", "--oauth-sdk"])
+    seen = []
+    monkeypatch.setattr(launcher, "_ensure_runtime", lambda: seen.append(launcher.os.environ.get("KUMIHO_CLAUDE_PACKAGE_SPEC", launcher.DEFAULT_PACKAGE_SPEC)))
+    assert launcher.main() == 0
+    assert seen == [trusted_spec or "kumiho[mcp]>=0.15.0 kumiho-memory[all]>=1.5.0"]
+
+
+def test_oauth_sdk_flag_cannot_modify_normal_mcp_startup(onboard, monkeypatch):
+    spec = importlib.util.spec_from_file_location("oauth_launcher_flag", HERE / "_vendored_launcher.py")
+    launcher = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(launcher)
+    monkeypatch.setattr(launcher, "_configure_host_diagnostics", lambda: None)
+    monkeypatch.setattr(launcher.sys, "argv", ["launcher", "--oauth-sdk"])
+    monkeypatch.setattr(launcher, "_ensure_runtime", lambda: pytest.fail("invalid flags must not provision"))
+    with pytest.raises(SystemExit) as exc:
+        launcher.main()
+    assert exc.value.code == 2

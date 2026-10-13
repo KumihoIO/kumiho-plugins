@@ -762,7 +762,7 @@ def test_oauth_run_provisions_with_the_raised_floor(wizard, monkeypatch):
     monkeypatch.setattr(wizard, "run_ingestion", lambda *_a, **_k: None)
     monkeypatch.setattr(wizard, "verify_connection", lambda *_a, **_k: None)
 
-    assert wizard.main(["--oauth", "--yes"]) == 0
+    assert wizard.main(["--oauth", "--yes"]) == 2
     assert seen["spec"] == wizard.oauth_package_spec(L.DEFAULT_PACKAGE_SPEC)
     assert "kumiho[mcp]>=0.15.0" in seen["spec"]
 
@@ -1087,3 +1087,25 @@ def test_the_launcher_does_not_reinstall_over_the_wizards_marker(wizard, tmp_pat
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_interactive_oauth_upgrades_before_starting_login(wizard, monkeypatch):
+    events = []
+    monkeypatch.delenv("KUMIHO_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(wizard, "AUTO_YES", False)
+    monkeypatch.setattr(wizard.sys, "stdin", type("Tty", (), {"isatty": lambda self: True})())
+    monkeypatch.setattr(wizard, "_sdk_cloud_auth_works", lambda **kw: False)
+    monkeypatch.setattr(wizard, "ask_choice", lambda *_a: {"value": "oauth"})
+    monkeypatch.setattr(wizard, "setup_venv", lambda _p: events.append(wizard.package_spec()))
+    monkeypatch.setattr(wizard, "oauth_login", lambda **kw: events.append("login") or True)
+    assert wizard.setup_auth() == (None, True)
+    assert events == [wizard.oauth_package_spec(L.DEFAULT_PACKAGE_SPEC), "login"]
+
+
+def test_failed_explicit_oauth_returns_failure_without_success_summary(wizard, monkeypatch, capsys):
+    monkeypatch.setattr(wizard, "find_python", lambda: "python3")
+    monkeypatch.setattr(wizard, "write_python_knob", lambda _p: None)
+    monkeypatch.setattr(wizard, "setup_venv", lambda _p: wizard.VENV_PYTHON)
+    monkeypatch.setattr(wizard, "setup_auth", lambda **kw: (None, False))
+    assert wizard.main(["--oauth", "--yes"]) == 2
+    assert "Setup complete!" not in capsys.readouterr().out
