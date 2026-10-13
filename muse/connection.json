@@ -26,5 +26,10 @@
   "product_terms": "https://kumiho.io/en/legal",
   "support": "support@kumiho.io",
   "submission_url": "https://muse.ai/platform",
-  "status": "prepared_not_submitted"
+  "status": "initial_application_submitted_requirements_pending",
+  "submission_id": "7811745d-2e30-42d2-bd43-75ee53911730",
+  "submitted_date_kst": "2026-10-14",
+  "business_verification": "submitted_in_review",
+  "data_processing_questionnaire": "pending",
+  "integration_credentials": "oauth_dcr_pkce_memory_draft_reviewer_account_required"
 }

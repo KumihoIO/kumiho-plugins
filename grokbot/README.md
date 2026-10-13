@@ -7,7 +7,10 @@ backfill and bounded memory review. Version 0.1.0 adapts the hosted 0.1.5 skills
 
 ## Release status and installation
 
-This package is prepared for submission. It is not yet approved or listed.
+The publisher application was submitted on 2026-10-14 (KST) as Kumiho Inc.
+The portal confirmed receipt with "Thanks for applying". Approval and public
+listing are pending. The submitting account is an individual account; the
+application explicitly requests company attribution and company contact email.
 Grok Bot loads plugins through the Cursor dashboard/marketplace, not a local
 `~/.cursor/plugins/local` directory. Submit this public repository through
 https://cursor.com/marketplace/publish using its root

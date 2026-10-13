@@ -2,7 +2,13 @@
 
 This integration connects the **Muse consumer app** to the existing hosted MCP
 service. It is not a Muse Code extension. No new server, bridge or client secret
-is shipped here. Status: prepared, not submitted or approved.
+is shipped here. Initial application submitted on 2026-10-14 (KST); approval is pending.
+Submission ID: `7811745d-2e30-42d2-bd43-75ee53911730`.
+[Manage the submission](https://muse.ai/platform/submissions/7811745d-2e30-42d2-bd43-75ee53911730).
+Business verification has been submitted and is In review (1/3 requirements
+complete). The data-processing questionnaire and final integration credentials
+remain outstanding. OAuth DCR, PKCE and scope `memory` are saved as a draft;
+a dedicated reviewer test account is required before final credential submission.
 
 ## Submission values
 
