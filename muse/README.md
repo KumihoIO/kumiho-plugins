@@ -4,16 +4,17 @@ This integration connects the **Muse consumer app** to the existing hosted MCP
 service. It is not a Muse Code extension. No new server, bridge or client secret
 is shipped here. Initial application submitted on 2026-10-14 (KST); approval is pending.
 Submission ID: `7811745d-2e30-42d2-bd43-75ee53911730`.
-[Manage the submission](https://muse.ai/platform/submissions/7811745d-2e30-42d2-bd43-75ee53911730).
-Business verification and integration credentials have been submitted and are
-In review (2/3 requirements complete). Credentials use OAuth DCR, PKCE and scope
-`memory`, with an isolated reviewer workspace. The data-processing questionnaire
-is saved as a draft. The publisher confirmed the subprocessor list, legal review
-of access requests, and processing of end-user, contact and child information.
-The SCC answer is approved and saved; Google Cloud DPA acceptance and European-law
-applicability certification were completed with explicit publisher approval.
-Deletion coverage and external AI processing still await factual confirmation.
-The questionnaire has not been submitted.
+[Manage the submission](https://platform.muse.ai/submissions/7811745d-2e30-42d2-bd43-75ee53911730).
+All three requirements were submitted on 2026-10-14 (KST): business verification,
+data-processing questionnaire and integration credentials are **In review**;
+the portal confirms **3/3 completed**. Credentials use OAuth DCR, PKCE and scope
+`memory`, with an isolated reviewer workspace. The publisher confirmed complete
+deletion on request and that only redacted summaries are sent to OpenAI for
+embedding inference; no specific embedding model ID was asserted. OpenAI is listed
+as a processor and AI use is disclosed. SCC selection and final questionnaire
+submission received explicit publisher approval. Google Cloud DPA acceptance and
+European-law applicability certification were also completed with explicit approval.
+Approval and public discovery remain pending.
 
 ## Submission values
 
@@ -93,7 +94,7 @@ is promised here. Tool invocations must remain in the token's authorized workspa
 Read-only OAuth scope is not currently available; Muse per-tool read-only choices
 must not be described as server-enforced read-only OAuth credentials.
 
-## Data processing draft — facts and open attestations
+## Data processing — submitted answers and policy alignment
 
 Tool inputs include a narrow recall query, authorized memory text, references,
 space filters and optional provenance. Tool responses return matching workspace
@@ -107,16 +108,17 @@ is distilled before capture; connecting does not initiate whole-history upload.
 Retirement is not erasure. Account/record erasure and authorization revocation need
 separate verification in the reviewer environment.
 
-Before submitting factual/legal attestations, the publisher must verify the
-current production retention/deletion periods, subprocessors and processing
-locations, sensitive-data-at-rest protection, handling after access revocation,
-and the published policy's consistency with Muse's prohibition on secondary use
+The submitted questionnaire records policy-based retention and owner-confirmed
+deletion, subprocessors and processing scope, including OpenAI embedding inference on
+redacted summaries. Keep actual behavior and the published policy consistent
+with the submitted answers and Muse's prohibition on secondary use
 (including model training). The existing directory documentation explicitly did
 not establish a training statement. Do not invent one for this submission.
 Confirm security/maintenance contacts and ability to meet the required 48-hour
-incident notification obligation, and accept the applicable Meta terms as the
-company's authorized representative. No such attestations have been accepted by
-this package or carried over from the earlier OpenAI submission.
+incident notification obligation as the company's authorized representative.
+The publisher directly submitted the initial Muse application; later SCC and
+AI-origin answers and final submission
+were explicitly authorized for Muse, independently of the earlier OpenAI submission.
 
 ## Reviewer setup and QA
 

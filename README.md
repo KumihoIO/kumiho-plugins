@@ -130,5 +130,5 @@ chat. Hermes owns authentication and asks before write-capable memory calls.
 - [Grok Bot and Cursor portable plugin](grokbot/README.md): hosted OAuth MCP plus
   six skills; publisher application submitted for Cursor marketplace review.
 - [Meta Muse app connector](muse/README.md): hosted connection details, actual tool
-  schemas, permission classifications and reviewer workflows. Initial application submitted;
-  additional review requirements remain.
+  schemas, permission classifications and reviewer workflows. All three submission
+  requirements are submitted and In review; public approval is pending.

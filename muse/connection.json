@@ -25,12 +25,12 @@
   "privacy_policy": "https://kumiho.io/en/legal#privacy",
   "product_terms": "https://kumiho.io/en/legal",
   "support": "support@kumiho.io",
-  "submission_url": "https://muse.ai/platform",
-  "status": "initial_application_submitted_requirements_pending",
+  "submission_url": "https://platform.muse.ai/submissions/7811745d-2e30-42d2-bd43-75ee53911730",
+  "status": "all_submission_requirements_submitted_in_review",
   "submission_id": "7811745d-2e30-42d2-bd43-75ee53911730",
   "submitted_date_kst": "2026-10-14",
   "business_verification": "submitted_in_review",
-  "data_processing_questionnaire": "draft_saved_deletion_ai_confirmation_pending",
+  "data_processing_questionnaire": "submitted_in_review",
   "integration_credentials": "submitted_in_review_oauth_dcr_pkce_memory",
-  "scc_declaration": "owner_approved_draft_saved"
+  "scc_declaration": "owner_approved_submitted"
 }
