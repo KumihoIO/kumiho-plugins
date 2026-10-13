@@ -1,0 +1,2 @@
+description = "Preview a bounded memory review"
+prompt = "Activate dream-state and preview a read-only review of at most five relevant memories. Propose changes; apply none without authorization. Scope: {{args}}"

@@ -1,0 +1,2 @@
+description = "Save an explicitly supplied fact or decision"
+prompt = "Activate memory-capture and save only the fact or decision the user explicitly supplies below. If empty or ambiguous, ask for the missing content. Never store secrets. User content: {{args}}"

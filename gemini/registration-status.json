@@ -1,0 +1,29 @@
+{
+  "checked_on": "2026-10-14",
+  "consumer_app": {
+    "status": "not_submitted",
+    "reason": "No Google-confirmed public consumer catalog intake found; custom connections currently require US personal accounts and company Workspace UI has no add control.",
+    "hosted_mcp": "https://mcp.kumiho.cloud/mcp",
+    "company_account_type": "Workspace",
+    "custom_connection": "not_completed"
+  },
+  "cli": {
+    "version": "0.1.0",
+    "status": "validated_not_published",
+    "official_cli_version": "0.64.0",
+    "validation": {
+      "install": true,
+      "six_skills_discovered": true,
+      "six_skills_official_validator": true,
+      "uninstall": true,
+      "four_command_toml_parse": true,
+      "deterministic_root_archive": true,
+      "oauth_discovery": "CLI recognized live protected-resource metadata and required memory scope; authenticated flow not completed",
+      "authenticated_save_recall": "not_run"
+    },
+    "package": {
+      "version": "0.1.0",
+      "sha256": "1f721b2aa349d248b295520b074ab31ab538f4f75c93fc708ac4dc8b2f7cda6b"
+    }
+  }
+}

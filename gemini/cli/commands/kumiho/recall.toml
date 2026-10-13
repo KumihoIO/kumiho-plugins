@@ -1,0 +1,2 @@
+description = "Recall relevant saved Kumiho context"
+prompt = "Activate kumiho-memory and perform a bounded read-only recall for the topic below. Distinguish proposals from accepted decisions and return sources when useful. Do not write memory for this read-only command. Topic: {{args}}"
