@@ -26,6 +26,10 @@ jobs:
           done
       - name: Test actual installation, skill discovery and removal without OAuth
         run: node gemini/scripts/verify_cli.mjs gemini/cli "$RUNNER_TEMP/gemini/node_modules/@google/gemini-cli/bundle/gemini.js"
+      - name: Verify packaging failure paths and installed resource integrity
+        run: |
+          python3 -m unittest discover -s gemini/scripts -p 'test_package_cli.py' -v
+          node --test gemini/scripts/test_package_contents.mjs
       - name: Validate command TOML and package archive
         run: |
           python3 - <<'PY'

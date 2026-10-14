@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { assertPackageContents } from './package_contents.mjs';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -46,7 +47,7 @@ for (const skill of expected) assert(list.includes(skill+':'), 'Extension loader
 const skills = run(['skills','list']);
 for (const skill of expected) assert(skills.includes(skill), 'Skill discovery omitted '+skill);
 const installed = join(isolated,'.gemini','extensions','kumiho-memory');
-assert.deepEqual(JSON.parse(readFileSync(join(installed,'gemini-extension.json'),'utf8')),manifest);
+assertPackageContents(pkg, installed);
 run(['extensions','uninstall','kumiho-memory']);
 assert.match(run(['extensions','list']), /No extensions installed/);
-console.log(JSON.stringify({cli:'0.64.0',extension:manifest.version,install:true,skillCount:expected.length,uninstall:true,networkMcp:'excluded for offline QA'}));
+console.log(JSON.stringify({cli:'0.64.0',extension:manifest.version,install:true,skillCount:expected.length,uninstall:true,installedContentsMatch:true,networkMcp:'excluded for offline QA'}));
