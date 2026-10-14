@@ -1,10 +1,10 @@
 name: Gemini extension
 on:
   pull_request:
-    paths: ['gemini/**', '.github/workflows/gemini.yml']
+    paths: ['gemini/**', '.gitattributes', '.github/workflows/gemini.yml']
   push:
     branches: [main]
-    paths: ['gemini/**', '.github/workflows/gemini.yml']
+    paths: ['gemini/**', '.gitattributes', '.github/workflows/gemini.yml']
   workflow_dispatch:
 permissions:
   contents: read

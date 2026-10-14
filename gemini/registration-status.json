@@ -56,7 +56,7 @@
       "installed_content_regression_tests": 4,
       "public_install_full_content_match": "passed on Windows Node22.23.3 and Gemini CLI0.64.0",
       "shipped_cli_subtree": "unchanged",
-      "cross_platform_archive_hash": "CI must match published Windows archive hash; path order and ZIP platform metadata are explicit"
+      "cross_platform_archive_hash": "CI must match published Windows archive hash; path order, ZIP platform metadata and CLI text checkout line endings are explicit"
     }
   }
 }

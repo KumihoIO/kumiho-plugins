@@ -30,9 +30,13 @@ an independent reviewer approval.
    Linux CI built hash
    `609bf3dbe7671d4638166173de2f9c2750477eccf57fee71edbca7fba4a44914`
    from the same source whose Windows-built published ZIP is `1f721b2a…`.
-   Host-dependent Path sorting and ZipInfo.create_system caused the mismatch.
-   Resolved: explicitly sort portable archive paths and fix ZIP platform metadata
-   to the published format. CI now compares the built version/hash to the release
+   Host-dependent Path sorting, ZipInfo.create_system and Git checkout line
+   endings caused the mismatch. Comparison against committed blobs found all
+   fifteen published text resources used CRLF while Linux checkout used LF;
+   normalizing CRLF to LF made each file identical.
+   Resolved: explicitly sort portable archive paths, fix ZIP platform metadata
+   and scope Git eol=crlf attributes to the CLI text subtree (logo stays binary)
+   to preserve the published format. CI now compares the built version/hash to the release
    receipt rather than merely printing a hash.
 
 The remote installation verifier also compared only the manifest. Its coverage

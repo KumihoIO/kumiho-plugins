@@ -1,0 +1,3 @@
+# Preserve the published Gemini CLI package bytes across checkout platforms.
+gemini/cli/** text eol=crlf
+gemini/cli/logo.png -text
