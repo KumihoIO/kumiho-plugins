@@ -1,0 +1,54 @@
+name: Hosted platform packages
+on:
+  pull_request:
+    paths:
+      - 'grokbot/**'
+      - 'muse/**'
+      - '.cursor-plugin/**'
+      - 'cloud-mcp/**'
+      - 'tests/test_hosted_platforms.py'
+      - 'tests/schemas/**'
+      - '.github/workflows/hosted-platforms.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'grokbot/**'
+      - 'muse/**'
+      - '.cursor-plugin/**'
+      - 'cloud-mcp/**'
+      - 'tests/test_hosted_platforms.py'
+      - 'tests/schemas/**'
+      - '.github/workflows/hosted-platforms.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Install locked hosted runtime and validation dependencies
+        run: |
+          python -m pip install --require-hashes -r cloud-mcp/requirements.lock
+          python -m pip install --no-deps -e cloud-mcp
+          python -m pip install jsonschema PyYAML
+      - name: Verify catalog against real SDK and package contracts
+        run: |
+          python muse/export_tools.py --check
+          python tests/test_hosted_platforms.py
+      - name: Check out official Cursor package validator
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: cursor/plugin-template
+          ref: 46216072ac5750f782f95bb325b4d12b7c3ae9c9
+          path: .cursor-validator
+          persist-credentials: false
+      - name: Validate Cursor marketplace discovery
+        run: node .cursor-validator/scripts/validate-template.mjs

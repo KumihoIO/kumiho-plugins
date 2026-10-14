@@ -134,3 +134,11 @@ chat. Hermes owns authentication and asks before write-capable memory calls.
 - Cloud & API keys: [kumiho.io](https://kumiho.io)
 - Community Edition server: [kumiho-server-community](https://github.com/KumihoIO/kumiho-server-community)
 - License: MIT
+
+## Grok Bot / Cursor and Meta Muse
+
+- [Grok Bot and Cursor portable plugin](grokbot/README.md): hosted OAuth MCP plus
+  six skills; publisher application submitted for Cursor marketplace review.
+- [Meta Muse app connector](muse/README.md): hosted connection details, actual tool
+  schemas, permission classifications and reviewer workflows. All three submission
+  requirements are submitted and In review; public approval is pending.

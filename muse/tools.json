@@ -1,0 +1,1276 @@
+{
+  "format": "Kumiho reviewer reference; not a Meta portal import format",
+  "endpoint": "https://mcp.kumiho.cloud/mcp",
+  "sdk_versions": {
+    "kumiho": "0.14.3",
+    "kumiho-memory": "1.6.3",
+    "mcp": "2.2.0"
+  },
+  "classification_status": "Proposed for Meta review; not a host permission enforcement mechanism",
+  "tools": [
+    {
+      "name": "kumiho_list_projects",
+      "title": "List projects",
+      "description": "List all Kumiho projects accessible to the current user. Returns project names, descriptions, and metadata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "annotations": {
+        "title": "List projects",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Read",
+        "side_effects": "No application data mutation."
+      }
+    },
+    {
+      "name": "kumiho_get_spaces",
+      "title": "List spaces",
+      "description": "Get spaces (organizational folders) within a Kumiho project.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project_name": {
+            "type": "string",
+            "description": "The name of the project"
+          },
+          "recursive": {
+            "type": "boolean",
+            "description": "If true, include nested spaces. Default: false",
+            "default": false
+          }
+        },
+        "required": [
+          "project_name"
+        ]
+      },
+      "annotations": {
+        "title": "List spaces",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Read",
+        "side_effects": "No application data mutation."
+      }
+    },
+    {
+      "name": "kumiho_get_item",
+      "title": "Get an item",
+      "description": "Get a Kumiho item (versioned asset) by its kref URI. Example: kref://project/space/item.kind",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "kref": {
+            "type": "string",
+            "description": "The kref URI of the item (e.g., kref://project/space/item.kind)"
+          }
+        },
+        "required": [
+          "kref"
+        ]
+      },
+      "annotations": {
+        "title": "Get an item",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Read",
+        "side_effects": "No application data mutation."
+      }
+    },
+    {
+      "name": "kumiho_search_items",
+      "title": "Search items",
+      "description": "Search for items across Kumiho projects and spaces. Supports filtering by context (project/space path), name, and kind (model, texture, workflow, etc.).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "context_filter": {
+            "type": "string",
+            "description": "Filter by project or space path. Supports wildcards like 'project-*' or '*/characters/*'",
+            "default": ""
+          },
+          "name_filter": {
+            "type": "string",
+            "description": "Filter by item name. Supports wildcards like 'hero*'",
+            "default": ""
+          },
+          "kind_filter": {
+            "type": "string",
+            "description": "Filter by item kind (e.g., 'model', 'texture', 'workflow')",
+            "default": ""
+          },
+          "include_metadata": {
+            "type": "boolean",
+            "description": "Whether to include full metadata for each item. Default: false",
+            "default": false
+          }
+        },
+        "required": []
+      },
+      "annotations": {
+        "title": "Search items",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Read",
+        "side_effects": "No application data mutation."
+      }
+    },
+    {
+      "name": "kumiho_memory_store",
+      "title": "Store a memory",
+      "description": "Writes one pre-formed memory entry to the user's private Kumiho workspace and returns its reference. The entry arrives as it should be kept: its text plus, optionally, a title, summary, memory type and space. Useful for a single self-contained entry whose content and placement are already decided. By default it looks for a similar memory in the same space and adds a new revision to it instead of creating a duplicate; earlier revisions are retained. Set stack_revisions to false to always create a separate memory. May create the space, a bundle and provenance links.\n\nArguments: user_text (required) is the entry's brief text, in the user's words or a close paraphrase, never a conversation transcript. Add a short title, a one-sentence summary, memory_type (decision, fact, summary and so on) and an existing space name, copied exactly, in space_path or space_hint when known.\n\nNot for: passwords, access tokens, API keys, MFA or recovery codes, or payment details, so do not call this tool for such requests; text that looks like a credential is rejected.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name (default: CognitiveMemory)",
+            "default": "CognitiveMemory"
+          },
+          "space_path": {
+            "type": "string",
+            "description": "Taxonomy space path (e.g., 'friend/john-doe' or '/CognitiveMemory/friend')"
+          },
+          "space_hint": {
+            "type": "string",
+            "description": "Short taxonomy hint if space_path is not provided"
+          },
+          "policy_kref": {
+            "type": "string",
+            "description": "Schema item or revision kref to load defaults"
+          },
+          "memory_item_kind": {
+            "type": "string",
+            "description": "Item kind for memory entries. Recommended vocabulary: conversation, skill, space-profile, entity, decision (a policy_kref may widen it via a 'memory_kinds' list, so this is not enforced as a strict enum).",
+            "default": "conversation"
+          },
+          "bundle_name": {
+            "type": "string",
+            "description": "Bundle name (defaults to topic slug)"
+          },
+          "memory_type": {
+            "type": "string",
+            "description": "Memory type (summary | decision | fact | reflection | error)",
+            "default": "summary"
+          },
+          "title": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "user_text": {
+            "type": "string"
+          },
+          "assistant_text": {
+            "type": "string"
+          },
+          "artifact_location": {
+            "type": "string"
+          },
+          "artifact_name": {
+            "type": "string",
+            "default": "chat_io"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "source_revision_krefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Additional metadata (string values only)"
+          },
+          "edge_type": {
+            "type": "string",
+            "description": "Edge type for dependencies (default: DERIVED_FROM)",
+            "default": "DERIVED_FROM"
+          },
+          "stack_revisions": {
+            "type": "boolean",
+            "default": true,
+            "description": "When true (default), search for existing item with similar content and stack revision. False = always create new item."
+          }
+        },
+        "required": [
+          "user_text"
+        ]
+      },
+      "annotations": {
+        "title": "Store a memory",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Write",
+        "side_effects": "May create or revise a memory, move its published revision and supersede prior content."
+      }
+    },
+    {
+      "name": "kumiho_memory_retrieve",
+      "title": "Retrieve memories",
+      "description": "Lookup of the user's saved memories by date or by a known title, keyword, topic or space. Useful when the user asks for their most recent or oldest memories (\"what did I save recently?\", \"my latest note on the launch plan\", \"the newest decision in this space\", \"the first thing I saved\"), and when you already know which memory you need and need its exact item or revision reference, for example to link to it or retire it. Returns item references, revision references and scores, not the memory text; a returned revision can be read for its text.\n\nArguments: for the most recent memories, set mode to \"latest\". Results come newest first by last update (an older memory that was updated moves forward) and carry created_at dates. A query, keywords or topics narrow them to relevant matches, still newest first: for \"my latest note on the launch plan\", set query to \"launch plan\". Matching is fuzzy, and when nothing matches the newest memories in scope come back with score 0, so check that results fit. mode \"first\" returns the single oldest memory, or with a query the oldest relevant match. Both modes honor space_paths (for example one project's space) and memory_types (for example [\"decision\"]). In the default search mode, results are ranked by relevance; query takes the words you expect in the title or summary, and keywords and topics add terms.\n\nNot for: saving, finding or checking passwords, access tokens, API keys, MFA or recovery codes, so do not call this tool for such requests; data outside the connected account's authorized workspace; general knowledge or live information such as weather, news or prices. Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name (default: CognitiveMemory)",
+            "default": "CognitiveMemory"
+          },
+          "query": {
+            "type": "string",
+            "description": "Natural language search query. Supports fuzzy matching and multi-word queries (e.g., 'conversation about travel', 'meeting notes')"
+          },
+          "keywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Additional keywords to include in search"
+          },
+          "topics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Topic names to search for"
+          },
+          "space_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Restrict search to specific space paths"
+          },
+          "bundle_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Search within specific bundles"
+          },
+          "memory_item_kind": {
+            "type": "string",
+            "description": "Item kind for memory entries (default: conversation)",
+            "default": "conversation"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum results to return (default: 5)",
+            "default": 5
+          },
+          "mode": {
+            "type": "string",
+            "description": "search (default): relevance-ranked | latest (aliases: newest, recent, most_recent): newest first by the returned revision's date; with a query, the top max(limit*4, 20) relevance hits ordered by date | first (aliases: earliest, oldest, initial): the single oldest memory — at most one result and no scores; with a query, the oldest relevant match. Case, spaces and hyphens are ignored ('Most Recent' = most_recent).",
+            "default": "search"
+          },
+          "include_revision_metadata": {
+            "type": "boolean",
+            "description": "Also search revision metadata for deeper matching (default: true)",
+            "default": true
+          },
+          "memory_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Filter by memory type (e.g. ['decision', 'summary', 'error'])"
+          }
+        },
+        "required": []
+      },
+      "annotations": {
+        "title": "Retrieve memories",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Read",
+        "side_effects": "No application data mutation."
+      }
+    },
+    {
+      "name": "kumiho_get_revision_by_tag",
+      "title": "Get a revision by tag",
+      "description": "Get a revision by its tag (e.g., 'latest', 'published', 'approved').",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "item_kref": {
+            "type": "string",
+            "description": "The kref URI of the item"
+          },
+          "tag": {
+            "type": "string",
+            "description": "The tag to look for (e.g., 'latest', 'published', 'approved')"
+          }
+        },
+        "required": [
+          "item_kref",
+          "tag"
+        ]
+      },
+      "annotations": {
+        "title": "Get a revision by tag",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Read",
+        "side_effects": "No application data mutation."
+      }
+    },
+    {
+      "name": "kumiho_get_provenance_summary",
+      "title": "Summarize provenance",
+      "description": "Get a summary of the provenance (lineage) of a revision, including used models, seeds, and parameters from upstream dependencies.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "revision_kref": {
+            "type": "string",
+            "description": "The kref URI of the revision to analyze"
+          },
+          "max_depth": {
+            "type": "integer",
+            "description": "Maximum traversal depth. Default: 10",
+            "default": 10
+          }
+        },
+        "required": [
+          "revision_kref"
+        ]
+      },
+      "annotations": {
+        "title": "Summarize provenance",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Read",
+        "side_effects": "No application data mutation."
+      }
+    },
+    {
+      "name": "kumiho_create_space",
+      "title": "Create a space",
+      "description": "Create a new space (folder) within a project. Spaces organize items hierarchically.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project_name": {
+            "type": "string",
+            "description": "The name of the project"
+          },
+          "space_name": {
+            "type": "string",
+            "description": "The name of the space to create"
+          },
+          "parent_path": {
+            "type": "string",
+            "description": "Optional parent path for nested spaces (e.g., '/project/parent-space')"
+          }
+        },
+        "required": [
+          "project_name",
+          "space_name"
+        ]
+      },
+      "annotations": {
+        "title": "Create a space",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Write",
+        "side_effects": "Creates a space in the authorized project."
+      }
+    },
+    {
+      "name": "kumiho_deprecate_item",
+      "title": "Forget a memory",
+      "description": "Retires one saved memory so it no longer appears in normal searches. This is how a user's request to forget something is carried out. Useful when the user asks you to forget, stop using or retire a specific memory, and to retire the memory a user's correction replaced when the correction did not stack as a new revision of it. It changes what the user's searches return, but it is reversible: the item and its revision history stay in the workspace, and calling again with deprecated set to false restores it. It is not permanent erasure; say so if the user expects deletion.\n\nArguments: item_kref is the reference of the exact item (kref://project/space/item.kind; a trailing ?r= revision suffix is ignored). Make sure it is the memory the user means, and confirm with the user when more than one memory could match. Each call retires one item.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "item_kref": {
+            "type": "string",
+            "description": "The kref URI of the item"
+          },
+          "deprecated": {
+            "type": "boolean",
+            "description": "True to deprecate, False to restore. Default: true",
+            "default": true
+          }
+        },
+        "required": [
+          "item_kref"
+        ]
+      },
+      "annotations": {
+        "title": "Forget a memory",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Write",
+        "side_effects": "Reversibly retires an item from ordinary recall; not permanent erasure."
+      }
+    },
+    {
+      "name": "kumiho_chat_get",
+      "title": "Read the chat buffer",
+      "description": "Reads the messages held in this conversation's temporary working buffer, with their count and the buffer's remaining time to live. Useful when the user asks what the buffer for this conversation currently holds, or before summarizing or clearing it. The buffer is short-lived and separate from saved long-term memories. Read-only.\n\nReuse the session_id returned for this conversation only. If the host supplies no conversation ID, the first call without session_id returns session_required and a new ID without reading or writing memory; retry with that ID. Never reuse an ID from another conversation or invent one.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name for Redis key namespace. Defaults to server's configured project."
+          },
+          "session_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Reuse the session_id returned for this conversation only. If the host supplies no conversation ID, the first call without session_id returns session_required and a new ID without reading or writing memory; retry with that ID. Never reuse an ID from another conversation or invent one."
+          },
+          "limit": {
+            "type": "integer",
+            "default": 50,
+            "description": "Max messages to return."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "Optional. Keep the same user_id across related calls."
+          },
+          "context": {
+            "type": "string",
+            "description": "Optional, used with user_id: the ingest context (defaults to 'personal', matching ingest)."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Read the chat buffer",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Read",
+        "side_effects": "No application data mutation."
+      }
+    },
+    {
+      "name": "kumiho_chat_clear",
+      "title": "Clear the chat buffer",
+      "description": "Deletes the messages in this conversation's temporary working buffer. Useful when the user asks to clear or reset the buffer for this conversation. Saved long-term memories and other conversations' buffers are not affected. Cleared messages cannot be recovered.\n\nReuse the session_id returned for this conversation only. If the host supplies no conversation ID, the first call without session_id returns session_required and a new ID without reading or writing memory; retry with that ID. Never reuse an ID from another conversation or invent one.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project name for Redis key namespace. Defaults to server's configured project."
+          },
+          "session_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Reuse the session_id returned for this conversation only. If the host supplies no conversation ID, the first call without session_id returns session_required and a new ID without reading or writing memory; retry with that ID. Never reuse an ID from another conversation or invent one."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "Optional. Keep the same user_id across related calls."
+          },
+          "context": {
+            "type": "string",
+            "description": "Optional, used with user_id: the ingest context (defaults to 'personal', matching ingest)."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Clear the chat buffer",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Sensitive write",
+        "side_effects": "Irreversibly clears the current conversation buffer."
+      }
+    },
+    {
+      "name": "kumiho_memory_consolidate",
+      "title": "Consolidate the session into long-term memory",
+      "description": "Saves a summary of this conversation as one long-term memory in the user's private Kumiho workspace, then clears this conversation's temporary working buffer. Useful when the user asks to save a summary of the conversation, to wrap up, or to keep a record of what was decided before leaving. Clearing the buffer cannot be undone; the saved summary remains.\n\nArguments: always pass summary. This service does not write summaries itself, so a call without one fails; with one, the call works even when the buffer is empty. Write the summary for a reader who was not there: what was decided and why, durable facts, open items. Plain text works; an object with title, summary and knowledge (facts, decisions, actions, open_questions) is recalled better. Keep it brief and distilled, never the transcript.\n\nNot for: passwords, access tokens, API keys, MFA or recovery codes; leave such values out of the summary.\n\nReuse the session_id returned for this conversation only. If the host supplies no conversation ID, the first call without session_id returns session_required and a new ID without reading or writing memory; retry with that ID. Never reuse an ID from another conversation or invent one.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Reuse the session_id returned for this conversation only. If the host supplies no conversation ID, the first call without session_id returns session_required and a new ID without reading or writing memory; retry with that ID. Never reuse an ID from another conversation or invent one."
+          },
+          "summary": {
+            "type": [
+              "object",
+              "string"
+            ],
+            "description": "The summary of this session, written by you (or a subagent) from the conversation — keyless, no LLM call. Plain text, or an object: {type, title, summary, events:[{event, when, event_date (ISO), participants:[], consequence}], knowledge:{facts:[{claim, certainty}], decisions:[{decision, reason}], actions:[{task, status}], open_questions:[]}, classification:{topics:[], entities:[]}}. Only 'summary' is required; missing fields default to empty; 'type' is one of summary, fact, decision, action, reflection, error (default summary). Write it for a reader who was not there: what was decided and why, durable facts, open items."
+          },
+          "implications": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional, with summary: future situations in which this conversation would matter, worded differently from the summary so vector search bridges to them."
+          },
+          "evidence_level": {
+            "type": "string",
+            "enum": [
+              "official",
+              "corroborated",
+              "single_source",
+              "unverified"
+            ],
+            "description": "Evidence grade stamped on the stored memory (metadata + mirrored evidence:<level> tag). Overrides any grade stashed at ingest time. Omit to leave the memory ungraded."
+          },
+          "source": {
+            "type": "string",
+            "description": "Source identifier for evidence tracking, e.g. 'press-release:acme', 'news:reuters', 'chat:user'."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "Optional. Keep the same user_id across related calls."
+          },
+          "context": {
+            "type": "string",
+            "description": "Optional, used with user_id: the ingest context (defaults to 'personal', matching ingest)."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Consolidate the session into long-term memory",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Sensitive write",
+        "side_effects": "Stores a durable summary AND clears the current buffer. This combined operation includes irreversible deletion."
+      }
+    },
+    {
+      "name": "kumiho_memory_recall",
+      "title": "Recall memories",
+      "description": "Filtered semantic search over the user's saved Kumiho memories. Returns the best matches with titles, summaries, relevance scores and references. Useful when the search has to be limited by memory type (memory_types, for example [\"decision\"] or [\"preference\"]) or by location (space_paths, for example one project's space), such as listing the decisions filed in a known space.\n\nquery: describe what you are looking for in natural language rather than guessing exact keywords. Each explicit call runs retrieval again, including an immediate repeat of the same query.\n\nNot for: saving, finding or checking passwords, access tokens, API keys, MFA or recovery codes, so do not call this tool for such requests; data outside the connected account's authorized workspace; general knowledge or live information such as weather, news or prices. Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Natural-language search query."
+          },
+          "limit": {
+            "type": "integer",
+            "default": 5,
+            "description": "Max results to return."
+          },
+          "min_score": {
+            "type": "number",
+            "default": 0.0,
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "description": "Optional minimum relevance score. Results with a numeric score below this threshold are dropped."
+          },
+          "space_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Restrict search to these space paths (e.g. ['CognitiveMemory/personal'])."
+          },
+          "memory_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Filter by memory type (e.g. ['error'], ['action', 'summary'])."
+          },
+          "graph_augmented": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable graph-augmented recall: multi-query reformulation + edge traversal to discover connected memories that vector search alone misses. Requires KUMIHO_GRAPH_AUGMENTED_RECALL=1 env var."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "annotations": {
+        "title": "Recall memories",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Read",
+        "side_effects": "No application data mutation."
+      }
+    },
+    {
+      "name": "kumiho_memory_engage",
+      "title": "Engage memory before responding",
+      "description": "Searches the user's saved Kumiho memories for context relevant to the current request. Returns a ready-to-use context summary, the matching memories and their references (source_krefs); how many come back varies. A successful search can return no matches. Check backend_error: a backend error means retrieval failed. When optimization.status is applied, zero means no retrieved candidates passed the evaluation; it does not prove no relevant memory exists. Useful near the start of a conversation about the user's own ongoing work, projects, decisions or preferences when earlier saved context could change the answer; when the user refers back to something that is not visible in this conversation (\"as we decided\", \"my usual setup\", an unfamiliar project name); and when the user asks what you remember about them or what was decided or noted before on a topic (\"what do you remember about me?\", \"what did we decide about pricing?\"). Matches are ranked by relevance to the query, not by date. The returned references can be attached to a related memory saved later, linking it to its sources.\n\nNot for: saving, finding or checking passwords, access tokens, API keys, MFA or recovery codes, so do not call this tool for such requests, not even to check first; data from another organization or any workspace the connected account is not authorized for; general knowledge or live information such as weather, news or prices. It reads only this account's saved memories and writes nothing.\n\nquery: a brief natural-language description of what you are looking for, with no secrets in it. Each explicit call runs retrieval again, including an immediate repeat of the same query.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Natural-language search query derived from the user's current message."
+          },
+          "include_insights": {
+            "type": "boolean",
+            "default": false,
+            "description": "Add a read-only, bounded belief insight brief from the recalled evidence. No extra retrieval or LLM calls."
+          },
+          "include_learned_sources": {
+            "type": "boolean",
+            "default": false,
+            "description": "Also retrieve bounded saved experiences/patterns for synthesis; requires include_insights=true and adds graph reads."
+          },
+          "current_context": {
+            "type": "string",
+            "maxLength": 4000,
+            "description": "Current situation for optional insight synthesis; does not change retrieval."
+          },
+          "goals": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "maxLength": 500
+            },
+            "description": "Current goals for optional insight synthesis; does not change retrieval."
+          },
+          "limit": {
+            "type": "integer",
+            "default": 5,
+            "description": "Max results to return. When judged delivery is on, the number returned is decided per query and may be fewer or more than this, including none."
+          },
+          "min_score": {
+            "type": "number",
+            "default": 0.0,
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "description": "Optional minimum relevance score. Results with a numeric score below this threshold are dropped before context is built."
+          },
+          "space_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Restrict search to these space paths (e.g. ['CognitiveMemory/personal'])."
+          },
+          "memory_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Filter by memory type (e.g. ['decision', 'preference'])."
+          },
+          "graph_augmented": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable graph-augmented recall for indirect or chain-of-decision questions."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "annotations": {
+        "title": "Engage memory before responding",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Read",
+        "side_effects": "No application data mutation."
+      }
+    },
+    {
+      "name": "kumiho_memory_reflect",
+      "title": "Reflect and capture memories",
+      "description": "Saves distilled memories to the user's private Kumiho workspace and a short note of your reply to this conversation's temporary working buffer. Useful when the user asks you to remember, save or note something (\"remember this\", \"save this\", \"note that\", in any language), and when something durable is settled: a decision with its reason, a lasting preference, a durable fact about the user, or a correction to something saved earlier. Not needed for routine turns or small talk.\n\nArguments: response (required) is a one- or two-sentence gist of your reply. Each capture needs type (decision, preference, fact and so on), a short title with absolute dates (\"Chose Seoul on 2026-09-16\") and brief content in your own words, never transcripts. space_hint takes an existing space, copied exactly as results show it (\"/CognitiveMemory/preferences\"); without one a capture is filed at the project root as a separate item. source_krefs links captures to their sources.\n\nTo correct a saved memory, set that capture's revises to the memory's reference as search results return it; the capture becomes that memory's new revision. Keep its memory type and language, and restate the subject. If you cannot tell which memory to revise, save normally and retire the old memory by its reference only when stored_krefs names a different item.\n\nNot for: passwords, access tokens, API keys, MFA or recovery codes, payment details, or anything the user asked not to keep, so do not call this tool for such requests.\n\nReuse the session_id returned for this conversation only. If the host supplies no conversation ID, the first call without session_id returns session_required and a new ID without reading or writing memory; retry with that ID. Never reuse an ID from another conversation or invent one.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Reuse the session_id returned for this conversation only. If the host supplies no conversation ID, the first call without session_id returns session_required and a new ID without reading or writing memory; retry with that ID. Never reuse an ID from another conversation or invent one."
+          },
+          "response": {
+            "type": "string",
+            "description": "The assistant response text to buffer."
+          },
+          "captures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "decision",
+                    "preference",
+                    "fact",
+                    "correction",
+                    "architecture",
+                    "implementation",
+                    "synthesis",
+                    "reflection",
+                    "summary",
+                    "skill"
+                  ],
+                  "description": "Memory type."
+                },
+                "title": {
+                  "type": "string",
+                  "description": "Short title with absolute dates (e.g. 'Chose gRPC on Mar 27')."
+                },
+                "content": {
+                  "type": "string",
+                  "description": "Content to store."
+                },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Classification tags."
+                },
+                "space_hint": {
+                  "type": "string",
+                  "description": "Space this capture belongs in; overrides top-level space_path. Copy an existing space name exactly — it is used verbatim, so 'Skills' and 'skills' are two spaces. Without it the capture is filed at the project root AND stored as its own item: revision stacking is only attempted inside a space you named, because at the root the similarity search spans every unrouted memory in the project."
+                },
+                "revises": {
+                  "type": "string",
+                  "description": "kref of the memory this capture corrects or updates; the capture becomes that memory's new revision."
+                },
+                "event_date": {
+                  "type": "string",
+                  "description": "ISO-8601 calendar date the captured event actually happened (YYYY, YYYY-MM, or YYYY-MM-DD) — valid-time, kept separate from storage time. Lets temporal recall anchor on when it happened rather than when it was written. Omit when unknown; never guess."
+                },
+                "origin": {
+                  "type": "string",
+                  "enum": [
+                    "user",
+                    "agent",
+                    "imported",
+                    "observed",
+                    "external",
+                    "unknown"
+                  ],
+                  "description": "Reported claim origin; this label does not authenticate provenance."
+                },
+                "decision_state": {
+                  "type": "string",
+                  "enum": [
+                    "proposal",
+                    "proposed",
+                    "accepted",
+                    "rejected",
+                    "contested",
+                    "superseded",
+                    "unknown"
+                  ],
+                  "description": "Known acceptance state; a proposal is not an accepted decision. Omit when unknown."
+                }
+              },
+              "required": [
+                "type",
+                "title",
+                "content"
+              ]
+            },
+            "description": "Structured facts to store. Each capture becomes a graph memory with provenance links. Skip for trivial exchanges."
+          },
+          "source_krefs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Krefs from engage results — creates DERIVED_FROM edges to source memories."
+          },
+          "space_path": {
+            "type": "string",
+            "description": "Default space path for captures without a space_hint."
+          },
+          "discover_edges": {
+            "type": "boolean",
+            "default": true,
+            "description": "Run edge discovery on stored captures. Gracefully skipped if no server-side LLM."
+          },
+          "idempotency_prefix": {
+            "type": "string",
+            "description": "Optional. Write the captures through one BatchCreateRevisions transaction keyed on {prefix}:{index}, so re-submitting the same captures replays committed rows as a no-op; the result carries a positionally-aligned capture_results list ({revision_kref} | {error} per capture) for exact per-capture mapping. Used by history backfill for resumable bulk ingest."
+          },
+          "user_id": {
+            "type": "string",
+            "description": "Optional. Keep the same user_id across related calls."
+          },
+          "context": {
+            "type": "string",
+            "description": "Optional, used with user_id: the ingest context (defaults to 'personal', matching ingest)."
+          }
+        },
+        "required": [
+          "response"
+        ]
+      },
+      "annotations": {
+        "title": "Reflect and capture memories",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Write",
+        "side_effects": "Stores typed captures or corrections and a short response buffer. May revise a named item."
+      }
+    },
+    {
+      "name": "kumiho_memory_space_profile",
+      "title": "Profile memory spaces",
+      "description": "Profile each Space's knowledge dynamics: aggregate churn/evidence/stability signals, classify Spaces as canonical/working/correspondence, and persist versioned space-profile items. Pure aggregation — no LLM calls. A space_class Space attribute pins the label (drift is then reported only). Use dry_run=true to classify without persisting.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "default": "CognitiveMemory",
+            "description": "Kumiho project to profile."
+          },
+          "window_days": {
+            "type": "integer",
+            "default": 30,
+            "description": "Look-back window for the revision-rate signal."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false,
+            "description": "Classify but do not persist profiles."
+          }
+        }
+      },
+      "annotations": {
+        "title": "Profile memory spaces",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Write",
+        "side_effects": "Persists a profile of a memory space; not a read-only analysis."
+      }
+    },
+    {
+      "name": "kumiho_memory_decompose",
+      "title": "Decompose a memory into the typed graph",
+      "description": "Add typed entities, facts and relationships to a stored workspace memory. Supersession can replace an older fact's accepted status and mark dependent evidence stale; prior revisions remain in history. Requires ontology support.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "kref": {
+            "type": "string",
+            "description": "The stored memory revision kref the typed nodes anchor to (from consolidate/reflect)."
+          },
+          "project": {
+            "type": "string",
+            "description": "Optional target project for the materialized typed nodes; defaults to the manager's configured project. An absent/inaccessible project falls back to the configured one."
+          },
+          "entities": {
+            "type": "array",
+            "description": "Reusable named hubs (people, systems, files, concepts).",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Canonical name (the entity hub identity)."
+                },
+                "type": {
+                  "type": "string",
+                  "description": "Optional category (person, system, file, concept...)."
+                },
+                "aliases": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Other names that resolve to this same entity."
+                }
+              },
+              "required": [
+                "name"
+              ]
+            }
+          },
+          "facts": {
+            "type": "array",
+            "description": "Durable claims stated in the memory (each links ABOUT its entities).",
+            "items": {
+              "type": "object",
+              "properties": {
+                "statement": {
+                  "type": "string",
+                  "description": "The claim, one sentence."
+                },
+                "about": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Entity names this fact is about."
+                },
+                "type": {
+                  "type": "string",
+                  "description": "Optional fact category."
+                },
+                "valid_from": {
+                  "type": "string",
+                  "description": "Optional ISO date (YYYY / YYYY-MM / YYYY-MM-DD) the claim STARTED being true — for facts true over an interval."
+                },
+                "valid_to": {
+                  "type": "string",
+                  "description": "Optional ISO date the claim STOPPED being true (omit if still true)."
+                }
+              },
+              "required": [
+                "statement"
+              ]
+            }
+          },
+          "relations": {
+            "type": "array",
+            "description": "Typed entity->entity links (subject predicate object).",
+            "items": {
+              "type": "object",
+              "properties": {
+                "subject": {
+                  "type": "string",
+                  "description": "Source entity name."
+                },
+                "predicate": {
+                  "type": "string",
+                  "description": "Relationship, e.g. 'depends on', 'owns', 'supersedes'."
+                },
+                "object": {
+                  "type": "string",
+                  "description": "Target entity name."
+                }
+              },
+              "required": [
+                "subject",
+                "predicate",
+                "object"
+              ]
+            }
+          },
+          "supersedes": {
+            "type": "array",
+            "description": "Belief updates: a new fact in this call replaces a prior fact.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "statement": {
+                  "type": "string",
+                  "description": "A fact statement from THIS call (the new belief)."
+                },
+                "replaces": {
+                  "type": "string",
+                  "description": "The prior fact's statement text OR its kref uri."
+                },
+                "reason": {
+                  "type": "string",
+                  "description": "Optional why."
+                }
+              },
+              "required": [
+                "statement",
+                "replaces"
+              ]
+            }
+          },
+          "contradicts": {
+            "type": "array",
+            "description": "Conflicts: a fact in this call contradicts another fact.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "statement": {
+                  "type": "string",
+                  "description": "A fact statement from THIS call."
+                },
+                "conflicts_with": {
+                  "type": "string",
+                  "description": "The conflicting fact's statement text OR its kref uri."
+                },
+                "reason": {
+                  "type": "string",
+                  "description": "Optional why."
+                }
+              },
+              "required": [
+                "statement",
+                "conflicts_with"
+              ]
+            }
+          }
+        },
+        "required": [
+          "kref"
+        ]
+      },
+      "annotations": {
+        "title": "Decompose a memory into the typed graph",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "_meta": {
+        "securitySchemes": [
+          {
+            "type": "oauth2",
+            "scopes": [
+              "memory"
+            ]
+          }
+        ]
+      },
+      "muse_review": {
+        "classification": "Write",
+        "side_effects": "Writes typed graph nodes and relationships; can supersede earlier relationships."
+      }
+    }
+  ]
+}
