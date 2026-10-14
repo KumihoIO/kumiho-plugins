@@ -12,8 +12,8 @@ Gemini CLI 0.1.0 is [published by Kumiho Inc.](https://github.com/KumihoIO/gemin
 The public repository has the root manifest and `gemini-cli-extension` topic
 required for Google's daily gallery discovery. A visible gallery listing is
 not yet confirmed. The source [PR #137](https://github.com/KumihoIO/kumiho-plugins/pull/137)
-is separate and requires reviewer approval; the standalone distribution is
-already published from the tested upstream CLI subtree.
+maintains the source separately; the standalone distribution is already
+published from the tested upstream CLI subtree.
 
 The exact public install URL passed install, all-six-skill discovery and
 uninstall on Windows with Node 22.23.3 and Gemini CLI 0.64.0. Linux Node 22

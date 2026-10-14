@@ -51,11 +51,12 @@
       "date": "2026-10-14",
       "report": "gemini/ADVERSARIAL-REVIEW.md",
       "initial_head": "dce4612e80aaead47d2d05b2dcf32ad15505ba2f",
-      "packager_findings_resolved": 2,
+      "packager_findings_resolved": 3,
       "packaging_regression_tests": 7,
       "installed_content_regression_tests": 4,
       "public_install_full_content_match": "passed on Windows Node22.23.3 and Gemini CLI0.64.0",
-      "shipped_cli_subtree": "unchanged"
+      "shipped_cli_subtree": "unchanged",
+      "cross_platform_archive_hash": "CI must match published Windows archive hash; path order and ZIP platform metadata are explicit"
     }
   }
 }

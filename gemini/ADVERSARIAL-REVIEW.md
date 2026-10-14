@@ -26,6 +26,15 @@ an independent reviewer approval.
    Regression checks cover hidden input, linked directories, invalid manifest,
    synthetic disk failure and deterministic root-archive contents.
 
+3. **P2 — identical source produces different ZIP hashes on Linux and Windows.**
+   Linux CI built hash
+   `609bf3dbe7671d4638166173de2f9c2750477eccf57fee71edbca7fba4a44914`
+   from the same source whose Windows-built published ZIP is `1f721b2a…`.
+   Host-dependent Path sorting and ZipInfo.create_system caused the mismatch.
+   Resolved: explicitly sort portable archive paths and fix ZIP platform metadata
+   to the published format. CI now compares the built version/hash to the release
+   receipt rather than merely printing a hash.
+
 The remote installation verifier also compared only the manifest. Its coverage
 now compares every shipped file byte-for-byte and rejects missing or extra
 resources, excluding only Gemini's own root installation metadata. Four
