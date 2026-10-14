@@ -71,7 +71,8 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertEqual(first, package(self.source, other))
         self.assertEqual(self.output.read_bytes(), other.read_bytes())
         with ZipFile(self.output) as archive:
-            self.assertEqual(set(archive.namelist()), {"gemini-extension.json", "GEMINI.md"})
+            self.assertEqual(archive.namelist(), ["gemini-extension.json", "GEMINI.md"])
+            self.assertTrue(all(info.create_system == 0 for info in archive.infolist()))
             self.assertEqual(archive.read("GEMINI.md"), b"Expected context")
 
 

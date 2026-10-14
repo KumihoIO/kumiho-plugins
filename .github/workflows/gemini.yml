@@ -39,4 +39,13 @@ jobs:
               data = tomllib.loads(command.read_text())
               assert data['description'] and '{{args}}' in data['prompt']
           PY
-          python3 gemini/scripts/package_cli.py --out "$RUNNER_TEMP/kumiho-memory.zip"
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'gemini/scripts')
+          from package_cli import package
+          built = package(Path('gemini/cli'), Path(os.environ['RUNNER_TEMP']) / 'kumiho-memory.zip')
+          receipt = json.loads(Path('gemini/registration-status.json').read_text())
+          assert built == receipt['cli']['package'], (built, receipt['cli']['package'])
+          print(json.dumps(built))
+          PY

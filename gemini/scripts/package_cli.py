@@ -19,7 +19,9 @@ def package(source, output):
     files = []
     # Validate before touching an existing release, including linked directories
     # that rglob would otherwise skip instead of rejecting.
-    for file in sorted(source.rglob("*")):
+    for file in sorted(source.rglob("*"), key=lambda path: (
+            path.relative_to(source).as_posix().lower(),
+            path.relative_to(source).as_posix())):
         relative = file.relative_to(source)
         if (file.is_symlink() or getattr(file, "is_junction", lambda: False)()
                 or any(p.startswith(".") or p == "__pycache__" for p in relative.parts)):
@@ -34,6 +36,9 @@ def package(source, output):
         with ZipFile(staging, "w", compression=ZIP_DEFLATED) as archive:
             for file, relative in files:
                 info = ZipInfo(relative.as_posix(), date_time=(2026, 10, 14, 0, 0, 0))
+                # Preserve the published Windows-built ZIP format on every host.
+                # ZipInfo otherwise chooses create_system from the build OS.
+                info.create_system = 0
                 info.compress_type = ZIP_DEFLATED
                 info.external_attr = 0o100644 << 16
                 archive.writestr(info, file.read_bytes())
