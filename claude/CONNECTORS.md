@@ -16,9 +16,12 @@ This plugin uses one local MCP server:
   Configure it persistently in the OS/user or trusted host environment before
   Claude starts; CE clears it and never uses Cloud authentication. The plugin
   does not save tokens to `.env.local`, Claude/Desktop config, or SDK caches.
-- Without an explicit token, authenticate the shared SDK store locally with
-  either `kumiho-auth login` or `kumiho-cli login`. Claude, Codex, and Kumiho
-  Desktop use the same SDK-owned `~/.kumiho` credential/cache root.
+- Without an explicit token, authenticate the shared SDK store with the browser
+  sign-in (`/kumiho-onboard oauth`, or `kumiho-auth login --oauth`; kumiho SDK
+  0.15.0+), or locally with `kumiho-auth login` or `kumiho-cli login`. Claude,
+  Codex, and Kumiho Desktop use the same SDK-owned `~/.kumiho`
+  credential/cache root; the SDK refreshes a browser sign-in's rotating
+  refresh token under a lock beside the credential file.
 - Official discovery records use the origin-scoped
   `~/.kumiho/official-cloud/discovery-cache.json`; a legacy generic/custom
   discovery cache is never reused for the pinned Cloud origin.
@@ -97,9 +100,10 @@ own auth.
    - `kumiho_memory_consolidate`
    - `kumiho_memory_dream_state`
 
-If memory calls fail with `invalid_id_token`, set a fresh explicit token or run
-`kumiho-auth login` / `kumiho-cli login` locally, then restart the host so the
-SDK reloads or refreshes its credential cache.
+If memory calls fail with `invalid_id_token`, or report that the Kumiho OAuth
+sign-in is no longer valid, sign in again with `/kumiho-onboard oauth`, set a
+fresh explicit token, or run `kumiho-auth login` / `kumiho-cli login` locally,
+then restart the host so the SDK reloads or refreshes its credential cache.
 
 If direct memory-store calls fail with `StatusCode.UNAVAILABLE` to
 `127.0.0.1:8080`, the SDK did not resolve a regional endpoint from the official

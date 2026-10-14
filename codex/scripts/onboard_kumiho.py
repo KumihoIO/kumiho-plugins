@@ -35,6 +35,14 @@ PROVISION_TIMEOUT_S = 15 * 60
 AUTH_TIMEOUT_S = 45
 OFFICIAL_CONTROL_PLANE_URL = "https://control.kumiho.cloud"
 INGEST_TIMEOUT_S = 2 * 60
+#: Application name the Kumiho consent page shows for this plugin's sign-in.
+OAUTH_CLIENT_NAME = "Kumiho Memory for Codex"
+#: How long the SDK waits for the browser sign-in.
+OAUTH_BROWSER_WAIT_S = 300
+#: Plus interpreter start, metadata, registration, code exchange and the lock.
+OAUTH_LOGIN_TIMEOUT_S = OAUTH_BROWSER_WAIT_S + 90
+#: The first kumiho SDK with ``kumiho-auth login --oauth`` and OAuth refresh.
+OAUTH_SDK_FLOOR = "0.15.0"
 
 # Installed plugin snapshots execute this file directly, while unit tests may
 # load it by path. Resolve the vendored bounded runner from this script's own
@@ -343,13 +351,13 @@ def _run_interactive(
     )
 
 
-def _provision() -> Path | None:
+def _provision(*, oauth: bool = False) -> Path | None:
     print("[kumiho-codex] Step 1/5: checking the shared ~/.kumiho/venv runtime...")
+    command = [sys.executable, "-I", str(PYTHON_LAUNCHER), "--provision"]
+    if oauth:
+        command.append("--oauth-sdk")
     try:
-        result = _run(
-            [sys.executable, "-I", str(PYTHON_LAUNCHER), "--provision"],
-            timeout=PROVISION_TIMEOUT_S,
-        )
+        result = _run(command, timeout=PROVISION_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         print("[kumiho-codex] Provisioning timed out; retry onboarding.", file=sys.stderr)
         return None
@@ -389,15 +397,98 @@ def _cached_auth_works(
     return False
 
 
-def _configure_cloud(venv_python: Path, *, non_interactive: bool, reauth: bool) -> bool:
+def _sdk_supports_oauth(venv_python: Path) -> bool:
+    """True when the runtime SDK has ``kumiho-auth login --oauth`` (0.15.0+)."""
+    try:
+        result = _run(
+            [str(venv_python), "-I", "-c", "import kumiho.oauth_login"],
+            timeout=AUTH_TIMEOUT_S,
+            capture=True,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return result.returncode == 0
+
+
+def _oauth_login(venv_python: Path, *, open_browser: bool) -> bool:
+    """Browser sign-in on the Kumiho consent page (OAuth + PKCE) via the SDK.
+
+    The SDK receives the code on a loopback port and keeps a rotating refresh
+    token in the shared ``~/.kumiho`` store; no credential crosses Codex.
+    """
+    if (os.getenv("KUMIHO_AUTH_TOKEN") or "").strip():
+        # The runtime, ingestion and verification all use an explicit token
+        # before the SDK store, so a browser sign-in would never be used.
+        print(
+            "[kumiho-codex] KUMIHO_AUTH_TOKEN is set and takes precedence over "
+            "a browser sign-in. Remove it from the environment, restart Codex, "
+            "then run the sign-in again.",
+            file=sys.stderr,
+        )
+        return False
+    if not _sdk_supports_oauth(venv_python):
+        print(
+            f"[kumiho-codex] Browser sign-in needs kumiho SDK {OAUTH_SDK_FLOOR} "
+            "or newer; onboarding with --oauth installs it when it is "
+            "available on PyPI.",
+            file=sys.stderr,
+        )
+        return False
+    command = [
+        str(venv_python), "-I", "-m", "kumiho.auth_cli", "login", "--oauth",
+        "--client-name", OAUTH_CLIENT_NAME,
+        "--timeout", str(OAUTH_BROWSER_WAIT_S),
+    ]
+    if not open_browser:
+        command.append("--no-browser")
+    print(
+        "[kumiho-codex] Opening the Kumiho sign-in page in a browser on this "
+        "machine (waiting up to 5 minutes)...",
+        flush=True,
+    )
+    try:
+        # Not bounded_proc: on Windows its job object kills the whole tree when
+        # the run ends, and a browser the SDK had to start inherits that job,
+        # so a successful sign-in would close the user's browser. The listener
+        # lives in this one child; a timeout ends it.
+        result = subprocess.run(
+            command,
+            env=_child_env(drop_auth_token=True, isolate_cloud_auth=True),
+            timeout=OAUTH_LOGIN_TIMEOUT_S,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        print("[kumiho-codex] Browser sign-in timed out.", file=sys.stderr)
+        return False
+    if result.returncode != 0 or not _cached_auth_works(
+        venv_python, drop_auth_token=True
+    ):
+        print("[kumiho-codex] Browser sign-in did not complete.", file=sys.stderr)
+        return False
+    return True
+
+
+def _configure_cloud(
+    venv_python: Path,
+    *,
+    non_interactive: bool,
+    reauth: bool,
+    oauth: bool = False,
+    open_browser: bool = True,
+) -> bool:
     print("[kumiho-codex] Step 2/5: configuring Kumiho Cloud authentication...")
-    if not reauth and _cached_auth_works(venv_python):
+    if oauth:
+        if not _oauth_login(venv_python, open_browser=open_browser):
+            return False
+    elif not reauth and _cached_auth_works(venv_python):
         pass
     else:
         if non_interactive or not sys.stdin.isatty():
             print(
-                "[kumiho-codex] Cloud login requires a secure interactive terminal.\n"
-                "Run this command yourself (do not paste credentials into Codex):\n"
+                "[kumiho-codex] Cloud login requires a browser sign-in or a "
+                "secure interactive terminal.\n"
+                "Sign in in the browser with:\n"
+                f'  node "{SCRIPT_DIR / "run_kumiho_mcp.mjs"}" --onboard cloud --oauth\n'
+                "or run this command yourself (do not paste credentials into Codex):\n"
                 f'  node "{SCRIPT_DIR / "run_kumiho_mcp.mjs"}" --onboard cloud',
                 file=sys.stderr,
             )
@@ -607,7 +698,7 @@ def _resolve_backend(
 ) -> str:
     if args.backend in {"cloud", "ce"}:
         return args.backend
-    if args.reauth:
+    if args.reauth or args.oauth:
         return "cloud"
     if args.ce_endpoint or args.ce_redis_url or args.ce_llm_base_url:
         return "ce"
@@ -650,6 +741,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Force a secure interactive Cloud login (Cloud only).",
     )
     parser.add_argument(
+        "--oauth",
+        action="store_true",
+        help=(
+            "Sign in to Kumiho Cloud on the consent page in the browser "
+            "(OAuth + PKCE); needs no terminal (Cloud only)."
+        ),
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="With --oauth: print the sign-in URL instead of opening a browser.",
+    )
+    parser.add_argument(
         "--ce-endpoint",
         default=None,
         metavar="HOST:PORT",
@@ -675,6 +779,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.reauth and args.backend == "ce":
         parser.error("--reauth is valid only with the cloud backend")
+    if args.oauth and (
+        args.backend == "ce"
+        or args.ce_endpoint
+        or args.ce_redis_url
+        or args.ce_llm_base_url
+    ):
+        parser.error("--oauth is valid only with the cloud backend")
+    if args.oauth and args.non_interactive:
+        parser.error("--oauth signs in in the browser; drop --non-interactive")
+    if args.no_browser and not args.oauth:
+        parser.error("--no-browser is valid only with --oauth")
     return args
 
 
@@ -685,7 +800,7 @@ def main(argv: list[str] | None = None) -> int:
     print("[kumiho-codex] Kumiho Memory onboarding for Codex")
     print("[kumiho-codex] Credentials are never accepted in chat or command arguments.")
 
-    venv_python = _provision()
+    venv_python = _provision(oauth=True) if args.oauth else _provision()
     if venv_python is None:
         return 1
 
@@ -695,6 +810,7 @@ def main(argv: list[str] | None = None) -> int:
         explicit_repair = (
             args.backend in {"cloud", "ce"}
             or args.reauth
+            or args.oauth
             or bool(args.ce_endpoint or args.ce_redis_url or args.ce_llm_base_url)
         )
         if not explicit_repair:
@@ -716,6 +832,8 @@ def main(argv: list[str] | None = None) -> int:
                 venv_python,
                 non_interactive=args.non_interactive,
                 reauth=args.reauth,
+                oauth=args.oauth,
+                open_browser=not args.no_browser,
             )
             if not configured:
                 return 2
