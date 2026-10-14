@@ -1,0 +1,51 @@
+name: Gemini extension
+on:
+  pull_request:
+    paths: ['gemini/**', '.gitattributes', '.github/workflows/gemini.yml']
+  push:
+    branches: [main]
+    paths: ['gemini/**', '.gitattributes', '.github/workflows/gemini.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  official-loader:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Install pinned official CLI without lifecycle scripts
+        run: npm install --prefix "$RUNNER_TEMP/gemini" --ignore-scripts --no-audit --no-fund @google/gemini-cli@0.64.0
+      - name: Validate all six skills with Google's validator
+        run: |
+          for skill in gemini/cli/skills/*; do
+            node "$RUNNER_TEMP/gemini/node_modules/@google/gemini-cli/bundle/builtin/skill-creator/scripts/validate_skill.cjs" "$skill"
+          done
+      - name: Test actual installation, skill discovery and removal without OAuth
+        run: node gemini/scripts/verify_cli.mjs gemini/cli "$RUNNER_TEMP/gemini/node_modules/@google/gemini-cli/bundle/gemini.js"
+      - name: Verify packaging failure paths and installed resource integrity
+        run: |
+          python3 -m unittest discover -s gemini/scripts -p 'test_package_cli.py' -v
+          node --test gemini/scripts/test_package_contents.mjs
+      - name: Validate command TOML and package archive
+        run: |
+          python3 - <<'PY'
+          import pathlib, tomllib
+          from zipfile import ZipFile
+          for command in pathlib.Path('gemini/cli/commands/kumiho').glob('*.toml'):
+              data = tomllib.loads(command.read_text())
+              assert data['description'] and '{{args}}' in data['prompt']
+          PY
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'gemini/scripts')
+          from package_cli import package
+          built = package(Path('gemini/cli'), Path(os.environ['RUNNER_TEMP']) / 'kumiho-memory.zip')
+          receipt = json.loads(Path('gemini/registration-status.json').read_text())
+          assert built == receipt['cli']['package'], (built, receipt['cli']['package'])
+          print(json.dumps(built))
+          PY

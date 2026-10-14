@@ -1,0 +1,2 @@
+description = "Connect the hosted Kumiho workspace"
+prompt = "Activate kumiho-onboard and follow its Gemini CLI OAuth setup. Verify account access with a read-only tool; do not write sample memories or create an account. User context: {{args}}"

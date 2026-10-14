@@ -1,0 +1,17 @@
+{
+  "name": "kumiho-memory",
+  "version": "0.1.0",
+  "description": "Recall decisions, facts and preferences across conversations in your private Kumiho workspace.",
+  "contextFileName": "GEMINI.md",
+  "mcpServers": {
+    "kumiho-memory": {
+      "httpUrl": "https://mcp.kumiho.cloud/mcp",
+      "oauth": {
+        "enabled": true,
+        "scopes": [
+          "memory"
+        ]
+      }
+    }
+  }
+}

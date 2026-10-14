@@ -94,6 +94,16 @@ Detailed setup, PowerShell examples, first-run diagnostics, and stale-cache
 recovery:
 **[codex/README.md](codex/README.md)**.
 
+## Install for Gemini CLI
+
+```bash
+gemini extensions install https://github.com/KumihoIO/gemini-kumiho-memory
+```
+
+Restart Gemini and run `/mcp auth kumiho-memory`.
+[Gemini CLI guide](gemini/cli/README.md) ·
+[Gemini web/mobile eligibility and registration status](gemini/CONSUMER-APP.md).
+
 ## Install for Hermes Agent
 
 ```bash

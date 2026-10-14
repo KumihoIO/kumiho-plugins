@@ -1,0 +1,62 @@
+{
+  "checked_on": "2026-10-14",
+  "consumer_app": {
+    "status": "not_submitted",
+    "reason": "No Google-confirmed public consumer catalog intake found; custom connections currently require US personal accounts and company Workspace UI has no add control.",
+    "hosted_mcp": "https://mcp.kumiho.cloud/mcp",
+    "company_account_type": "Workspace",
+    "custom_connection": "not_completed"
+  },
+  "cli": {
+    "version": "0.1.0",
+    "status": "published_gallery_discovery_configured",
+    "official_cli_version": "0.64.0",
+    "validation": {
+      "install": true,
+      "six_skills_discovered": true,
+      "six_skills_official_validator": true,
+      "uninstall": true,
+      "four_command_toml_parse": true,
+      "deterministic_root_archive": true,
+      "oauth_discovery": "CLI recognized live protected-resource metadata and required memory scope; authenticated flow not completed",
+      "authenticated_save_recall": "not_run",
+      "remote_url_install_six_skills_uninstall": {
+        "result": "passed",
+        "platform": "Windows",
+        "node": "22.23.3",
+        "cli": "0.64.0"
+      },
+      "linux_official_loader_ci": "passed on Node 22",
+      "windows_node24_uninstall": "CLI emitted successful removal then native UV_HANDLE_CLOSING assertion on Node 24.12.0 and 24.19.0; Node 22.23.3 passed. Use Node 22 LTS for reproducible Windows QA."
+    },
+    "package": {
+      "version": "0.1.0",
+      "sha256": "1f721b2aa349d248b295520b074ab31ab538f4f75c93fc708ac4dc8b2f7cda6b"
+    },
+    "repository": "https://github.com/KumihoIO/gemini-kumiho-memory",
+    "release": "https://github.com/KumihoIO/gemini-kumiho-memory/releases/tag/v0.1.0",
+    "distribution_commit": "58cdf8080fbd35dc73e7b040213332c790f9af94",
+    "upstream_source_commit": "b3b413ad689db73ab1104c973d57fcd5641b0d70",
+    "source_distribution_tree": "eab139fc94918ebe3ddb37507f9bd9002d9c9ba8",
+    "source_pull_request": "https://github.com/KumihoIO/kumiho-plugins/pull/137",
+    "gallery": {
+      "github_topic": "gemini-cli-extension",
+      "topic_confirmed": true,
+      "root_manifest_confirmed": true,
+      "visible_listing": "not_confirmed",
+      "crawl_frequency": "daily, per Google documentation"
+    },
+    "ci": "https://github.com/KumihoIO/kumiho-plugins/actions/runs/38484963755",
+    "adversarial_review": {
+      "date": "2026-10-14",
+      "report": "gemini/ADVERSARIAL-REVIEW.md",
+      "initial_head": "dce4612e80aaead47d2d05b2dcf32ad15505ba2f",
+      "packager_findings_resolved": 3,
+      "packaging_regression_tests": 7,
+      "installed_content_regression_tests": 4,
+      "public_install_full_content_match": "passed on Windows Node22.23.3 and Gemini CLI0.64.0",
+      "shipped_cli_subtree": "unchanged",
+      "cross_platform_archive_hash": "CI must match published Windows archive hash; path order, ZIP platform metadata and CLI text checkout line endings are explicit"
+    }
+  }
+}
