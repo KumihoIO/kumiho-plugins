@@ -199,7 +199,9 @@ def test_card_warns_only_on_a_true_session_loss_and_says_consolidate_keeps_the_s
     assert "Older kumiho-memory releases" in ctx
     # a pause after a consolidate is not a lost session, and what was consolidated
     # is stored: the card must not call those turns "no longer buffered"
-    assert "even a long one" in ctx
+    assert "before any new turn" in ctx
+    # narrowed: a pause AFTER new turns were written is a different (real) case
+    assert "even a long one" not in ctx
     assert "what you consolidated is already stored" in ctx
     assert "the earlier turns of this conversation are no longer buffered" not in ctx
     # the old unconditional alarm sentence is gone from the known-id card
