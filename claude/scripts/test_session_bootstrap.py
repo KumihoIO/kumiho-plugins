@@ -197,6 +197,13 @@ def test_card_warns_only_on_a_true_session_loss_and_says_consolidate_keeps_the_s
     assert "buffer_reset_by" in ctx
     # kumiho-memory builds without the marker still report true after a consolidate
     assert "Older kumiho-memory releases" in ctx
+    # a pause after a consolidate is not a lost session, and what was consolidated
+    # is stored: the card must not call those turns "no longer buffered"
+    assert "even a long one" in ctx
+    assert "what you consolidated is already stored" in ctx
+    assert "the earlier turns of this conversation are no longer buffered" not in ctx
+    # the old unconditional alarm sentence is gone from the known-id card
+    assert "the call addressed a session that did not exist" not in ctx
 
 
 def test_fallback_card_does_not_call_a_consolidate_a_lost_session(tmp_path):
@@ -208,6 +215,8 @@ def test_fallback_card_does_not_call_a_consolidate_a_lost_session(tmp_path):
     assert "whose buffer expired (idle TTL)" in ctx
     assert "straight after you called kumiho_memory_consolidate" in ctx
     assert "buffer_reset_by" in ctx
+    # the alarm itself stays for a true loss
+    assert "the call addressed a session that did not exist" in ctx
 
 
 def test_a_session_id_cannot_forge_extra_instruction_lines(tmp_path):
