@@ -165,9 +165,22 @@ _SESSION_ID_RULE_KNOWN = (
     "all; adding one is an input error.  This is the real id, handed to "
     "the plugin by the host; do NOT invent one and do NOT substitute a "
     "different value.  Results echo back the "
-    "session_id used plus a session_id_source (expect \"argument\"); if a "
-    "result reports created_bucket=true on a turn that is not the first, "
-    "say so — the call addressed a session that did not exist.\n"
+    "session_id used plus a session_id_source (expect \"argument\"); if the "
+    "echoed session_id is not the one you passed, say so.\n"
+    "  - NEW-SESSION ALARM — created_bucket=true means the session_id had no "
+    "working-memory buffer at all: it was never used before, or its buffer "
+    "was lost to idle-TTL expiry.  On a turn that is not the first, that is "
+    "the ONLY case to tell the user about (the turns written since your last "
+    "consolidate are no longer buffered; what you consolidated is already stored).  "
+    "kumiho_memory_consolidate and kumiho_chat_clear do NOT create a new "
+    "session: the session_id stays exactly the same and only the buffer is "
+    "emptied, and a pause right after one of them, before any new turn (up to a "
+    "day), is not a lost session.  A result with "
+    "created_bucket=false and buffer_reset_by=\"consolidate\" or \"clear\" is "
+    "that expected reset — say nothing.  Older kumiho-memory releases report "
+    "created_bucket=true on the first write after a consolidate or clear "
+    "that you issued yourself in this conversation; that is the same reset, "
+    "not a lost session — say nothing about it either.\n"
 )
 
 #: Fallback for hosts that hand the hook no session_id. Then the model genuinely
@@ -179,8 +192,15 @@ _SESSION_ID_RULE_UNKNOWN = (
     "session_id_source; a value you invent fragments the conversation "
     "buffer.  If a result reports created_bucket=true on a turn that is "
     "not the first, say so — the call addressed a session that did not "
-    "exist.  If a call reports that no session identity is available, "
-    "tell the user instead of inventing one.\n"
+    "exist, or whose buffer expired (idle TTL).  The one exception is "
+    "straight after you called kumiho_memory_consolidate or "
+    "kumiho_chat_clear in this conversation: those empty the buffer, and a "
+    "server-resolved session may then be handed a new session_id by design, "
+    "so a changed session_id or created_bucket=true right after your own "
+    "consolidate is expected, not a lost session (created_bucket=false with "
+    "buffer_reset_by set is the same reset on the same session).  If a call "
+    "reports that no session identity is available, tell the user instead "
+    "of inventing one.\n"
 )
 
 

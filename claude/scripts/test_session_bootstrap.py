@@ -176,6 +176,51 @@ def test_card_falls_back_to_omit_when_the_host_gives_no_id(tmp_path):
     assert "session_id=" not in ctx
 
 
+def _card_for(tmp_path, payload):
+    r = _run_hook("session-bootstrap.py", payload, {"KUMIHO_CLAUDE_HOME": str(tmp_path)})
+    return json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_card_warns_only_on_a_true_session_loss_and_says_consolidate_keeps_the_session(tmp_path):
+    """A consolidate empties the buffer of the SAME session id.  Before the reset
+    marker the next reflect reported created_bucket=true, and this card told the
+    assistant to warn the user whenever that appeared mid-conversation -- a false
+    "your session was recreated" alarm after every consolidate.  The card now
+    defines the flag as a true loss (never used, or idle-TTL expiry) and states
+    that consolidate/clear do not create a new session."""
+    ctx = _card_for(tmp_path, {"session_id": "039ab96e-fb62-4c03-aafe-242dc1e7418e",
+                           "source": "startup"})
+    assert "had no working-memory buffer at all" in ctx
+    assert "idle-TTL expiry" in ctx
+    assert "do NOT create a new session" in ctx
+    assert "kumiho_memory_consolidate" in ctx and "kumiho_chat_clear" in ctx
+    assert "buffer_reset_by" in ctx
+    # kumiho-memory builds without the marker still report true after a consolidate
+    assert "Older kumiho-memory releases" in ctx
+    # a pause after a consolidate is not a lost session, and what was consolidated
+    # is stored: the card must not call those turns "no longer buffered"
+    assert "before any new turn" in ctx
+    # narrowed: a pause AFTER new turns were written is a different (real) case
+    assert "even a long one" not in ctx
+    assert "what you consolidated is already stored" in ctx
+    assert "the earlier turns of this conversation are no longer buffered" not in ctx
+    # the old unconditional alarm sentence is gone from the known-id card
+    assert "the call addressed a session that did not exist" not in ctx
+
+
+def test_fallback_card_does_not_call_a_consolidate_a_lost_session(tmp_path):
+    """Without a host id the server resolves the session and may hand out a new
+    id after a consolidate by design; the card must not tell the assistant to
+    raise the alarm for that."""
+    ctx = _card_for(tmp_path, {"source": "startup"})
+    assert "OMIT it on every memory tool call" in ctx
+    assert "whose buffer expired (idle TTL)" in ctx
+    assert "straight after you called kumiho_memory_consolidate" in ctx
+    assert "buffer_reset_by" in ctx
+    # the alarm itself stays for a true loss
+    assert "the call addressed a session that did not exist" in ctx
+
+
 def test_a_session_id_cannot_forge_extra_instruction_lines(tmp_path):
     """The id is interpolated into the injected card, so a newline could close
     the SESSION ID bullet and open forged ones. Claude Code sends a uuid, but
