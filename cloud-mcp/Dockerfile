@@ -50,6 +50,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
     ca-certificates libssl3t64 libffi8 zlib1g libbz2-1.0 libexpat1 \
     liblzma5 libncursesw6 libreadline8t64 libsqlite3-0 libuuid1 tzdata \
+    libgdbm6t64 libgdbm-compat4t64 libtcl8.6 libtk8.6 libcrypt1 \
  && apt-get check \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --create-home --uid 10001 kumiho \
