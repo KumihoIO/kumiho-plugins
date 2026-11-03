@@ -40,6 +40,12 @@ jobs:
           npm ci
           npm run typecheck
           npm test
+      - name: Build and test the actual production runtime
+        run: |
+          docker build --platform linux/amd64 -t kumiho-mcp-tested cloud-mcp
+          docker run --rm --user root -v "$PWD:/workspace" -w /workspace/cloud-mcp \
+            kumiho-mcp-tested sh -c 'pip install pytest pytest-asyncio && python -m pytest -q'
+          docker run --rm kumiho-mcp-tested python /usr/local/bin/verify_runtime.py
   publish:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: test

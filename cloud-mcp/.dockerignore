@@ -27,3 +27,4 @@ SUBMISSION-REVIEW.md
 
 DEVELOPER-TEST.md
 scripts
+!scripts/verify_runtime.py
